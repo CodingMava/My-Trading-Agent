@@ -1,0 +1,21 @@
+# Data & Math
+yfinance
+pandas
+numpy
+
+# Technical Analysis
+pandas-ta
+
+# AI Layer (Updated to latest Google SDK)
+google-genai
+
+# Alerts
+requests
+
+# Dashboard
+streamlit
+plotly
+
+# Cloud & Infrastructure (Phase 5)
+supabase
+pytz
