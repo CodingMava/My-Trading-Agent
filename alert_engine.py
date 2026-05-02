@@ -38,3 +38,7 @@ if __name__ == "__main__":
     
     test_message = "🚀 *AI Trading Agent Online*\nSystem is connected and ready to hunt for setups!"
     alerter.send_telegram_alert(test_message)
+
+    # TELEGRAM_TOKEN = "8375815740:AAENFzSV66W0qheHTSmeoWPsHVjnNesci_8"
+    # TELEGRAM_CHAT_ID = "6669851040"
+    # GEMINI_API_KEY = "AIzaSyAfWysvUdgnqjl46qwHgfrgd3wC7vg4BjU"
