@@ -3,10 +3,10 @@
 Multi-Asset RL Trading Agent
 This project is a high-frequency trading framework that uses Reinforcement Learning (RL) to navigate the complexities of financial markets. Rather than following a set of rigid rules, the agent learns optimal trading strategies by interacting with historical market data and receiving feedback through a reward-based system.
 
-📈 The Core Logic
+ a) The Core Logic
 The agent is designed to manage a portfolio across multiple assets simultaneously. By utilizing Deep RL, it observes market states (price action, volume, and technical indicators) and decides whether to Buy, Sell, or Hold. The primary goal is to maximize cumulative returns while maintaining a strict eye on risk management and drawdown.
 
-🛠️ Tech Stack
+ b) Tech Stack
 Language: Python
 
 RL Framework: OpenAI Gym / Stable Baselines3
@@ -19,7 +19,7 @@ Visualization: Matplotlib / Plotly (for performance tracking)
 
 Database: SQL (for storing historical ticker data)
 
-🏗️ System Architecture
+ c) System Architecture
 1. Environment (The Market)
 A custom Gym Environment that simulates trading logic, including transaction costs, slippage, and portfolio balances.
 
