@@ -1,0 +1,15 @@
+# Non-secret runtime settings. Secrets (tokens, API keys) belong in .env, never in this file.
+
+[notifications]
+# Telegram alerts go out only for strategies approved in config/strategies.toml, and only when
+# TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set in .env.
+telegram_enabled = true
+telegram_timeout_seconds = 10
+
+[ai]
+# Off by default: the 2026-10-08 audit found the AI commentary added no measurable value.
+# AI never approves, sizes or places trades.
+enabled = false
+provider = "gemini"
+model = "gemini-2.5-flash"
+timeout_seconds = 20

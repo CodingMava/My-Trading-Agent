@@ -1,0 +1,54 @@
+# Strategy registry: the profitability gate's source of truth for live signals.
+#
+# Only strategies with status LIVE_SMALL or LIVE may emit live signals. A strategy that is missing
+# from this file is treated as not approved (fail closed).
+# Lifecycle: RESEARCH -> PAPER -> LIVE_SMALL -> LIVE. Strategies that fail go to DISABLED or REJECTED.
+#
+# Evidence is from the 2026-10-08 audit (reproduce: python -m trader.research.audit): India 5-minute
+# bars, fill at next bar open, 1% stop / 2% target, intraday square-off, 0.1425% round-trip costs.
+# "Random" means time-of-day-matched random entries with the same exits.
+
+[R1]
+name = "Volume Breakout"
+status = "DISABLED"
+evidence = "604 trades, 40.6% winners, -0.102%/trade net (t=-3.3), PF 0.71; no better than random (p=0.19). US 5m -0.137%, India 1h -0.159%."
+
+[R2]
+name = "Oversold Reversal"
+status = "REJECTED"
+evidence = "152 trades, 34.2% winners, -0.201%/trade net (t=-3.1), PF 0.54. US 5m -0.003%, India 1h -0.158%."
+
+[R3]
+name = "Overbought Breakdown"
+status = "REJECTED"
+evidence = "Never fired in ~272,000 bars: RSI>70 while closing below the 20-bar low is near-contradictory."
+
+[R4]
+name = "Turtle Trend Breakout"
+status = "REJECTED"
+evidence = "454 trades, 35.9% winners, -0.175%/trade net (t=-4.5), PF 0.60; 38.5% of its signals duplicate R1. US 5m -0.117%, India 1h -0.142%."
+
+[R5]
+name = "Tudor Jones Macro Filter"
+status = "REJECTED"
+evidence = "661 trades, 36.8% winners, -0.191%/trade net (t=-6.1), PF 0.56. US 5m -0.103%, India 1h -0.149%."
+
+[R6]
+name = "Minervini Momentum Stacking"
+status = "REJECTED"
+evidence = "356 trades, 40.2% winners, -0.117%/trade net (t=-2.7), PF 0.69; 33% of its signals duplicate R1. US 5m -0.172%, India 1h -0.126%."
+
+[R7]
+name = "Stat-Arb Mean Reversion"
+status = "DISABLED"
+evidence = "374 trades, 35.6% winners, -0.188%/trade net (t=-4.4), PF 0.57. Weak pre-cost edge on India 1h (p=0.03) but still -0.092% net; research candidate only."
+
+[R8L]
+name = "Crabel Intraday Expansion"
+status = "REJECTED"
+evidence = "1,234 trades, 39.0% winners, -0.152%/trade net (t=-6.6), PF 0.63. US 5m -0.062%, India 1h -0.144%."
+
+[R8S]
+name = "Crabel Intraday Breakdown"
+status = "REJECTED"
+evidence = "1,274 trades, 43.0% winners, -0.106%/trade net (t=-4.7), PF 0.72. US 5m -0.040%, India 1h -0.137%."

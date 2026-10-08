@@ -28,12 +28,12 @@ if st.sidebar.button("🔄 Scan Market for Signals"):
     with st.spinner("Scanning universe and calculating technicals..."):
         # We only run the detector, NOT the Telegram/AI alerts here
         signals = detector.scan_market()
+        st.session_state['latest_signals'] = signals
+        st.session_state['blocked_count'] = len(detector.last_rejected)
         if signals:
-            st.session_state['latest_signals'] = signals
-            st.sidebar.success(f"Found {len(signals)} setups!")
+            st.sidebar.success(f"Found {len(signals)} approved setups!")
         else:
-            st.session_state['latest_signals'] = []
-            st.sidebar.warning("No active setups found.")
+            st.sidebar.warning("NO TRADE: no approved strategy fired.")
 
 # --- Main Dashboard Area ---
 col1, col2 = st.columns([1, 2]) # Split screen: 1/3 for signals, 2/3 for charts
@@ -51,8 +51,14 @@ with col1:
                 st.write(f"**Target:** ₹{s['target']} 🎯")
                 st.write(f"**Stop Loss:** ₹{s['stop_loss']} 🛑")
                 st.write(f"**RSI:** {s['rsi']}")
+    elif 'latest_signals' in st.session_state:
+        st.info("NO TRADE. Only strategies approved in config/strategies.toml can produce setups, "
+                "and none has passed the profitability gate yet (see README.md).")
+        if st.session_state.get('blocked_count'):
+            st.caption(f"{st.session_state['blocked_count']} candidate signal(s) from rejected or disabled "
+                       "rules were blocked. Do not trade them.")
     else:
-        st.info("Click 'Scan Market' in the sidebar to hunt for trades.")
+        st.info("Click 'Scan Market' in the sidebar to run a scan.")
 
 # Right Column: Interactive Charting
 with col2:

@@ -1,0 +1,25 @@
+# Python bytecode and tool caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+
+# Secrets: real values live only in .env (copy .env.example)
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Local market data (Yahoo data must not be redistributed), logs, generated reports
+data/
+logs/
+reports/
+
+# OS and editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

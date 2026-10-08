@@ -1,0 +1,9 @@
+# Tool configuration only; the project is run from this folder, not installed as a package.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-m 'not slow'"
+markers = [
+    "slow: reproduces the 2026-10-08 audit from the frozen data in data/ (run: pytest -m slow)",
+]

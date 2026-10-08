@@ -1,44 +1,56 @@
+import logging
+
 import requests
 
+log = logging.getLogger("alert_engine")
+
+
 class AlertSystem:
-    def __init__(self, bot_token, chat_id):
-        self.bot_token = bot_token
+    def __init__(self, bot_token, chat_id, timeout_s=10):
+        self._bot_token = bot_token
         self.chat_id = chat_id
-        # This is the official Telegram API endpoint for sending messages
-        self.base_url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
+        self.timeout_s = timeout_s
+        # This is the official Telegram API endpoint for sending messages. It contains the token,
+        # so it must never be printed or logged.
+        self.base_url = f"https://api.telegram.org/bot{self._bot_token}/sendMessage"
+
+    def _redact(self, text):
+        return text.replace(self._bot_token, "***") if self._bot_token else text
 
     def send_telegram_alert(self, message):
         """
-        Sends a formatted text message to your Telegram app.
+        Sends a formatted text message to your Telegram app. Returns True if Telegram accepted it.
         """
+        payload = {
+            "chat_id": self.chat_id,
+            "text": message,
+            "parse_mode": "Markdown"  # This allows us to use bolding and emojis!
+        }
         try:
-            payload = {
-                "chat_id": self.chat_id,
-                "text": message,
-                "parse_mode": "Markdown" # This allows us to use bolding and emojis!
-            }
-            response = requests.post(self.base_url, json=payload)
-            
-            if response.status_code == 200:
-                print("✅ Telegram alert sent to your phone!")
-            else:
-                print(f"⚠️ Failed to send alert. Telegram said: {response.text}")
-                
-        except Exception as e:
-            print(f"❌ Alert System Error: {e}")
+            response = requests.post(self.base_url, json=payload, timeout=self.timeout_s)
+        except Exception as exc:  # network errors include the URL, which contains the token
+            log.error("Telegram alert failed: %s", self._redact(str(exc)))
+            return False
 
-# --- Testing the Alert Engine ---
+        if response.status_code == 200:
+            log.info("Telegram alert sent.")
+            return True
+        log.error("Telegram rejected the alert (HTTP %s): %s", response.status_code, self._redact(response.text[:300]))
+        return False
+
+
+# --- Testing the Alert Engine: `python alert_engine.py` sends one message using the keys in .env ---
 if __name__ == "__main__":
-    # 🚨 REPLACE THESE WITH YOUR ACTUAL KEYS FROM STEP 1 🚨
-    TOKEN = "8375815740:AAENFzSV66W0qheHTSmeoWPsHVjnNesci_8"
-    CHAT_ID = "6669851040"
-    
-    print("Connecting to Telegram...")
-    alerter = AlertSystem(TOKEN, CHAT_ID)
-    
-    test_message = "🚀 *AI Trading Agent Online*\nSystem is connected and ready to hunt for setups!"
-    alerter.send_telegram_alert(test_message)
+    from trader.config import load_settings
+    from trader.logging_setup import configure_logging
 
-    # TELEGRAM_TOKEN = "8375815740:AAENFzSV66W0qheHTSmeoWPsHVjnNesci_8"
-    # TELEGRAM_CHAT_ID = "6669851040"
-    # GEMINI_API_KEY = "AIzaSyAfWysvUdgnqjl46qwHgfrgd3wC7vg4BjU"
+    settings = load_settings()
+    configure_logging(secrets=settings.secret_values())
+    if not settings.telegram_enabled:
+        raise SystemExit("Telegram is not configured: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env (see .env.example).")
+
+    print("Connecting to Telegram...")
+    alerter = AlertSystem(settings.telegram_bot_token.reveal(), settings.telegram_chat_id,
+                          timeout_s=settings.telegram_timeout_seconds)
+    test_message = "🚀 *AI Trading Agent Online*\nConnected. Mode: NO TRADE until a strategy passes the profitability gate."
+    alerter.send_telegram_alert(test_message)
