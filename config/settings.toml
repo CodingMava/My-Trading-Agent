@@ -1,5 +1,13 @@
 # Non-secret runtime settings. Secrets (tokens, API keys) belong in .env, never in this file.
 
+[data]
+# Where the live scanner gets bars: "yahoo" (free, unofficial; fine for research) or "kite" (Zerodha
+# Kite Connect: needs KITE_API_KEY / KITE_API_SECRET in .env and a daily `python -m trader.data.kite login`).
+provider = "yahoo"
+# The newest complete bar may lag the clock (or the last close, outside market hours) by at most
+# this many minutes; staler data ends the scan in NO TRADE.
+max_delay_minutes = 20
+
 [notifications]
 # Telegram alerts go out only for strategies approved in config/strategies.toml, and only when
 # TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set in .env.

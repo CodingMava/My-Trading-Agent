@@ -39,9 +39,12 @@ see [Research](#research).
 | `data_engine.py`, `ta_engine.py`, `universe.py` | Yahoo Finance fetcher, indicators, stock list |
 | `alert_engine.py`, `ai_engine.py` | Telegram alerts; optional Gemini commentary (off by default) |
 | `dashboard.py` | Streamlit dashboard |
-| `config/settings.toml` | Non-secret settings (Telegram, AI) |
+| `config/settings.toml` | Non-secret settings (data source, Telegram, AI) |
 | `config/strategies.toml` | Strategy registry: the profitability gate's source of truth |
+| `config/market_calendars.toml` | NSE and NYSE holidays and session hours (update every December) |
 | `trader/` | Config, logging and registry code |
+| `trader/markets/` | Exchange calendars |
+| `trader/data/` | Data providers (Yahoo, Zerodha Kite) and the checks every bar must pass |
 | `trader/research/` | Backtesting harness: simulator, costs, metrics, validation, audit reproduction |
 | `tests/` | Test suite (`pytest`) |
 | `data/` | Frozen market data for research (git-ignored) |
@@ -68,6 +71,36 @@ streamlit run dashboard.py       # dashboard
 
 Logs go to the console and to `logs/trader.log` (UTF-8, rotated, secrets masked).
 
+## Market data
+
+Before any rule sees a bar, the scanner drops the candle that is still forming and checks the rest:
+fresh enough (`[data] max_delay_minutes`), no duplicates or broken prices, no implausible jump on the
+latest bar. Anything that fails is skipped and logged, which ends in NO TRADE for that stock.
+
+The default source is Yahoo Finance, which is free but unofficial. To use Zerodha Kite Connect instead:
+
+1. Create a Kite Connect app at developers.kite.trade and note its API key and secret.
+2. Add `KITE_API_KEY` and `KITE_API_SECRET` to `.env`, and set `provider = "kite"` under `[data]` in
+   `config/settings.toml`.
+3. Log in once per trading day (Kite sessions expire at 06:00 IST):
+
+```bash
+python -m trader.data.kite login
+```
+
+```bash
+python -m trader.data.kite check RELIANCE.NS
+```
+
+The session token is stored in `.kite_session.json` (git-ignored) and is never printed or logged.
+
+## Market calendars
+
+`config/market_calendars.toml` holds each exchange's holidays and hours, taken from the official lists.
+**Update it every December** when NSE publishes the next year's holidays: for any year that isn't
+listed, the scanner can't tell whether the market is open, so it refuses to trade. It warns throughout
+December if the next year is missing. Add NSE's Muhurat trading session there when it is announced.
+
 ## Research
 
 Every strategy change must be measured with the harness in `trader/research/` before it can be
@@ -77,6 +110,7 @@ approved. Results are always net of costs, and each strategy is compared against
 python -m trader.research.audit                                   # reproduce the audit (India 5-minute)
 python -m trader.research.audit --dataset in_1h_730d --blocks --regimes
 python -m trader.research.datasets fetch --name nse_daily_10y --interval 1d --period 10y --universe nifty
+python -m trader.research.datasets validate data/nse_daily_10y    # data-quality report
 pytest                                                            # fast tests
 pytest -m slow                                                    # audit regression (needs data/audit_2026-10-08)
 ```
@@ -98,6 +132,7 @@ summarize(trades, ZERODHA_DELIVERY.round_trip(100_000), session_dates)
 
 - Only strategies with status `LIVE_SMALL` or `LIVE` in `config/strategies.toml` can emit live
   signals. Unknown strategies are blocked (fail closed).
+- No decision on incomplete, stale or implausible data, and none on a day the calendar can't vouch for.
 - AI never creates, sizes or approves trades.
 - Secrets live only in `.env`. A test fails the build if a credential appears in the repository.
 - US trades are placed manually. Indian order placement (Zerodha Kite Connect) comes later, and only
@@ -108,9 +143,9 @@ summarize(trades, ZERODHA_DELIVERY.round_trip(100_000), session_dates)
 | Phase | Goal | Status |
 |---|---|---|
 | 0 | Containment: secrets out of code, all rules disabled, honest docs, pinned dependencies | Done |
-| 1 | Data: market calendars, validation, Zerodha Kite data for NSE | Next |
+| 1 | Data: market calendars, validation, Zerodha Kite data for NSE | Done (Kite awaiting a live check) |
 | 2 | Backtesting reliability: the harness in `trader/research/` | Foundation done |
-| 3 | Evidence: pre-registered swing-trading hypotheses, tested on frozen data | |
+| 3 | Evidence: pre-registered swing-trading hypotheses, tested on frozen data | Next |
 | 4 | Profitability gate enforced from evidence reports | |
 | 5-6 | Risk engine and portfolio limits | |
 | 7 | Paper trading | |

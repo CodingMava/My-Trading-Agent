@@ -2,7 +2,7 @@
 import re
 import subprocess
 
-from trader.config import ROOT
+from trader.config import ROOT, parse_env_file
 
 # Patterns are split so this file doesn't match itself.
 PATTERNS = {
@@ -10,7 +10,7 @@ PATTERNS = {
     "Google API key": re.compile("AIza" + r"[0-9A-Za-z_\-]{35}"),
     "JSON Web Token": re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\." + r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
 }
-SKIP_DIRS = {".git", "venv", ".venv", "data", "logs", "__pycache__", ".pytest_cache"}
+ROOT_ONLY_SKIPS = {".git", "venv", ".venv", "data", "logs"}  # top-level folders that are never committed
 
 
 def repository_files():
@@ -20,7 +20,12 @@ def repository_files():
                                  cwd=ROOT, capture_output=True, text=True, check=True).stdout
         return [ROOT / line for line in listing.splitlines() if line]
     except (OSError, subprocess.CalledProcessError):
-        return [p for p in ROOT.rglob("*") if p.is_file() and not SKIP_DIRS & set(p.relative_to(ROOT).parts)]
+        files = []
+        for path in ROOT.rglob("*"):
+            parts = path.relative_to(ROOT).parts
+            if path.is_file() and parts[0] not in ROOT_ONLY_SKIPS and "__pycache__" not in parts:
+                files.append(path)
+        return files
 
 
 def test_no_credentials_in_repository_files():
@@ -34,3 +39,9 @@ def test_no_credentials_in_repository_files():
             continue  # binary file
         findings += [f"{path.relative_to(ROOT)}: {label}" for label, rx in PATTERNS.items() if rx.search(text)]
     assert not findings, "Credentials found; move them to .env and rotate them: " + "; ".join(findings)
+
+
+def test_env_example_lists_names_only():
+    """.env.example is committed, so it must never hold real values (those go in the git-ignored .env)."""
+    filled = sorted(name for name, value in parse_env_file(ROOT / ".env.example").items() if value)
+    assert not filled, f".env.example has values for {', '.join(filled)}: move them to .env and leave them blank here"

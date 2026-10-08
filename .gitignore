@@ -4,19 +4,21 @@ __pycache__/
 .pytest_cache/
 
 # Virtual environments
-venv/
-.venv/
+/venv/
+/.venv/
 
-# Secrets: real values live only in .env (copy .env.example)
+# Secrets: real values live only in .env (copy .env.example); Kite's daily session token
 .env
 .env.*
 !.env.example
+/.kite_session.json
 .streamlit/secrets.toml
 
-# Local market data (Yahoo data must not be redistributed), logs, generated reports
-data/
-logs/
-reports/
+# Local market data (Yahoo data must not be redistributed), logs, generated reports.
+# Anchored to the repo root so packages such as trader/data/ are still tracked.
+/data/
+/logs/
+/reports/
 
 # OS and editor noise
 .DS_Store

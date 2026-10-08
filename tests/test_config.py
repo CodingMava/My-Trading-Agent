@@ -1,3 +1,5 @@
+import pytest
+
 from trader.config import Secret, load_settings, parse_env_file
 
 
@@ -34,6 +36,20 @@ def test_ai_needs_the_flag_and_a_key(tmp_path):
 
 def test_ai_is_off_in_the_repository_config():
     assert not load_settings(env={"GEMINI_API_KEY": "k"}).ai_enabled
+
+
+def test_data_provider_settings(tmp_path):
+    default = load_settings(env={})
+    assert default.data_provider == "yahoo" and default.max_data_delay_minutes == 20
+    config = tmp_path / "settings.toml"
+    config.write_text('[data]\nprovider = "kite"\n', encoding="utf-8")
+    without_keys = load_settings(env={}, settings_file=config)
+    assert without_keys.data_provider == "kite" and any("KITE_API_KEY" in w for w in without_keys.warnings)
+    with_keys = load_settings(env={"KITE_API_KEY": "k", "KITE_API_SECRET": "s"}, settings_file=config)
+    assert with_keys.secret_values() == ["k", "s"] and "'s'" not in repr(with_keys)
+    config.write_text('[data]\nprovider = "bloomberg"\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="provider"):
+        load_settings(env={}, settings_file=config)
 
 
 def test_real_environment_overrides_the_env_file(tmp_path, monkeypatch):

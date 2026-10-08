@@ -16,6 +16,7 @@ CONFIG_DIR = ROOT / "config"
 ENV_FILE = ROOT / ".env"
 SETTINGS_FILE = CONFIG_DIR / "settings.toml"
 SUPPORTED_AI_PROVIDERS = ("gemini",)
+SUPPORTED_DATA_PROVIDERS = ("yahoo", "kite")
 
 
 class Secret:
@@ -70,11 +71,16 @@ class Settings:
     ai_provider: str
     ai_model: str
     ai_timeout_seconds: float
+    kite_api_key: Secret
+    kite_api_secret: Secret
+    data_provider: str  # "yahoo" or "kite"
+    max_data_delay_minutes: float
     warnings: tuple[str, ...] = ()
 
     def secret_values(self) -> list[str]:
         """Raw secret strings, for log redaction only."""
-        return [s.reveal() for s in (self.telegram_bot_token, self.gemini_api_key) if s]
+        secrets = (self.telegram_bot_token, self.gemini_api_key, self.kite_api_key, self.kite_api_secret)
+        return [s.reveal() for s in secrets if s]
 
 
 def load_settings(env: dict[str, str] | None = None, settings_file: Path = SETTINGS_FILE,
@@ -84,12 +90,19 @@ def load_settings(env: dict[str, str] | None = None, settings_file: Path = SETTI
         env = {**parse_env_file(env_file), **os.environ}
     with open(settings_file, "rb") as fh:
         cfg = tomllib.load(fh)
-    notifications, ai = cfg.get("notifications", {}), cfg.get("ai", {})
+    notifications, ai, data = cfg.get("notifications", {}), cfg.get("ai", {}), cfg.get("data", {})
 
     token = Secret(env.get("TELEGRAM_BOT_TOKEN"))
     chat_id = (env.get("TELEGRAM_CHAT_ID") or "").strip()
     gemini_key = Secret(env.get("GEMINI_API_KEY"))
+    kite_key, kite_secret = Secret(env.get("KITE_API_KEY")), Secret(env.get("KITE_API_SECRET"))
     warnings = []
+
+    data_provider = str(data.get("provider", "yahoo"))
+    if data_provider not in SUPPORTED_DATA_PROVIDERS:
+        raise ValueError(f"[data] provider must be one of {SUPPORTED_DATA_PROVIDERS}, got {data_provider!r}")
+    if data_provider == "kite" and not (kite_key and kite_secret):
+        warnings.append("Data provider is kite, but KITE_API_KEY / KITE_API_SECRET are not set (see .env.example).")
 
     telegram_enabled = bool(notifications.get("telegram_enabled", True))
     if telegram_enabled and not (token and chat_id):
@@ -115,5 +128,9 @@ def load_settings(env: dict[str, str] | None = None, settings_file: Path = SETTI
         ai_provider=ai_provider,
         ai_model=str(ai.get("model", "gemini-2.5-flash")),
         ai_timeout_seconds=float(ai.get("timeout_seconds", 20)),
+        kite_api_key=kite_key,
+        kite_api_secret=kite_secret,
+        data_provider=data_provider,
+        max_data_delay_minutes=float(data.get("max_delay_minutes", 20)),
         warnings=tuple(warnings),
     )
