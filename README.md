@@ -57,9 +57,12 @@ almost no STT; and any long-only test on today's index members needs a random-pi
 | `config/settings.toml` | Non-secret settings (data source, Telegram, AI) |
 | `config/strategies.toml` | Strategy registry: each strategy's status |
 | `config/gate.toml` | The profitability gate: the evidence each status requires |
+| `config/risk.toml`, `config/sectors.toml` | Hard risk limits; each stock's sector |
 | `config/market_calendars.toml` | NSE and NYSE holidays and session hours (update every December) |
 | `trader/` | Config, logging and registry code |
 | `trader/markets/` | Exchange calendars |
+| `trader/core/` | Shared domain objects (trade intents, positions, portfolio state) |
+| `trader/risk/`, `trader/portfolio/` | Risk engine, kill switch, position sizing, sector and correlation exposure |
 | `trader/data/` | Data providers (Yahoo, Zerodha Kite) and the checks every bar must pass |
 | `trader/features/` | Tested, look-ahead-free indicators (SMA, Wilder RSI, ATR) |
 | `trader/strategies/` | Strategy rules (the Phase 3 swing hypotheses) |
@@ -157,6 +160,13 @@ summarize(trades, ZERODHA_DELIVERY.round_trip(100_000), session_dates)
   needs small-capital live evidence, none older than a year (`config/gate.toml`). Anything else is
   lowered automatically and the scanner logs why.
 - No decision on incomplete, stale or implausible data, and none on a day the calendar can't vouch for.
+- Every trade passes the risk engine (`config/risk.toml`): it risks at most 0.5% of equity, stays within
+  position, cash, liquidity, sector, gross-exposure and correlation limits, and is refused after a 2% daily
+  loss. A 10% drawdown engages the kill switch, which only a person can release:
+
+```bash
+python -m trader.risk.killswitch status
+```
 - AI never creates, sizes or approves trades.
 - Secrets live only in `.env`. A test fails the build if a credential appears in the repository.
 - US trades are placed manually. Indian order placement (Zerodha Kite Connect) comes later, and only
@@ -171,7 +181,7 @@ summarize(trades, ZERODHA_DELIVERY.round_trip(100_000), session_dates)
 | 2 | Backtesting reliability: the harness in `trader/research/` | Done |
 | 3 | Evidence: pre-registered swing-trading hypotheses, tested on frozen data | Done: 0 of 3 passed |
 | 4 | Profitability gate enforced from evidence reports | Done |
-| 5-6 | Risk engine and portfolio limits | |
+| 5-6 | Risk engine and portfolio limits | Done |
 | 7 | Paper trading | |
 | 8 | Zerodha Kite order placement (India) | |
 | 9-12 | AI research layer, full Telegram monitoring, production monitoring, small live trading | |

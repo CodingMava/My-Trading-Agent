@@ -25,3 +25,6 @@ __pycache__/
 Thumbs.db
 .vscode/
 .idea/
+
+# Runtime state: kill switch, paper-trading database
+/state/

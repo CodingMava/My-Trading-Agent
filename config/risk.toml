@@ -1,0 +1,15 @@
+# Hard risk limits. Deterministic: no strategy, AI output or Telegram message can override them.
+# Fractions are of current equity unless stated.
+
+[limits]
+risk_per_trade = 0.005        # money lost if a position's stop is hit
+max_position = 0.20           # largest single position
+max_positions = 5
+max_gross_exposure = 1.0      # everything invested / equity (1.0 = no leverage)
+max_sector_exposure = 0.40
+max_correlation = 0.80        # with any open position, over recent daily returns (when given)
+max_daily_loss = 0.02         # after losing this much today, no new entries until tomorrow
+max_drawdown = 0.10           # from peak equity: the kill switch engages and only a person can release it
+max_stop_distance = 0.15      # a stop further away than this is treated as a mistake
+min_notional = 25000          # in rupees; smaller positions pay too much in fixed charges (Rs 15.34 DP fee per sale)
+max_liquidity_share = 0.01    # a position at most 1% of the stock's average daily traded value
