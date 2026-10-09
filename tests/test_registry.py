@@ -6,7 +6,7 @@ from trader.research.legacy_rules import NAME
 
 def test_every_legacy_rule_is_registered_and_none_may_trade():
     registry = StrategyRegistry.load()
-    assert {r.name for r in registry.records()} == set(NAME.values())
+    assert set(NAME.values()) <= {r.name for r in registry.records()}
     assert registry.live_strategies() == []
     assert {r.status for r in registry.records()} <= {"REJECTED", "DISABLED"}
     assert all(r.evidence for r in registry.records())

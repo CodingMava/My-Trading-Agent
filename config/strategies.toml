@@ -52,3 +52,21 @@ evidence = "1,234 trades, 39.0% winners, -0.152%/trade net (t=-6.6), PF 0.63. US
 name = "Crabel Intraday Breakdown"
 status = "REJECTED"
 evidence = "1,274 trades, 43.0% winners, -0.106%/trade net (t=-4.7), PF 0.72. US 5m -0.040%, India 1h -0.137%."
+
+# Phase 3 swing hypotheses (docs/research/phase3-preregistration.md), judged on the 2022-2026 holdout
+# in docs/research/phase3-results.md. Reproduce: python -m trader.research.phase3
+
+[H1]
+name = "Swing: oversold pullback in an uptrend, NIFTY 50 stocks"
+status = "REJECTED"
+evidence = "1,771 holdout trades, 60.2% winners but -0.050%/trade net (t=-0.67), PF 0.96, avg loss 1.6x avg win. Beat random entries before costs (p=0.04, Holm 0.12), but 0.30% delivery costs exceed that edge."
+
+[H2]
+name = "Swing: oversold pullback in an uptrend, NIFTY 50 index via ETF"
+status = "REJECTED"
+evidence = "46 holdout trades, 63.0% winners, +0.122%/trade net (t=0.60), PF 1.26; lost money 2016-2021; no better than random entry days (Holm p=0.31)."
+
+[H3]
+name = "Swing: 12-1 month momentum, top 5 NIFTY 50 stocks"
+status = "REJECTED"
+evidence = "280 holdout trades, 55.7% winners, +1.18%/trade net (t=2.12), PF 1.40, but 5 random picks from the same list did nearly as well (Holm p=0.31): the profit is the survivorship-biased list's drift, not momentum."

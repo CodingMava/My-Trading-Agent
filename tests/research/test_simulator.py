@@ -3,7 +3,7 @@ import pandas as pd
 import pytest
 
 from tests.helpers import make_bars
-from trader.research.simulator import (STOP, TARGET, TIME, TRADE_COLUMNS, ExitRules, run_backtest,
+from trader.research.simulator import (SIGNAL, STOP, TARGET, TIME, TRADE_COLUMNS, ExitRules, run_backtest,
                                        select_chain, select_trades, session_ids, simulate, trade_rows)
 
 INTRADAY = ExitRules(stop=0.01, target=0.02, square_off_each_session=True)
@@ -147,7 +147,39 @@ def test_trade_rows_and_run_backtest():
     assert list(trades["ticker"]) == ["AAA"] and trades.loc[0, "gross"] == pytest.approx(0.03)
 
 
+# --- rule-based exits (an exit signal on a close sells at the next open) ---
+
+EXIT_AFTER_DAY_2 = np.array([False, False, True, False, False])
+
+
+def test_exit_signal_sells_at_the_next_open():
+    bars = daily([100, 100, 101, 104, 104], [100, 101, 102, 105, 104], [100, 99.5, 100.5, 103, 104],
+                 [100, 100.5, 102, 104, 104])
+    out = simulate(bars, "long", ExitRules(stop=0.05, max_hold_bars=4), exit_signal=EXIT_AFTER_DAY_2)
+    assert out.reason[0] == SIGNAL and out.exit_idx[0] == 3 and out.gross[0] == pytest.approx(0.04)
+
+
+def test_a_stop_hit_before_the_exit_signal_wins():
+    bars = daily([100.0] * 5, [100.0] * 5, [100, 99, 94, 100, 100], [100.0] * 5)
+    out = simulate(bars, "long", ExitRules(stop=0.05, max_hold_bars=4), exit_signal=EXIT_AFTER_DAY_2)
+    assert out.reason[0] == STOP and out.exit_idx[0] == 2 and out.gross[0] == pytest.approx(-0.05)
+
+
+def test_the_exit_open_comes_before_a_stop_touched_later_that_day():
+    bars = daily([100, 100, 100, 101, 100], [100, 100, 100, 101, 100], [100, 99, 99, 90, 100], [100.0] * 5)
+    out = simulate(bars, "long", ExitRules(stop=0.05, max_hold_bars=4), exit_signal=EXIT_AFTER_DAY_2)
+    assert out.reason[0] == SIGNAL and out.gross[0] == pytest.approx(0.01)
+
+
+def test_an_exit_signal_on_the_last_allowed_day_leaves_the_time_exit():
+    bars = daily([100.0] * 5, [102.0] * 5, [100.0] * 5, [100, 100, 102, 102, 102])
+    out = simulate(bars, "long", ExitRules(max_hold_bars=2), exit_signal=EXIT_AFTER_DAY_2)
+    assert out.reason[0] == TIME and out.exit_idx[0] == 2 and out.gross[0] == pytest.approx(0.02)
+
+
 def test_invalid_inputs_are_rejected():
+    with pytest.raises(ValueError):
+        simulate(daily(FLAT, FLAT, FLAT, FLAT), "long", SWING, exit_signal=np.array([True]))
     bars = daily(FLAT, FLAT, FLAT, FLAT)
     with pytest.raises(ValueError):
         ExitRules(stop=0)

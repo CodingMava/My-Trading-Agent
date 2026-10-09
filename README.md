@@ -31,6 +31,21 @@ The same rules also lost money on 20 US large caps and on about 2.8 years of hou
 market regime tested. None beat randomly timed entries with the same exits. To reproduce the numbers,
 see [Research](#research).
 
+## Swing research (Phase 3, 2026-10-09)
+
+Three swing hypotheses were [pre-registered](docs/research/phase3-preregistration.md) before any test,
+then judged on daily data, 2022 to Oct 2026, net of Zerodha costs ([results](docs/research/phase3-results.md)):
+
+| Hypothesis | Trades | Winners | Net per trade | Why it failed | Status |
+|---|---:|---:|---:|---|---|
+| H1: oversold pullback in an uptrend, NIFTY 50 stocks | 1,771 | 60.2% | -0.05% | Losses 1.6x the size of wins; the small edge before costs is smaller than the 0.30% delivery cost | REJECTED |
+| H2: the same on the NIFTY 50 index via an ETF | 46 | 63.0% | +0.12% | Too few trades, not significant, lost money in 2016-2021 | REJECTED |
+| H3: 12-1 month momentum, top 5 NIFTY 50 stocks | 280 | 55.7% | +1.18% | Random picks from the same list did nearly as well: the profit is market drift and survivorship bias | REJECTED |
+
+Lessons: a high win rate means nothing without the size of wins and losses (H1); Indian delivery
+costs (0.1% STT on each side) swamp short-horizon edges in single stocks, while equity ETFs pay
+almost no STT; and any long-only test on today's index members needs a random-pick baseline (H3).
+
 ## Project layout
 
 | Path | What it is |
@@ -45,7 +60,10 @@ see [Research](#research).
 | `trader/` | Config, logging and registry code |
 | `trader/markets/` | Exchange calendars |
 | `trader/data/` | Data providers (Yahoo, Zerodha Kite) and the checks every bar must pass |
-| `trader/research/` | Backtesting harness: simulator, costs, metrics, validation, audit reproduction |
+| `trader/features/` | Tested, look-ahead-free indicators (SMA, Wilder RSI, ATR) |
+| `trader/strategies/` | Strategy rules (the Phase 3 swing hypotheses) |
+| `trader/research/` | Backtesting harness: simulator, costs, metrics, validation, audit and Phase 3 runners |
+| `docs/research/` | Pre-registrations and evidence reports |
 | `tests/` | Test suite (`pytest`) |
 | `data/` | Frozen market data for research (git-ignored) |
 
@@ -111,6 +129,7 @@ python -m trader.research.audit                                   # reproduce th
 python -m trader.research.audit --dataset in_1h_730d --blocks --regimes
 python -m trader.research.datasets fetch --name nse_daily_10y --interval 1d --period 10y --universe nifty
 python -m trader.research.datasets validate data/nse_daily_10y    # data-quality report
+python -m trader.research.phase3                                  # re-run the Phase 3 evaluation
 pytest                                                            # fast tests
 pytest -m slow                                                    # audit regression (needs data/audit_2026-10-08)
 ```
@@ -145,7 +164,7 @@ summarize(trades, ZERODHA_DELIVERY.round_trip(100_000), session_dates)
 | 0 | Containment: secrets out of code, all rules disabled, honest docs, pinned dependencies | Done |
 | 1 | Data: market calendars, validation, Zerodha Kite data for NSE | Done (Kite awaiting a live check) |
 | 2 | Backtesting reliability: the harness in `trader/research/` | Foundation done |
-| 3 | Evidence: pre-registered swing-trading hypotheses, tested on frozen data | Next |
+| 3 | Evidence: pre-registered swing-trading hypotheses, tested on frozen data | Done: 0 of 3 passed |
 | 4 | Profitability gate enforced from evidence reports | |
 | 5-6 | Risk engine and portfolio limits | |
 | 7 | Paper trading | |

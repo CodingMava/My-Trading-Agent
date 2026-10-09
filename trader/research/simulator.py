@@ -9,6 +9,8 @@ These conventions decide results, so they live in one place and are covered by t
     - if the bar opens beyond the stop or the target, the fill is that open (gap-through);
     - if the stop and the target are both touched inside one bar, the stop is assumed to come first,
       unless the bar opened beyond the target;
+    - an optional exit signal, true on a bar's close, sells at the next bar's open (a SIGNAL exit;
+      that open comes before any stop or target touch on the same bar);
     - otherwise the trade closes at the close of its last allowed bar (a TIME exit).
 * The last allowed bar is the session's last bar when ``square_off_each_session`` is set (intraday:
   no position may be opened on that bar). Otherwise it is set by ``max_hold_bars`` /
@@ -22,8 +24,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-TARGET, STOP, TIME = 1, -1, 0
-REASON_NAMES = {TARGET: "target", STOP: "stop", TIME: "time"}
+TARGET, STOP, TIME, SIGNAL = 1, -1, 0, 2
+REASON_NAMES = {TARGET: "target", STOP: "stop", TIME: "time", SIGNAL: "signal"}
 ENTRY_MODES = ("next_open", "signal_close")
 SIDES = ("long", "short")
 TRADE_COLUMNS = ["ticker", "rule", "side", "signal_time", "exit_time", "signal_date", "exit_date",
@@ -55,7 +57,7 @@ class Outcomes:
     """The trade that a signal on each bar would produce, each computed independently."""
     gross: np.ndarray  # gross return as a fraction of the entry price; NaN = no trade possible
     exit_idx: np.ndarray  # bar index of the exit, -1 when there is no trade
-    reason: np.ndarray  # TARGET, STOP or TIME
+    reason: np.ndarray  # TARGET, STOP, TIME or SIGNAL
     risk: np.ndarray  # stop distance used (fraction of entry), NaN when there was no stop
 
 
@@ -82,11 +84,13 @@ def _levels(value, default, n: int) -> np.ndarray:
 
 
 def simulate(bars: pd.DataFrame, side: str, rules: ExitRules, entry: str = "next_open",
-             stop=None, target=None, sessions: np.ndarray | None = None) -> Outcomes:
+             stop=None, target=None, sessions: np.ndarray | None = None,
+             exit_signal: np.ndarray | None = None) -> Outcomes:
     """Outcome of a trade signalled at every bar of one instrument.
 
     `bars` needs open/high/low/close columns and a DatetimeIndex in local exchange time.
     `stop`/`target` may be scalars or per-bar arrays (e.g. ATR-based) that override the rules.
+    `exit_signal` (one boolean per bar) exits at the next open after the first true bar in the trade.
     """
     if side not in SIDES:
         raise ValueError(f"side must be one of {SIDES}")
@@ -96,6 +100,9 @@ def simulate(bars: pd.DataFrame, side: str, rules: ExitRules, entry: str = "next
     n = len(c)
     sess = session_ids(bars.index) if sessions is None else np.asarray(sessions)
     stops, targets = _levels(stop, rules.stop, n), _levels(target, rules.target, n)
+    exits = None if exit_signal is None else np.asarray(exit_signal, dtype=bool)
+    if exits is not None and exits.shape != (n,):
+        raise ValueError(f"exit_signal must have length {n}, got shape {exits.shape}")
     gross = np.full(n, np.nan)
     exit_idx = np.full(n, -1, dtype=np.int64)
     reason = np.zeros(n, dtype=np.int8)
@@ -136,8 +143,15 @@ def simulate(bars: pd.DataFrame, side: str, rules: ExitRules, entry: str = "next
             hit_target = l[seg] <= target_px if has_target else None
         js = int(hit_stop.argmax()) if hit_stop is not None and hit_stop.any() else _NEVER
         jt = int(hit_target.argmax()) if hit_target is not None and hit_target.any() else _NEVER
+        jx = _NEVER  # offset of the bar whose open fills a signal exit
+        if exits is not None and end > s:
+            flagged = exits[s:end]  # a signal on the last allowed bar would be overtaken by the time exit
+            if flagged.any():
+                jx = int(flagged.argmax()) + 1
 
-        if js == _NEVER and jt == _NEVER:
+        if jx != _NEVER and jx <= js and jx <= jt:
+            j, x, r = s + jx, o[s + jx], SIGNAL
+        elif js == _NEVER and jt == _NEVER:
             j, x, r = end, c[end], TIME
         elif jt < js:
             j, r = s + jt, TARGET
@@ -208,16 +222,17 @@ def concat_trades(frames: list[pd.DataFrame]) -> pd.DataFrame:
 
 def run_backtest(bars_by_ticker: dict[str, pd.DataFrame], signals: dict[str, np.ndarray], side: str,
                  rules: ExitRules, entry: str = "next_open", stops: dict | None = None,
-                 targets: dict | None = None, rule: str = "") -> pd.DataFrame:
+                 targets: dict | None = None, rule: str = "", exits: dict | None = None) -> pd.DataFrame:
     """Simulate one strategy across many instruments; returns all trades.
 
     `signals[ticker]` is a boolean array aligned with `bars_by_ticker[ticker]`; `stops`/`targets`
-    optionally map tickers to per-bar distance arrays (e.g. 2 x ATR / close)."""
+    optionally map tickers to per-bar distance arrays (e.g. 2 x ATR / close), and `exits` to per-bar
+    exit signals."""
     frames = []
     for ticker, bars in bars_by_ticker.items():
         if ticker not in signals:
             continue
-        out = simulate(bars, side, rules, entry,
-                       stop=(stops or {}).get(ticker), target=(targets or {}).get(ticker))
+        out = simulate(bars, side, rules, entry, stop=(stops or {}).get(ticker),
+                       target=(targets or {}).get(ticker), exit_signal=(exits or {}).get(ticker))
         frames.append(trade_rows(ticker, bars.index, select_trades(signals[ticker], out), out, side, rule))
     return concat_trades(frames)

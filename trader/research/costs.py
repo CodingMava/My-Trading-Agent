@@ -69,6 +69,14 @@ ZERODHA_DELIVERY = CostModel(
     slippage_per_side=0.0003, verified="2026-10-08",
 )
 
+# Equity ETFs (e.g. a NIFTY 50 ETF) on delivery at Zerodha: STT is only 0.001% and only on the sell
+# side, about a hundredth of the rate on stocks; other charges as for stocks.
+ZERODHA_ETF_DELIVERY = CostModel(
+    name="NSE equity ETF delivery (Zerodha)", stt_sell=0.00001, exchange_rate=0.0000297,
+    sebi_rate=0.000001, stamp_buy=0.00015, gst_rate=0.18, fixed_per_sell=15.34,
+    slippage_per_side=0.0003, verified="2026-10-09",
+)
+
 # US equities at a commission-free broker (US trades are placed manually). Check the current SEC
 # Section 31 rate; FINRA's per-share TAF is negligible at these sizes and is ignored.
 US_COMMISSION_FREE = CostModel(

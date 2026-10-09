@@ -4,7 +4,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from trader.research.simulator import STOP, TARGET, TIME
+from trader.research.simulator import SIGNAL, STOP, TARGET, TIME
 
 
 def summarize(trades: pd.DataFrame, cost: float, session_dates, min_trades_per_ticker: int = 3) -> dict:
@@ -60,6 +60,7 @@ def summarize(trades: pd.DataFrame, cost: float, session_dates, min_trades_per_t
         "target_pct": 100 * (reason == TARGET).mean(),
         "stop_pct": 100 * (reason == STOP).mean(),
         "time_pct": 100 * (reason == TIME).mean(),
+        "signal_pct": 100 * (reason == SIGNAL).mean(),
         "avg_hold_bars": trades["hold_bars"].astype(float).mean(),
         "first_half_exp_pct": 100 * first.mean() if len(first) else np.nan,
         "first_half_trades": len(first),
