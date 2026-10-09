@@ -8,7 +8,7 @@ strategy ran, and this runner refuses to judge against a different version of th
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import asdict
 from datetime import date, datetime
 
 import numpy as np
@@ -16,6 +16,7 @@ import pandas as pd
 
 from trader.config import ROOT
 from trader.features.indicators import sma
+from trader.gate import Evidence, ResearchThresholds, decide, research_checks, save_evidence
 from trader.logging_setup import make_console_utf8
 from trader.research.costs import US_COMMISSION_FREE, ZERODHA_DELIVERY, ZERODHA_ETF_DELIVERY
 from trader.research.datasets import DATA_DIR, load_dataset
@@ -32,7 +33,7 @@ DATA = DATA_DIR / "phase3"
 EVAL_START, HOLDOUT_START, EVAL_END = date(2016, 1, 1), date(2022, 1, 1), date(2026, 10, 8)
 COSTS = {"stocks": ZERODHA_DELIVERY.round_trip(100_000), "etf": ZERODHA_ETF_DELIVERY.round_trip(100_000),
          "us": US_COMMISSION_FREE.round_trip(10_000)}
-STRESS, ALPHA = 1.5, 0.05
+STRESS = 1.5
 # Unadjusted corporate actions found by the data-quality report before any strategy ran. Yahoo didn't
 # adjust these series, so each is split at the event: no trade or indicator spans the fake jump.
 CORPORATE_ACTION_BREAKS = {
@@ -42,6 +43,12 @@ CORPORATE_ACTION_BREAKS = {
 }
 RANDOM_BASELINE = {"H1": "random days, same stocks, same exits", "H2": "random days, same index, same exits",
                    "H3": "5 random stocks from the same month's eligible list"}
+# The criteria exactly as pre-registered. Written out here, not read from config/gate.toml, so later
+# changes to the gate can't change how these hypotheses were judged.
+PREREGISTERED = ResearchThresholds(min_trades=50, min_win_rate=0.50, min_profit_factor=1.3, min_t_stat=2.0,
+                                   max_p_value=0.05, cost_stress=1.5, max_loss_to_win=1.5, worst_trade_r=-3.0,
+                                   min_positive_years=0.70, min_trades_per_year=10, min_breadth=0.60,
+                                   min_trades_per_stock=5)
 
 
 def check_preregistration() -> str:
@@ -167,72 +174,29 @@ def holm(p_values: dict[str, float]) -> dict[str, float]:
     return adjusted
 
 
-@dataclass
-class Check:
-    number: int
-    criterion: str
-    value: str
-    passed: bool
-
-
-def yearly(trades: pd.DataFrame, cost: float) -> pd.DataFrame:
-    years = pd.Series([d.year for d in trades["signal_date"]], index=trades.index)
-    net = trades["gross"] - cost
-    table = pd.DataFrame({"trades": net.groupby(years).size(), "win_pct": 100 * (net > 0).groupby(years).mean(),
-                          "exp_net_pct": 100 * net.groupby(years).mean()})
-    table.index.name = "year"
-    return table
-
-
 def evaluate(trades: pd.DataFrame, cost: float, pieces: dict, p_holm: float, stocks: bool):
-    """The pre-registered criteria, scored on the holdout (base costs unless stated)."""
-    design = trades[trades["signal_date"] < HOLDOUT_START]
-    holdout = trades[trades["signal_date"] >= HOLDOUT_START]
-    stats = {"design": summarize(design, cost, trading_days(pieces, EVAL_START, date(2021, 12, 31))),
-             "holdout": summarize(holdout, cost, trading_days(pieces, HOLDOUT_START, EVAL_END)),
-             "all": summarize(trades, cost, trading_days(pieces, EVAL_START, EVAL_END))}
-    h, d = stats["holdout"], stats["design"]
-    n = h.get("trades", 0)
-    net = holdout["gross"] - cost
-    stress = 100 * (holdout["gross"] - STRESS * cost).mean() if n else np.nan
-    worst_r = float((net / holdout["risk"]).min()) if n and holdout["risk"].notna().all() else np.nan
-    by_year = yearly(trades, cost)
-    counted = by_year[by_year["trades"] >= 10]
-    share_years = (counted["exp_net_pct"] > 0).mean() if len(counted) else np.nan
-    checks = [
-        Check(1, "At least 50 holdout trades", f"{n}", n >= 50),
-        Check(2, "Win rate at least 50%", f"{h.get('win_pct', np.nan):.1f}%", n > 0 and h["win_pct"] >= 50),
-        Check(3, "Expectancy above 0 at base and 1.5x costs", f"{h.get('exp_net_pct', np.nan):+.3f}% / {stress:+.3f}%",
-              n > 0 and h["exp_net_pct"] > 0 and stress > 0),
-        Check(4, "t-statistic at least 2.0", f"{h.get('t_stat', np.nan):.2f}", n > 2 and h["t_stat"] >= 2.0),
-        Check(5, "Beats random entries (Holm-adjusted p < 0.05)", f"{p_holm:.3f}", p_holm < ALPHA),
-        Check(6, "Profit factor at least 1.3", f"{h.get('profit_factor', np.nan):.2f}", n > 0 and h["profit_factor"] >= 1.3),
-        Check(7, "Avg loss at most 1.5x avg win" + ("; worst trade no worse than -3R" if not np.isnan(worst_r) else ""),
-              f"{h.get('avg_loss_pct', np.nan):+.2f}% vs {h.get('avg_win_pct', np.nan):+.2f}%"
-              + (f"; worst {worst_r:+.1f}R" if not np.isnan(worst_r) else ""),
-              n > 0 and abs(h["avg_loss_pct"]) <= 1.5 * h["avg_win_pct"] and (np.isnan(worst_r) or worst_r >= -3)),
-        Check(8, "Design-period expectancy also above 0", f"{d.get('exp_net_pct', np.nan):+.3f}%",
-              d.get("trades", 0) > 0 and d["exp_net_pct"] > 0),
-        Check(9, "At least 70% of years (10+ trades) positive", f"{share_years:.0%} of {len(counted)} years",
-              bool(share_years >= 0.7)),
-    ]
-    if stocks:
-        all_net = trades["gross"] - cost
-        per_stock = all_net.groupby(trades["ticker"]).agg(["mean", "count", "sum"])
-        counted_stocks = per_stock[per_stock["count"] >= 5]
-        breadth = (counted_stocks["mean"] > 0).mean() if len(counted_stocks) else np.nan
-        top = per_stock["sum"].idxmax() if len(per_stock) else None
-        without_top = 100 * all_net[trades["ticker"] != top].mean() if top else np.nan
-        checks.append(Check(10, "60%+ of stocks profitable; still positive without the top stock",
-                            f"{breadth:.0%} of {len(counted_stocks)} stocks; {without_top:+.3f}% without {top}",
-                            bool(breadth >= 0.6 and without_top > 0)))
-    return stats, checks, by_year, decide(checks), stress, worst_r
+    """The pre-registered criteria (via the shared gate), scored on the holdout."""
+    days = {"design": trading_days(pieces, EVAL_START, date(2021, 12, 31)),
+            "holdout": trading_days(pieces, HOLDOUT_START, EVAL_END),
+            "all": trading_days(pieces, EVAL_START, EVAL_END)}
+    checks, details = research_checks(trades, cost, HOLDOUT_START, days, p_holm, stocks, PREREGISTERED)
+    return details["stats"], checks, details["by_year"], decide(checks), details["stress"], details["worst_r"]
 
 
-def decide(checks: list[Check]) -> str:
-    """Pre-registered: all pass -> PAPER; only the sample-size check fails -> RESEARCH; else REJECTED."""
-    failed = [c.number for c in checks if not c.passed]
-    return "PAPER" if not failed else ("RESEARCH" if failed == [1] else "REJECTED")
+def evidence_for(key: str, result: dict, digest: str) -> Evidence:
+    """The machine-readable verdict the registry checks (docs/research/evidence/<id>.research.json)."""
+    holdout = result["trades"][result["trades"]["signal_date"] >= HOLDOUT_START]
+    net = holdout["gross"] - result["cost"]
+    h = result["stats"]["holdout"]
+    return Evidence(
+        strategy_id=key, kind="research", decision=result["decision"], generated=date.today().isoformat(),
+        source="docs/research/phase3-results.md (python -m trader.research.phase3)",
+        checks=tuple(asdict(c) for c in result["checks"]),
+        stats={"holdout_trades": int(len(net)), "holdout_win_rate": float((net > 0).mean()),
+               "holdout_mean_net": float(net.mean()), "holdout_sd_net": float(net.std(ddof=1)),
+               "holdout_profit_factor": float(h["profit_factor"]), "holdout_t": float(h["t_stat"]),
+               "p_random_raw": result["raw_p"], "p_random_holm": result["holm_p"], "round_trip_cost": result["cost"]},
+        preregistration_sha256=digest)
 
 
 def _pct(value) -> str:
@@ -299,6 +263,8 @@ def run(write: bool = True) -> dict:
     portfolios = momentum_portfolio_view(panel, index["^NSEI"])
     if write:
         write_report(digest, results, us_rows, stock_notes, index_notes, raw_stocks, portfolios)
+        for key, result in results.items():
+            save_evidence(evidence_for(key, result, digest))
     return results
 
 

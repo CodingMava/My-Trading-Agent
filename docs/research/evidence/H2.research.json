@@ -1,0 +1,75 @@
+{
+  "strategy_id": "H2",
+  "kind": "research",
+  "decision": "REJECTED",
+  "generated": "2026-10-09",
+  "source": "docs/research/phase3-results.md (python -m trader.research.phase3)",
+  "checks": [
+    {
+      "number": 1,
+      "criterion": "At least 50 holdout trades",
+      "value": "46",
+      "passed": false
+    },
+    {
+      "number": 2,
+      "criterion": "Win rate at least 50%",
+      "value": "63.0%",
+      "passed": "True"
+    },
+    {
+      "number": 3,
+      "criterion": "Expectancy above 0 at base and 1.5x costs",
+      "value": "+0.122% / +0.073%",
+      "passed": "True"
+    },
+    {
+      "number": 4,
+      "criterion": "t-statistic at least 2.0",
+      "value": "0.60",
+      "passed": "False"
+    },
+    {
+      "number": 5,
+      "criterion": "Beats random entries (Holm-adjusted p < 0.05)",
+      "value": "0.309",
+      "passed": false
+    },
+    {
+      "number": 6,
+      "criterion": "Profit factor at least 1.3",
+      "value": "1.26",
+      "passed": "False"
+    },
+    {
+      "number": 7,
+      "criterion": "Avg loss at most 1.5x avg win; worst trade no worse than -3R",
+      "value": "-1.25% vs +0.93%; worst -1.1R",
+      "passed": true
+    },
+    {
+      "number": 8,
+      "criterion": "Design-period expectancy also above 0",
+      "value": "-0.097%",
+      "passed": "False"
+    },
+    {
+      "number": 9,
+      "criterion": "At least 70% of years (10+ trades) positive",
+      "value": "67% of 6 years",
+      "passed": false
+    }
+  ],
+  "stats": {
+    "holdout_trades": 46,
+    "holdout_win_rate": 0.6304347826086957,
+    "holdout_mean_net": 0.0012194652983045947,
+    "holdout_sd_net": 0.013827554103311593,
+    "holdout_profit_factor": 1.2634721398935331,
+    "holdout_t": 0.5981402057281595,
+    "p_random_raw": 0.1545,
+    "p_random_holm": 0.309,
+    "round_trip_cost": 0.000985852
+  },
+  "preregistration_sha256": "4be087a7804f649981adee6fe9d194ddbb0c24a513b54bf718b7cc8c7dd536a2"
+}

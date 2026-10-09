@@ -1,0 +1,34 @@
+# The profitability gate: the evidence a strategy needs before it may paper trade (PAPER) or trade
+# real money (LIVE_SMALL, then LIVE). The registry enforces it when it loads: a strategy can only
+# hold the status its evidence (docs/research/evidence/) supports.
+
+[research]
+# Backtest criteria, judged on the holdout period, net of base costs unless stated.
+min_trades = 50
+min_win_rate = 0.50          # the "not mostly losing" floor
+min_profit_factor = 1.3
+min_t_stat = 2.0
+max_p_value = 0.05           # beating the random baseline, after Holm correction
+cost_stress = 1.5            # expectancy must stay positive with costs this many times higher
+max_loss_to_win = 1.5        # average loss at most this multiple of the average win
+worst_trade_r = -3.0         # with a stop: no trade worse than this many R
+min_positive_years = 0.70    # share of calendar years (with min_trades_per_year trades) in profit
+min_trades_per_year = 10
+min_breadth = 0.60           # stock strategies: share of stocks (with min_trades_per_stock trades) in profit
+min_trades_per_stock = 5
+
+[paper]
+# Paper-trading criteria before LIVE_SMALL.
+min_weeks = 8
+min_trades = 40
+max_cost_ratio = 1.5         # realised costs at most this multiple of the modelled costs
+# The paper expectancy must also sit inside the research holdout's 95% confidence interval.
+
+[evidence]
+max_age_days = 365           # older evidence no longer supports PAPER or LIVE statuses
+
+[decay]
+# Watching paper and live trades.
+window = 50                  # most recent trades considered
+max_win_rate_drop = 0.15     # rolling win rate this far below research: demote
+max_drawdown_r = 20          # drawdown (in R) beyond this since trading began: disable

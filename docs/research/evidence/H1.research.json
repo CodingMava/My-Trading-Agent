@@ -1,0 +1,81 @@
+{
+  "strategy_id": "H1",
+  "kind": "research",
+  "decision": "REJECTED",
+  "generated": "2026-10-09",
+  "source": "docs/research/phase3-results.md (python -m trader.research.phase3)",
+  "checks": [
+    {
+      "number": 1,
+      "criterion": "At least 50 holdout trades",
+      "value": "1771",
+      "passed": true
+    },
+    {
+      "number": 2,
+      "criterion": "Win rate at least 50%",
+      "value": "60.2%",
+      "passed": "True"
+    },
+    {
+      "number": 3,
+      "criterion": "Expectancy above 0 at base and 1.5x costs",
+      "value": "-0.050% / -0.199%",
+      "passed": "False"
+    },
+    {
+      "number": 4,
+      "criterion": "t-statistic at least 2.0",
+      "value": "-0.67",
+      "passed": "False"
+    },
+    {
+      "number": 5,
+      "criterion": "Beats random entries (Holm-adjusted p < 0.05)",
+      "value": "0.120",
+      "passed": false
+    },
+    {
+      "number": 6,
+      "criterion": "Profit factor at least 1.3",
+      "value": "0.96",
+      "passed": "False"
+    },
+    {
+      "number": 7,
+      "criterion": "Avg loss at most 1.5x avg win; worst trade no worse than -3R",
+      "value": "-2.92% vs +1.85%; worst -2.5R",
+      "passed": "False"
+    },
+    {
+      "number": 8,
+      "criterion": "Design-period expectancy also above 0",
+      "value": "+0.085%",
+      "passed": "True"
+    },
+    {
+      "number": 9,
+      "criterion": "At least 70% of years (10+ trades) positive",
+      "value": "55% of 11 years",
+      "passed": false
+    },
+    {
+      "number": 10,
+      "criterion": "60%+ of stocks profitable; still positive without the top stock",
+      "value": "52% of 50 stocks; +0.005% without HINDALCO.NS",
+      "passed": false
+    }
+  ],
+  "stats": {
+    "holdout_trades": 1771,
+    "holdout_win_rate": 0.6019198193111237,
+    "holdout_mean_net": -0.0005014813205203881,
+    "holdout_sd_net": 0.03129346559586993,
+    "holdout_profit_factor": 0.9568454379184285,
+    "holdout_t": -0.6743888474371404,
+    "p_random_raw": 0.04,
+    "p_random_holm": 0.12,
+    "round_trip_cost": 0.0029758519999999998
+  },
+  "preregistration_sha256": "4be087a7804f649981adee6fe9d194ddbb0c24a513b54bf718b7cc8c7dd536a2"
+}

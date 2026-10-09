@@ -55,7 +55,8 @@ almost no STT; and any long-only test on today's index members needs a random-pi
 | `alert_engine.py`, `ai_engine.py` | Telegram alerts; optional Gemini commentary (off by default) |
 | `dashboard.py` | Streamlit dashboard |
 | `config/settings.toml` | Non-secret settings (data source, Telegram, AI) |
-| `config/strategies.toml` | Strategy registry: the profitability gate's source of truth |
+| `config/strategies.toml` | Strategy registry: each strategy's status |
+| `config/gate.toml` | The profitability gate: the evidence each status requires |
 | `config/market_calendars.toml` | NSE and NYSE holidays and session hours (update every December) |
 | `trader/` | Config, logging and registry code |
 | `trader/markets/` | Exchange calendars |
@@ -63,7 +64,7 @@ almost no STT; and any long-only test on today's index members needs a random-pi
 | `trader/features/` | Tested, look-ahead-free indicators (SMA, Wilder RSI, ATR) |
 | `trader/strategies/` | Strategy rules (the Phase 3 swing hypotheses) |
 | `trader/research/` | Backtesting harness: simulator, costs, metrics, validation, audit and Phase 3 runners |
-| `docs/research/` | Pre-registrations and evidence reports |
+| `docs/research/` | Pre-registrations, evidence reports, and machine-readable verdicts (`evidence/`) |
 | `tests/` | Test suite (`pytest`) |
 | `data/` | Frozen market data for research (git-ignored) |
 
@@ -151,6 +152,10 @@ summarize(trades, ZERODHA_DELIVERY.round_trip(100_000), session_dates)
 
 - Only strategies with status `LIVE_SMALL` or `LIVE` in `config/strategies.toml` can emit live
   signals. Unknown strategies are blocked (fail closed).
+- A status must be earned, not typed: when the registry loads, `PAPER` needs passing research evidence
+  in `docs/research/evidence/`, `LIVE_SMALL` also needs passing paper-trading evidence, and `LIVE` also
+  needs small-capital live evidence, none older than a year (`config/gate.toml`). Anything else is
+  lowered automatically and the scanner logs why.
 - No decision on incomplete, stale or implausible data, and none on a day the calendar can't vouch for.
 - AI never creates, sizes or approves trades.
 - Secrets live only in `.env`. A test fails the build if a credential appears in the repository.
@@ -163,9 +168,9 @@ summarize(trades, ZERODHA_DELIVERY.round_trip(100_000), session_dates)
 |---|---|---|
 | 0 | Containment: secrets out of code, all rules disabled, honest docs, pinned dependencies | Done |
 | 1 | Data: market calendars, validation, Zerodha Kite data for NSE | Done (Kite awaiting a live check) |
-| 2 | Backtesting reliability: the harness in `trader/research/` | Foundation done |
+| 2 | Backtesting reliability: the harness in `trader/research/` | Done |
 | 3 | Evidence: pre-registered swing-trading hypotheses, tested on frozen data | Done: 0 of 3 passed |
-| 4 | Profitability gate enforced from evidence reports | |
+| 4 | Profitability gate enforced from evidence reports | Done |
 | 5-6 | Risk engine and portfolio limits | |
 | 7 | Paper trading | |
 | 8 | Zerodha Kite order placement (India) | |

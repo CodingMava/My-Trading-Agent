@@ -219,6 +219,8 @@ def main(argv=None):
     calendar = nse_calendar()
 
     registry = StrategyRegistry.load()
+    for problem in registry.problems:
+        log.warning("Registry: %s", problem)
     live = registry.live_strategies()
     alerter = None
     if settings.telegram_enabled:

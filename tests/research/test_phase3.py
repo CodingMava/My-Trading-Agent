@@ -5,7 +5,8 @@ import pandas as pd
 import pytest
 
 from tests.helpers import daily_session_bars
-from trader.research.phase3 import Check, check_preregistration, clean_daily, decide, holm, selection_test
+from trader.gate import Check, decide
+from trader.research.phase3 import check_preregistration, clean_daily, holm, selection_test
 
 
 def test_the_preregistration_is_unchanged():
