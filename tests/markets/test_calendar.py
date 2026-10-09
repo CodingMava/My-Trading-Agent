@@ -55,7 +55,8 @@ def test_special_sessions_open_otherwise_closed_days():
 
 def test_symbols_map_to_exchange_calendars():
     assert calendar_for_symbol("RELIANCE.NS", CALENDARS) is NSE
-    assert calendar_for_symbol("^NSEI", CALENDARS) is NSE
+    for index in ("^NSEI", "^NSEBANK", "^CNXIT", "^CNXPHARMA", "^NSMIDCP", "^CRSLDX", "^INDIAVIX"):
+        assert calendar_for_symbol(index, CALENDARS) is NSE, index
     assert calendar_for_symbol("AAPL", CALENDARS) is NYSE and calendar_for_symbol("^GSPC", CALENDARS) is NYSE
     with pytest.raises(CalendarCoverageError):
         calendar_for_symbol("RELIANCE.BO", CALENDARS)  # no BSE calendar configured yet

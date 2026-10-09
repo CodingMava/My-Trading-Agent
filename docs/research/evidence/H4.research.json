@@ -1,0 +1,89 @@
+{
+  "strategy_id": "H4",
+  "kind": "research",
+  "decision": "REJECTED",
+  "generated": "2026-10-09",
+  "source": "docs/research/round2-results.md (python -m trader.research.round2)",
+  "checks": [
+    {
+      "number": 1,
+      "criterion": "At least 50 holdout trades",
+      "value": "2607",
+      "passed": true
+    },
+    {
+      "number": 2,
+      "criterion": "Win rate at least 50%",
+      "value": "62.0%",
+      "passed": "True"
+    },
+    {
+      "number": 3,
+      "criterion": "Expectancy above 0 at base and 1.5x costs",
+      "value": "+0.162% / +0.141%",
+      "passed": "True"
+    },
+    {
+      "number": 4,
+      "criterion": "t-statistic at least 2.0",
+      "value": "2.39",
+      "passed": "True"
+    },
+    {
+      "number": 5,
+      "criterion": "Beats random entries (Holm-adjusted p < 0.05)",
+      "value": "0.431",
+      "passed": false
+    },
+    {
+      "number": 6,
+      "criterion": "Profit factor at least 1.3",
+      "value": "1.14",
+      "passed": "False"
+    },
+    {
+      "number": 7,
+      "criterion": "Avg loss at most 1.5x avg win; worst trade no worse than -3R",
+      "value": "-3.04% vs +2.13%; worst -3.4R",
+      "passed": false
+    },
+    {
+      "number": 8,
+      "criterion": "Design-period expectancy also above 0",
+      "value": "+0.159%",
+      "passed": "True"
+    },
+    {
+      "number": 9,
+      "criterion": "At least 70% of years (10+ trades) positive",
+      "value": "82% of 11 years",
+      "passed": true
+    },
+    {
+      "number": 10,
+      "criterion": "60%+ of stocks profitable; still positive without the top stock",
+      "value": "68% of 82 stocks; +0.143% without PLTR",
+      "passed": true
+    },
+    {
+      "number": 11,
+      "criterion": "Cluster-robust t-statistic (signal weeks as clusters) at least 2.0",
+      "value": "1.40",
+      "passed": false
+    }
+  ],
+  "stats": {
+    "holdout_trades": 2607,
+    "holdout_win_rate": 0.6198695818948984,
+    "holdout_mean_net": 0.00162372256272341,
+    "holdout_sd_net": 0.03475592143465422,
+    "holdout_profit_factor": 1.1403135822517867,
+    "holdout_t": 2.385357813850842,
+    "holdout_t_clustered": 1.3953736528607814,
+    "p_random_raw": 0.2155,
+    "p_random_holm": 0.431,
+    "p_random_independent": 0.1355,
+    "round_trip_cost": 0.00042780000000000004
+  },
+  "preregistration_sha256": "f61e6ee0181c1e6266c55af6f2efe8ceead438f8a9075c7ad504784296b3b735"
+}

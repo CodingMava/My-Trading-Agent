@@ -113,9 +113,13 @@ def load_calendars(path: Path = CALENDARS_FILE) -> dict[str, MarketCalendar]:
     return calendars
 
 
+NSE_INDEX_PREFIXES = ("^NSE", "^NSM", "^CNX", "^CRSL", "^INDIAVIX")  # ^NSEBANK, ^NSMIDCP, ^CNXIT, ^CRSLDX
+
+
 def exchange_for_symbol(symbol: str) -> str:
-    """Yahoo-style symbols: RELIANCE.NS and ^NSEI -> NSE, RELIANCE.BO -> BSE, AAPL and ^GSPC -> NYSE."""
-    if symbol.endswith(".NS") or symbol.startswith("^NSE") or symbol == "^INDIAVIX":
+    """Yahoo-style symbols: RELIANCE.NS and NSE indices (^NSEI, ^CNXIT...) -> NSE, RELIANCE.BO -> BSE,
+    AAPL and ^GSPC -> NYSE."""
+    if symbol.endswith(".NS") or symbol.startswith(NSE_INDEX_PREFIXES):
         return "NSE"
     if symbol.endswith(".BO"):
         return "BSE"

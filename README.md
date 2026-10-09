@@ -46,6 +46,22 @@ Lessons: a high win rate means nothing without the size of wins and losses (H1);
 costs (0.1% STT on each side) swamp short-horizon edges in single stocks, while equity ETFs pay
 almost no STT; and any long-only test on today's index members needs a random-pick baseline (H3).
 
+## Research round 2 (2026-10-09)
+
+The H1 rules, unchanged, were [pre-registered](docs/research/round2-preregistration.md) on three markets
+that no earlier test had touched and where trading is cheap, then judged on 2022 to Oct 2026
+([results](docs/research/round2-results.md)):
+
+| Hypothesis | Trades | Winners | Net per trade | Why it failed | Status |
+|---|---:|---:|---:|---|---|
+| H4: US large caps (82 S&P 100 stocks) | 2,607 | 62.0% | +0.16% | Random entry days in the same stocks made most of the profit; earnings gaps cost up to 3.4R | REJECTED |
+| H5: Indian index ETFs (BANK, IT, PHARMA, NEXT 50) | 143 | 54.5% | -0.06% | The 2016-2021 edge (+0.31% per trade) vanished after 2021 | REJECTED |
+| H6: US sector ETFs (the 11 SPDRs) | 431 | 65.2% | +0.24% | Consistently profitable, but not clearly better than random entry days (p = 0.07; 0.21 after correcting for three tests) | REJECTED |
+
+This round added a stricter random baseline (trades entered on the same day in correlated instruments
+count as one bet) and a cluster-robust t-statistic. H6 is the strongest lead so far, but it can only be
+confirmed on data it hasn't seen, such as its signals recorded from now on, never by re-testing it here.
+
 ## Project layout
 
 | Path | What it is |
@@ -164,8 +180,9 @@ python -m trader.research.audit --dataset in_1h_730d --blocks --regimes
 python -m trader.research.datasets fetch --name nse_daily_10y --interval 1d --period 10y --universe nifty
 python -m trader.research.datasets validate data/nse_daily_10y    # data-quality report
 python -m trader.research.phase3                                  # re-run the Phase 3 evaluation
+python -m trader.research.round2                                  # re-run research round 2
 pytest                                                            # fast tests
-pytest -m slow                                                    # audit regression (needs data/audit_2026-10-08)
+pytest -m slow                                                    # research regressions (need the frozen data in data/)
 ```
 
 Swing trading (the next research focus) uses the same simulator with multi-day holding, per-signal
@@ -210,6 +227,7 @@ python -m trader.risk.killswitch status
 | 1 | Data: market calendars, validation, Zerodha Kite data for NSE | Done (Kite awaiting a live check) |
 | 2 | Backtesting reliability: the harness in `trader/research/` | Done |
 | 3 | Evidence: pre-registered swing-trading hypotheses, tested on frozen data | Done: 0 of 3 passed |
+| 3b | Research round 2: the same rules on US stocks, US sector ETFs and Indian index ETFs | Done: 0 of 3 passed |
 | 4 | Profitability gate enforced from evidence reports | Done |
 | 5-6 | Risk engine and portfolio limits | Done |
 | 7 | Paper trading (end-of-day, for swing strategies) | Done: no strategy is eligible yet |

@@ -70,3 +70,21 @@ evidence = "46 holdout trades, 63.0% winners, +0.122%/trade net (t=0.60), PF 1.2
 name = "Swing: 12-1 month momentum, top 5 NIFTY 50 stocks"
 status = "REJECTED"
 evidence = "280 holdout trades, 55.7% winners, +1.18%/trade net (t=2.12), PF 1.40, but 5 random picks from the same list did nearly as well (Holm p=0.31): the profit is the survivorship-biased list's drift, not momentum."
+
+# Research round 2 (docs/research/round2-preregistration.md): the H1 rules unchanged on new markets,
+# judged on the 2022-2026 holdout in docs/research/round2-results.md. Reproduce: python -m trader.research.round2
+
+[H4]
+name = "Swing: oversold pullback in an uptrend, US large caps"
+status = "REJECTED"
+evidence = "2,607 holdout trades on 82 S&P 100 stocks, 62.0% winners, +0.162%/trade net, PF 1.14; random entry days in the same stocks made most of it (p=0.22, Holm 0.43); cluster-robust t 1.40; earnings gaps reached -3.4R."
+
+[H5]
+name = "Swing: oversold pullback in an uptrend, Indian index ETFs"
+status = "REJECTED"
+evidence = "143 holdout trades on NIFTY BANK/IT/PHARMA/NEXT 50, 54.5% winners, -0.057%/trade net (t=-0.34), PF 0.93: the design period's +0.31%/trade did not hold up after 2021."
+
+[H6]
+name = "Swing: oversold pullback in an uptrend, US sector ETFs"
+status = "REJECTED"
+evidence = "431 holdout trades on the 11 sector SPDRs, 65.2% winners, +0.243%/trade net (t=2.40), PF 1.37, 9 of 11 years positive, but not clearly better than random entry days (p=0.069, Holm 0.21; cluster-robust t 1.86). The strongest lead so far; needs fresh data, not a re-test."
