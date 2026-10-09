@@ -15,6 +15,7 @@ import numpy as np
 import pandas as pd
 
 from trader.config import ROOT
+from trader.data.validate import placeholder_bars
 from trader.features.indicators import sma
 from trader.gate import Evidence, ResearchThresholds, decide, research_checks, save_evidence
 from trader.logging_setup import make_console_utf8
@@ -72,7 +73,7 @@ def clean_daily(frames: dict[str, pd.DataFrame], breaks: dict | None = None):
         frame = frame[~frame.index.duplicated(keep="first")].sort_index()
         prices = frame[["open", "high", "low", "close"]]
         missing = prices.isna().any(axis=1)
-        flat = (frame["volume"] == 0) & prices.eq(frame["close"], axis=0).all(axis=1)
+        flat = placeholder_bars(frame)
         kept = frame[~missing & ~flat]
         cuts = [pd.Timestamp(when).tz_localize(kept.index.tz) for when in breaks.get(symbol, [])]
         edges = [None, *cuts, None]

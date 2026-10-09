@@ -31,6 +31,16 @@ def test_itemised_models_agree_with_the_audit_constants():
     assert US_COMMISSION_FREE.round_trip(10_000) == pytest.approx(AUDIT_2026_10_08["us_intraday"]["base"], abs=1e-5)
 
 
+def test_one_side_costs_add_up_to_the_round_trip():
+    for model in (ZERODHA_INTRADAY, ZERODHA_DELIVERY, US_COMMISSION_FREE):
+        for notional in (10_000, 100_000, 1_000_000):
+            both = model.one_side(notional, "buy") + model.one_side(notional, "sell")
+            assert both == pytest.approx(sum(model.breakdown(notional).values()))
+    assert ZERODHA_DELIVERY.one_side(100_000, "sell") > ZERODHA_DELIVERY.one_side(100_000, "buy")  # DP charge
+    with pytest.raises(ValueError):
+        ZERODHA_DELIVERY.one_side(100_000, "short")
+
+
 def test_notional_must_be_positive():
     with pytest.raises(ValueError):
         CostModel("x").round_trip(0)

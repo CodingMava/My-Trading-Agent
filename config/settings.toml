@@ -8,6 +8,12 @@ provider = "yahoo"
 # this many minutes; staler data ends the scan in NO TRADE.
 max_delay_minutes = 20
 
+[paper]
+# End-of-day paper trading (python -m trader.execution.eod). Pretend money only.
+starting_capital = 1000000          # rupees
+database = "state/paper.db"         # git-ignored
+send_no_trade_messages = false      # Telegram a NO TRADE message for every refused signal (they're always logged)
+
 [notifications]
 # Telegram alerts go out only for strategies approved in config/strategies.toml, and only when
 # TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set in .env.

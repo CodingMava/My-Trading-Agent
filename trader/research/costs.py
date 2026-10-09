@@ -45,6 +45,23 @@ class CostModel:
             "slippage": 2 * self.slippage_per_side * notional,
         }
 
+    def one_side(self, notional: float, side: str) -> float:
+        """Costs in currency for a single order ("buy" or "sell"); a buy plus a sell of the same
+        notional adds up to breakdown()'s total."""
+        if notional <= 0:
+            raise ValueError("notional must be positive")
+        brokerage = self.brokerage_rate * notional
+        if self.brokerage_cap is not None:
+            brokerage = min(brokerage, self.brokerage_cap)
+        fees = (self.exchange_rate + self.sebi_rate) * notional
+        if side == "buy":
+            taxes = (self.stt_buy + self.stamp_buy) * notional
+        elif side == "sell":
+            taxes = (self.stt_sell + self.sell_fee_rate) * notional + self.fixed_per_sell
+        else:
+            raise ValueError(f"side must be 'buy' or 'sell', got {side!r}")
+        return brokerage + fees + self.gst_rate * (brokerage + fees) + taxes + self.slippage_per_side * notional
+
     def round_trip(self, notional: float) -> float:
         """Round-trip cost as a fraction of notional: what a backtest subtracts from each trade."""
         return sum(self.breakdown(notional).values()) / notional

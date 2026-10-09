@@ -80,6 +80,9 @@ class StrategyRegistry:
     def get(self, name: str) -> StrategyRecord | None:
         return self._by_name.get(name)
 
+    def get_by_id(self, strategy_id: str) -> StrategyRecord | None:
+        return next((r for r in self._by_name.values() if r.id == strategy_id), None)
+
     def records(self) -> list[StrategyRecord]:
         return list(self._by_name.values())
 

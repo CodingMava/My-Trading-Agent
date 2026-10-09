@@ -1,6 +1,7 @@
 """Checks every set of bars must pass before it is used for a decision.
 
 * drop_incomplete_bars() removes bars still forming at `now` (Yahoo returns the live candle).
+* placeholder_bars() finds Yahoo's flat zero-volume bars on exchange holidays, which aren't sessions.
 * validate_bars() reports problems. "error" means the data must not drive a trading decision
   (NO TRADE); "warning" means usable but worth knowing; "info" is a note.
 * validate_dataset() also compares instruments with each other, which catches missing sessions
@@ -92,6 +93,13 @@ def bar_complete(start: pd.Timestamp, interval: str, now: datetime, calendar: Ma
     if close is not None:
         end = min(end, close)
     return now >= end
+
+
+def placeholder_bars(df: pd.DataFrame) -> pd.Series:
+    """True for Yahoo's flat zero-volume placeholder bars (open = high = low = close, no volume), seen on
+    NSE holidays. Research and paper trading both drop them so indicators see the same sessions."""
+    prices = df[["open", "high", "low", "close"]]
+    return (df["volume"] == 0) & prices.eq(df["close"], axis=0).all(axis=1)
 
 
 def drop_incomplete_bars(df: pd.DataFrame, interval: str, now: datetime,

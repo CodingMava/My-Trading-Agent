@@ -31,6 +31,11 @@ class Position:
     last_price: float | None = None
     bars_held: int = 0
     max_hold_days: int | None = None
+    entry_fees: float = 0.0
+
+    @property
+    def stop_distance(self) -> float:
+        return 1 - self.stop_price / self.entry_price
 
     @property
     def price(self) -> float:

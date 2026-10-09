@@ -59,13 +59,16 @@ almost no STT; and any long-only test on today's index members needs a random-pi
 | `config/gate.toml` | The profitability gate: the evidence each status requires |
 | `config/risk.toml`, `config/sectors.toml` | Hard risk limits; each stock's sector |
 | `config/market_calendars.toml` | NSE and NYSE holidays and session hours (update every December) |
+| `config/universes.toml` | The stock lists strategies trade (NIFTY 50, the NIFTY ETF) |
 | `trader/` | Config, logging and registry code |
 | `trader/markets/` | Exchange calendars |
 | `trader/core/` | Shared domain objects (trade intents, positions, portfolio state) |
 | `trader/risk/`, `trader/portfolio/` | Risk engine, kill switch, position sizing, sector and correlation exposure |
 | `trader/data/` | Data providers (Yahoo, Zerodha Kite) and the checks every bar must pass |
 | `trader/features/` | Tested, look-ahead-free indicators (SMA, Wilder RSI, ATR) |
-| `trader/strategies/` | Strategy rules (the Phase 3 swing hypotheses) |
+| `trader/strategies/` | Strategy rules (the Phase 3 swing hypotheses) and the catalog the paper trader runs |
+| `trader/execution/` | End-of-day paper trading and its SQLite store; paper evidence for the gate |
+| `trader/notify/` | Telegram message formats and a sender that retries and never logs the token |
 | `trader/research/` | Backtesting harness: simulator, costs, metrics, validation, audit and Phase 3 runners |
 | `docs/research/` | Pre-registrations, evidence reports, and machine-readable verdicts (`evidence/`) |
 | `tests/` | Test suite (`pytest`) |
@@ -115,6 +118,33 @@ python -m trader.data.kite check RELIANCE.NS
 ```
 
 The session token is stored in `.kite_session.json` (git-ignored) and is never printed or logged.
+
+## Paper trading
+
+Swing strategies are paper traded once a day, after the NSE close. No real order is ever placed.
+
+```bash
+python -m trader.execution.eod                       # process every completed session not yet done
+python -m trader.execution.eod --start 2026-10-01    # first run only: replay from this session
+python -m trader.execution.report                    # score each strategy's paper trades against the gate
+```
+
+Each run uses the same fill rules as the backtester: orders decided at a close fill at the next open,
+stops are checked against the day's range (a gap through the stop fills at the open), time exits happen
+at the close, and costs come from the same Zerodha cost model. Every trade passes the risk engine, and
+the kill switch blocks new entries but never stops an open position from exiting. Each session is one
+database transaction in `state/paper.db` (git-ignored), so a crash or a second run can't duplicate
+anything, and a missed day is caught up on the next run.
+
+Telegram gets `[PAPER]` BUY SIGNAL, BUY EXECUTED, SELL EXECUTED and RISK ALERT messages and a daily
+summary; with no approved strategy the summary says NO TRADE. A message that can't be sent is retried on
+the next run. A strategy whose paper results drift from its research (`[decay]` in `config/gate.toml`) is
+suspended automatically.
+
+Only strategies whose status `PAPER` is backed by research evidence are traded. **Today there are none**
+(all three swing hypotheses were rejected), so every run records NO TRADE. To run it daily, add a Windows
+Task Scheduler task for weekdays at 18:00 IST that runs `venv\Scripts\python.exe -m trader.execution.eod`
+with "Start in" set to this folder.
 
 ## Market calendars
 
@@ -182,7 +212,7 @@ python -m trader.risk.killswitch status
 | 3 | Evidence: pre-registered swing-trading hypotheses, tested on frozen data | Done: 0 of 3 passed |
 | 4 | Profitability gate enforced from evidence reports | Done |
 | 5-6 | Risk engine and portfolio limits | Done |
-| 7 | Paper trading | |
+| 7 | Paper trading (end-of-day, for swing strategies) | Done: no strategy is eligible yet |
 | 8 | Zerodha Kite order placement (India) | |
 | 9-12 | AI research layer, full Telegram monitoring, production monitoring, small live trading | |
 

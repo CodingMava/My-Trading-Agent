@@ -20,6 +20,11 @@ from trader.risk.limits import RiskLimits
 TOLERANCE = 1e-9
 
 
+def pct(fraction: float) -> str:
+    """A configured limit as a percentage without false rounding (0.002 -> 0.2%, 0.4 -> 40%)."""
+    return f"{fraction * 100:g}%"
+
+
 @dataclass(frozen=True)
 class RiskCheck:
     name: str
@@ -49,15 +54,15 @@ class RiskEngine:
         peak = max(state.peak_equity, equity)
         drawdown = equity / peak - 1 if peak > 0 else 0.0
         if drawdown <= -limits.max_drawdown:
-            self.kill_switch.engage(f"drawdown {drawdown:.1%} breached the {limits.max_drawdown:.0%} limit")
+            self.kill_switch.engage(f"drawdown {drawdown:.1%} breached the {pct(limits.max_drawdown)} limit")
         today = equity / state.day_start_equity - 1 if state.day_start_equity > 0 else 0.0
         engaged = self.kill_switch.engaged
         return [
             RiskCheck("kill switch", not engaged, f"kill switch engaged: {self.kill_switch.reason}" if engaged else "off"),
             RiskCheck("drawdown", drawdown > -limits.max_drawdown,
-                      f"drawdown {drawdown:.1%} from peak (limit {limits.max_drawdown:.0%})"),
+                      f"drawdown {drawdown:.1%} from peak (limit {pct(limits.max_drawdown)})"),
             RiskCheck("daily loss", today > -limits.max_daily_loss,
-                      f"today {today:+.1%} (no new entries below -{limits.max_daily_loss:.0%})"),
+                      f"today {today:+.1%} (no new entries below -{pct(limits.max_daily_loss)})"),
         ]
 
     def evaluate(self, intent: TradeIntent, state: PortfolioState,
@@ -67,7 +72,7 @@ class RiskEngine:
         checks = self.account_checks(state)
         stop_ok = bool(0 < intent.stop_distance <= limits.max_stop_distance)
         checks.append(RiskCheck("stop", stop_ok, f"stop {intent.stop_distance:.1%} below entry "
-                                                 f"(must be above 0 and at most {limits.max_stop_distance:.0%})"))
+                                                 f"(must be above 0 and at most {pct(limits.max_stop_distance)})"))
         held = intent.symbol in state.positions
         checks.append(RiskCheck("one position per stock", not held,
                                 f"already holding {intent.symbol}" if held else "not held"))
@@ -85,11 +90,11 @@ class RiskEngine:
         sector_after = (state.sector_value(intent.sector) + notional) / equity if equity > 0 else np.inf
         checks.append(RiskCheck("sector exposure", sector_after <= limits.max_sector_exposure + TOLERANCE,
                                 f"{intent.sector} at {sector_after:.0%} of equity after the trade "
-                                f"(limit {limits.max_sector_exposure:.0%})"))
+                                f"(limit {pct(limits.max_sector_exposure)})"))
         gross_after = (state.invested + notional) / equity if equity > 0 else np.inf
         checks.append(RiskCheck("gross exposure", gross_after <= limits.max_gross_exposure + TOLERANCE,
                                 f"{gross_after:.0%} of equity invested after the trade "
-                                f"(limit {limits.max_gross_exposure:.0%})"))
+                                f"(limit {pct(limits.max_gross_exposure)})"))
         if returns and intent.symbol in returns:
             holdings = {s: returns[s] for s in state.positions if s in returns}
             other, value = most_correlated(returns[intent.symbol], holdings)
