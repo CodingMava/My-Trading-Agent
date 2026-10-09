@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 from dataclasses import asdict
 from datetime import date, datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -28,7 +29,7 @@ from trader.research.validation import clustered_t, random_entry_test, same_day_
 from trader.strategies.swing import PULLBACK, pullback_rules, pullback_signals
 
 PREREGISTRATION = ROOT / "docs" / "research" / "round2-preregistration.md"
-PREREGISTRATION_SHA256 = "f61e6ee0181c1e6266c55af6f2efe8ceead438f8a9075c7ad504784296b3b735"  # 2026-10-09 17:15 IST
+PREREGISTRATION_SHA256 = "f61e6ee0181c1e6266c55af6f2efe8ceead438f8a9075c7ad504784296b3b735"  # 2026-10-09 22:45 IST
 RESULTS = ROOT / "docs" / "research" / "round2-results.md"
 DATA = DATA_DIR / "round2"
 EVAL_START, HOLDOUT_START, EVAL_END = date(2016, 1, 1), date(2022, 1, 1), date(2026, 10, 8)
@@ -110,21 +111,25 @@ def classify(symbol: str, day: date) -> str | None:
     return f"Genuine: {reason}" if reason else None
 
 
-def load_clean(name: str):
-    """A frozen dataset cut at EVAL_END and cleaned as pre-registered. Returns (pieces, flagged moves)."""
-    raw = {s: f[np.asarray(f.index.date) <= EVAL_END] for s, f in load_dataset(DATA / name).items()}
+def load_clean(name: str, data: Path = DATA, end: date = EVAL_END, classify_move=None, breaks: dict | None = None):
+    """A frozen dataset cut at `end` and cleaned as pre-registered (round 2's settings by default).
+    Returns (pieces, flagged moves); refuses to return anything while a flagged move is unclassified."""
+    classify_move = classify_move or classify
+    breaks = CORPORATE_ACTION_BREAKS if breaks is None else breaks
+    raw = {s: f[np.asarray(f.index.date) <= end] for s, f in load_dataset(data / name).items()}
     unsplit, _ = clean_daily(raw, breaks={})
     moves = large_moves(unsplit)
-    unclassified = [(s, d) for s, d, _, _ in moves if classify(s, d) is None]
+    unclassified = [(s, d) for s, d, _, _ in moves if classify_move(s, d) is None]
     if unclassified:
         raise SystemExit(f"classify these moves above {MOVE_LIMIT:.0%} before running any strategy: {unclassified}")
-    pieces, _ = clean_daily(raw, breaks=CORPORATE_ACTION_BREAKS)
+    pieces, _ = clean_daily(raw, breaks=breaks)
     return pieces, moves
 
 
-def pullback_trades(pieces: dict[str, pd.DataFrame], rule: str):
-    """Trades over the evaluation span, plus each instrument's holdout entry outcomes by signal day
-    (the random baseline's pools)."""
+def pullback_trades(pieces: dict[str, pd.DataFrame], rule: str, start: date = EVAL_START, end: date = EVAL_END,
+                    pool_start: date = HOLDOUT_START):
+    """Trades signalled from `start` to `end`, plus each instrument's entry outcomes by signal day from
+    `pool_start` to `end` (the random baseline's pools). Round 2's windows by default."""
     frames, pools = [], {}
     for name, bars in pieces.items():
         if len(bars) <= PULLBACK.trend_sma:
@@ -135,10 +140,10 @@ def pullback_trades(pieces: dict[str, pd.DataFrame], rule: str):
         frames.append(trade_rows(symbol, bars.index, select_trades(signals.entry, out), out, "long", rule))
         dates = np.asarray(bars.index.date)
         ready = sma(bars["close"], PULLBACK.trend_sma).notna().to_numpy() & ~np.isnan(out.gross)
-        holdout = ready & (dates >= HOLDOUT_START) & (dates <= EVAL_END)
-        pools.setdefault(symbol, []).append(pd.Series(out.gross[holdout], index=dates[holdout]))
+        pooled = ready & (dates >= pool_start) & (dates <= end)
+        pools.setdefault(symbol, []).append(pd.Series(out.gross[pooled], index=dates[pooled]))
     pools = {symbol: pd.concat(parts) for symbol, parts in pools.items()}
-    return in_window(concat_trades(frames), EVAL_START, EVAL_END), {s: p for s, p in pools.items() if len(p)}
+    return in_window(concat_trades(frames), start, end), {s: p for s, p in pools.items() if len(p)}
 
 
 def signal_week(day: date) -> str:

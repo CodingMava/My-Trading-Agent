@@ -1,0 +1,96 @@
+{
+  "strategy_id": "H8",
+  "kind": "research",
+  "decision": "REJECTED",
+  "generated": "2026-10-09",
+  "source": "docs/research/round3-results.md (python -m trader.research.round3)",
+  "checks": [
+    {
+      "number": 1,
+      "criterion": "At least 50 trades",
+      "value": "1154",
+      "passed": true
+    },
+    {
+      "number": 2,
+      "criterion": "Win rate at least 50%",
+      "value": "61.6%",
+      "passed": "True"
+    },
+    {
+      "number": 3,
+      "criterion": "Expectancy above 0 at base and 1.5x costs",
+      "value": "+0.072% / +0.021%",
+      "passed": "True"
+    },
+    {
+      "number": 4,
+      "criterion": "t-statistic at least 2.0",
+      "value": "1.16",
+      "passed": "False"
+    },
+    {
+      "number": 5,
+      "criterion": "Beats random entries (Holm-adjusted p < 0.05)",
+      "value": "0.191",
+      "passed": false
+    },
+    {
+      "number": 6,
+      "criterion": "Profit factor at least 1.3",
+      "value": "1.10",
+      "passed": "False"
+    },
+    {
+      "number": 7,
+      "criterion": "Avg loss at most 1.5x avg win; worst trade no worse than -3R",
+      "value": "-1.92% vs +1.31%; worst -2.5R",
+      "passed": true
+    },
+    {
+      "number": 8,
+      "criterion": "Expectancy above 0 in each half of the span",
+      "value": "+0.077% / +0.068%",
+      "passed": true
+    },
+    {
+      "number": 9,
+      "criterion": "At least 70% of years (10+ trades) positive",
+      "value": "55% of 11 years",
+      "passed": false
+    },
+    {
+      "number": 10,
+      "criterion": "60%+ of stocks profitable; still positive without the top stock",
+      "value": "60% of 15 stocks; +0.046% without EWT",
+      "passed": true
+    },
+    {
+      "number": 11,
+      "criterion": "Cluster-robust t-statistic (signal weeks as clusters) at least 2.0",
+      "value": "0.76",
+      "passed": false
+    },
+    {
+      "number": 12,
+      "criterion": "The other hypothesis of this round also passes criteria 1-11",
+      "value": "H7 fails",
+      "passed": false
+    }
+  ],
+  "stats": {
+    "evaluation_span": "2016-01-01 to 2026-10-08",
+    "holdout_trades": 1154,
+    "holdout_win_rate": 0.6161178509532063,
+    "holdout_mean_net": 0.0007194317241720289,
+    "holdout_sd_net": 0.021023107147378216,
+    "holdout_profit_factor": 1.0975975297079732,
+    "holdout_t": 1.1625070230512535,
+    "holdout_t_clustered": 0.7604269794004277,
+    "p_random_raw": 0.191,
+    "p_random_holm": 0.191,
+    "p_random_independent": 0.0935,
+    "round_trip_cost": 0.0010278000000000002
+  },
+  "preregistration_sha256": "78c1275b406b9bb9a65f3735b34ec2543a62b60c26a9338ec689a045cbe237d4"
+}

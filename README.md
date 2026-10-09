@@ -62,6 +62,20 @@ This round added a stricter random baseline (trades entered on the same day in c
 count as one bet) and a cluster-robust t-statistic. H6 is the strongest lead so far, but it can only be
 confirmed on data it hasn't seen, such as its signals recorded from now on, never by re-testing it here.
 
+## Research round 3: confirming H6 (2026-10-09)
+
+H6 was given one [pre-registered](docs/research/round3-preregistration.md) chance to confirm on data
+nothing had examined, and had to pass both tests ([results](docs/research/round3-results.md)):
+
+| Hypothesis | Trades | Winners | Net per trade | Result | Status |
+|---|---:|---:|---:|---|---|
+| H7: the 9 original US sector SPDRs, 2000-2015 | 1,085 | 71.1% | +0.32% | Beat random entry days (p = 0.012 after correction), but its average loss was 1.57x its average win (limit 1.5x) | REJECTED |
+| H8: 15 iShares country ETFs, 2016-2026 | 1,154 | 61.6% | +0.07% | No better than random entry days (p = 0.19); 6 of 11 years positive | REJECTED |
+
+H6 is not confirmed, so the pullback rules (H1, H2, H4-H8) are retired: as pre-registered, no variant of
+them is tested again. The effect showed up strongly on US sector SPDRs before 2016 but did not carry over to other
+ETFs in recent years. Nine hypotheses over three rounds, none passed: the system stays in NO TRADE.
+
 ## Project layout
 
 | Path | What it is |
@@ -181,6 +195,7 @@ python -m trader.research.datasets fetch --name nse_daily_10y --interval 1d --pe
 python -m trader.research.datasets validate data/nse_daily_10y    # data-quality report
 python -m trader.research.phase3                                  # re-run the Phase 3 evaluation
 python -m trader.research.round2                                  # re-run research round 2
+python -m trader.research.round3                                  # re-run research round 3
 pytest                                                            # fast tests
 pytest -m slow                                                    # research regressions (need the frozen data in data/)
 ```
@@ -228,6 +243,7 @@ python -m trader.risk.killswitch status
 | 2 | Backtesting reliability: the harness in `trader/research/` | Done |
 | 3 | Evidence: pre-registered swing-trading hypotheses, tested on frozen data | Done: 0 of 3 passed |
 | 3b | Research round 2: the same rules on US stocks, US sector ETFs and Indian index ETFs | Done: 0 of 3 passed |
+| 3c | Research round 3: confirm or retire H6 on unseen data | Done: not confirmed; pullback rules retired |
 | 4 | Profitability gate enforced from evidence reports | Done |
 | 5-6 | Risk engine and portfolio limits | Done |
 | 7 | Paper trading (end-of-day, for swing strategies) | Done: no strategy is eligible yet |

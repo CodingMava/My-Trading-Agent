@@ -88,3 +88,17 @@ evidence = "143 holdout trades on NIFTY BANK/IT/PHARMA/NEXT 50, 54.5% winners, -
 name = "Swing: oversold pullback in an uptrend, US sector ETFs"
 status = "REJECTED"
 evidence = "431 holdout trades on the 11 sector SPDRs, 65.2% winners, +0.243%/trade net (t=2.40), PF 1.37, 9 of 11 years positive, but not clearly better than random entry days (p=0.069, Holm 0.21; cluster-robust t 1.86). The strongest lead so far; needs fresh data, not a re-test."
+
+# Research round 3 (docs/research/round3-preregistration.md): confirming or retiring H6 on unseen data;
+# both tests had to pass. Results: docs/research/round3-results.md. Reproduce: python -m trader.research.round3
+# H6 was not confirmed, so the pullback rules (H1, H2, H4-H8) are retired: no variant of them is tested again.
+
+[H7]
+name = "Swing: oversold pullback in an uptrend, US sector SPDRs 2000-2015"
+status = "REJECTED"
+evidence = "1,085 trades, 71.1% winners, +0.323%/trade net (t=5.30, cluster-robust 3.48), PF 1.56, beat random entry days (Holm p=0.012); failed the loss-size limit (avg loss 1.57x avg win, limit 1.5x) and needed H8 to pass too."
+
+[H8]
+name = "Swing: oversold pullback in an uptrend, iShares country ETFs 2016-2026"
+status = "REJECTED"
+evidence = "1,154 trades on 15 country ETFs, 61.6% winners, +0.072%/trade net (t=1.16, cluster-robust 0.76), PF 1.10, no better than random entry days (Holm p=0.19): the effect did not carry over."
