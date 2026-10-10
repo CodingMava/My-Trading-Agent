@@ -3,10 +3,12 @@ decisions, an outbox of notifications, and suspended strategies.
 
 Each session is processed inside one transaction, so a crash leaves the state exactly as it was before
 that session and re-running it gives the same result. Order keys are unique (strategy, stock, session,
-side), so the same order can never be placed twice.
+side), so the same order can never be placed twice. The record of what happened (fills, closed trades,
+decisions, session snapshots) is append-only: the database itself refuses to change or delete it.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -45,6 +47,14 @@ CREATE TABLE IF NOT EXISTS suspended (strategy_id TEXT PRIMARY KEY, session TEXT
 CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT,
     status TEXT NOT NULL CHECK (status IN ('running', 'ok', 'halted', 'failed')),
     sessions INTEGER NOT NULL DEFAULT 0, detail TEXT NOT NULL DEFAULT '');
+CREATE TRIGGER IF NOT EXISTS fills_no_update BEFORE UPDATE ON fills BEGIN SELECT RAISE(ABORT, 'fills are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS fills_no_delete BEFORE DELETE ON fills BEGIN SELECT RAISE(ABORT, 'fills are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS trades_no_update BEFORE UPDATE ON trades BEGIN SELECT RAISE(ABORT, 'trades are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS trades_no_delete BEFORE DELETE ON trades BEGIN SELECT RAISE(ABORT, 'trades are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS decisions_no_update BEFORE UPDATE ON decisions BEGIN SELECT RAISE(ABORT, 'decisions are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS decisions_no_delete BEFORE DELETE ON decisions BEGIN SELECT RAISE(ABORT, 'decisions are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS sessions_no_update BEFORE UPDATE ON sessions BEGIN SELECT RAISE(ABORT, 'sessions are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS sessions_no_delete BEFORE DELETE ON sessions BEGIN SELECT RAISE(ABORT, 'sessions are append-only'); END;
 """
 
 
@@ -193,6 +203,21 @@ class PaperStore:
 
     def suspended(self) -> dict[str, str]:
         return {r["strategy_id"]: r["reason"] for r in self.conn.execute("SELECT * FROM suspended")}
+
+    def backup(self, directory: Path | str, day: date) -> Path:
+        """A consistent copy of the whole database (SQLite's online backup) as <directory>/paper-<day>.db.
+        It is written under a temporary name first, so a crash can't leave a half-written backup."""
+        directory = Path(directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / f"paper-{day.isoformat()}.db"
+        partial = target.with_name(target.name + ".partial")
+        copy = sqlite3.connect(str(partial))
+        try:
+            self.conn.backup(copy)
+        finally:
+            copy.close()
+        os.replace(partial, target)
+        return target
 
     # runs: one row per unattended run, for monitoring
     def start_run(self, started_at: datetime) -> int:

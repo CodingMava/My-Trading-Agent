@@ -5,7 +5,7 @@ from trader.config import load_settings
 from trader.execution.store import PaperStore
 from trader.gate import Evidence, save_evidence
 from trader.markets.calendar import load_calendars
-from trader.ops.health import ALERT, INFO, OK, WARN, calendar_checks, data_checks, health_checks, run_checks, \
+from trader.ops.health import ALERT, INFO, OK, WARN, backup_check, calendar_checks, data_checks, health_checks, run_checks, \
     safety_checks, strategy_checks, unattended_record
 from trader.registry import StrategyRecord, StrategyRegistry
 from trader.risk.killswitch import KillSwitch
@@ -89,6 +89,15 @@ def test_all_checks_come_worst_first(tmp_path):
     checks = health_checks(None, NSE, StrategyRegistry([]), switch, load_settings(env={}), EVENING)
     assert checks[0].level == ALERT and checks[0].name == "kill switch"
     assert [c.level for c in checks] == sorted((c.level for c in checks), key=[ALERT, WARN, INFO, OK].index)
+
+
+def test_backups_must_exist_and_be_recent(tmp_path):
+    store, backups = store_with(tmp_path), tmp_path / "backups"
+    assert backup_check(None, backups, EVENING.date()) == []  # nothing to back up before the first run
+    assert backup_check(store, backups, EVENING.date())[0].level == WARN
+    store.backup(backups, date(2026, 8, 17))
+    assert backup_check(store, backups, EVENING.date())[0].level == OK
+    assert backup_check(store, backups, date(2026, 8, 25))[0].level == WARN  # a week without a backup
 
 
 def _settings(tmp_path, data_line):

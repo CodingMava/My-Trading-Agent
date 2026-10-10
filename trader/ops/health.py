@@ -31,6 +31,7 @@ OK, INFO, WARN, ALERT = "ok", "info", "warn", "alert"
 RUN_DEADLINE = timedelta(hours=4)  # once a session's data has settled, the daily run should be done within this
 RUN_TIMEOUT = timedelta(hours=2)  # a run still marked running after this long died without finishing
 EVIDENCE_NOTICE = timedelta(days=30)
+BACKUP_MAX_AGE = timedelta(days=3)
 UNATTENDED_TARGET = 60  # clean sessions in a row that Phase 7 asks for before broker integration
 ACTIVE = ("PAPER", "LIVE_SMALL", "LIVE")
 
@@ -111,6 +112,20 @@ def unattended_record(store: PaperStore | None, now: datetime) -> Health:
     return Health("unattended record", OK if clean >= UNATTENDED_TARGET else INFO, detail)
 
 
+def backup_check(store: PaperStore | None, backup_dir: Path | None, today: date) -> list[Health]:
+    """The daily run copies the records to <database folder>/backups after every run that didn't fail."""
+    if store is None or backup_dir is None:
+        return []
+    copies = sorted(Path(backup_dir).glob("paper-*.db"))
+    if not copies:
+        return [Health("backup", WARN, f"no backup in {backup_dir} yet; the next daily run makes one")]
+    latest = date.fromisoformat(copies[-1].stem.removeprefix("paper-"))
+    if today - latest > BACKUP_MAX_AGE:
+        return [Health("backup", WARN, f"the newest backup is from {latest}: check the daily run's log")]
+    count = f"{len(copies)} daily cop{'y' if len(copies) == 1 else 'ies'}"
+    return [Health("backup", OK, f"{count}, the newest {copies[-1].name}")]
+
+
 def strategy_checks(registry: StrategyRegistry, today: date, max_age_days: int,
                     evidence_dir: Path = EVIDENCE_DIR) -> list[Health]:
     active = [r for r in registry.records() if r.status in ACTIVE]
@@ -151,9 +166,11 @@ def data_checks(settings, now: datetime, session_file: Path = SESSION_FILE) -> H
 
 def health_checks(store: PaperStore | None, calendar: MarketCalendar, registry: StrategyRegistry,
                   kill_switch: KillSwitch, settings, now: datetime, max_age_days: int = 365,
-                  evidence_dir: Path = EVIDENCE_DIR, session_file: Path = SESSION_FILE) -> list[Health]:
+                  evidence_dir: Path = EVIDENCE_DIR, session_file: Path = SESSION_FILE,
+                  backup_dir: Path | None = None) -> list[Health]:
     """Every check, worst first. `store` is None before the first daily run."""
     checks = [*run_checks(store, calendar, now), *safety_checks(store, kill_switch), unattended_record(store, now),
+              *backup_check(store, backup_dir, now.date()),
               *strategy_checks(registry, now.date(), max_age_days, evidence_dir), calendar_checks(calendar, now.date()),
               data_checks(settings, now, session_file)]
     order = (ALERT, WARN, INFO, OK)
@@ -171,7 +188,7 @@ def main(argv: list[str] | None = None) -> None:
     store = PaperStore(database, settings.paper_starting_capital) if database.exists() else None
     now = datetime.now(IST)
     checks = health_checks(store, load_calendars()["NSE"], StrategyRegistry.load(), KillSwitch(), settings, now,
-                           load_gate_config().max_evidence_age_days)
+                           load_gate_config().max_evidence_age_days, backup_dir=database.parent / "backups")
     print(f"Health at {now:%Y-%m-%d %H:%M} IST")
     width = max(len(c.name) for c in checks)
     for check in checks:

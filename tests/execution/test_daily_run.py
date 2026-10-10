@@ -85,3 +85,16 @@ def test_heartbeat_failures_never_raise_or_log_the_url(caplog):
         assert ping_heartbeat(URL, Down()) is False
         assert ping_heartbeat(URL, FakeHTTP(status=404)) is False
     assert "SECRETUUID" not in caplog.text and "ConnectionError" in caplog.text and "HTTP 404" in caplog.text
+
+
+def test_every_run_that_did_not_fail_leaves_a_dated_backup(tmp_path):
+    trader = make_trader(tmp_path)
+    assert run_daily(trader, until=date(2026, 8, 18), start=SIGNAL_DAY, backup_dir=tmp_path / "backups") == 0
+    assert [p.name for p in (tmp_path / "backups").iterdir()] == [f"paper-{CLOCK.date()}.db"]
+    failing = PaperStore(tmp_path / "f.db", 1_000_000)
+
+    def build():
+        raise RuntimeError("broken config")
+
+    daily(failing, FakeNotifier(), build, clock=lambda: CLOCK, backup_dir=tmp_path / "failed")
+    assert not (tmp_path / "failed").exists()

@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import logging
 import math
+import sqlite3
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -406,10 +407,11 @@ def ping_heartbeat(url: str, http=requests) -> bool:
 
 
 def daily(store: PaperStore, notifier, build, until: date | None = None, start: date | None = None,
-          heartbeat: str = "", secrets=(), http=requests, clock=None) -> int:
+          heartbeat: str = "", secrets=(), http=requests, clock=None, backup_dir: Path | None = None) -> int:
     """One unattended run, recorded in the store's runs table. `build()` makes the PaperTrader, so setup
     failures (a broken config, no Kite login) count as failed runs too. A failure sends an alert with
-    every secret masked; a halt for missing data has queued its own alert; only a clean run pings the
+    every secret masked; a halt for missing data has queued its own alert. After a run that didn't fail,
+    the records are backed up to `backup_dir` (one copy per day), and only a clean run pings the
     heartbeat. Returns the process exit code: 0 ok, 1 failed, 2 halted."""
     clock = clock or (lambda: datetime.now(IST))
     run_id = store.start_run(clock())
@@ -434,6 +436,11 @@ def daily(store: PaperStore, notifier, build, until: date | None = None, start: 
              "%d message(s) sent; equity %s", len(summary.sessions),
              ", ".join(map(str, summary.sessions)) or "none", summary.orders, summary.fills, summary.trades,
              summary.messages_sent, f"{history.iloc[-1]:,.2f}" if len(history) else "n/a")
+    if backup_dir is not None:
+        try:
+            log.info("Backed up the paper records to %s", store.backup(backup_dir, clock().date()))
+        except (OSError, sqlite3.Error) as exc:  # the health check reports a stale backup
+            log.warning("Backup failed: %s: %s", type(exc).__name__, exc)
     if status == "ok" and heartbeat:
         ping_heartbeat(heartbeat, http)
     return 0 if status == "ok" else 2
@@ -450,7 +457,8 @@ def main(argv: list[str] | None = None) -> None:
     configure_logging(secrets=secrets)
     for warning in settings.warnings:
         log.warning(warning)
-    store = PaperStore(ROOT / settings.paper_database, settings.paper_starting_capital)
+    database = ROOT / settings.paper_database
+    store = PaperStore(database, settings.paper_starting_capital)
     notifier = notifier_from_settings(settings)
 
     def build() -> PaperTrader:
@@ -462,7 +470,8 @@ def main(argv: list[str] | None = None) -> None:
                            decay=load_gate_config().decay, send_no_trade=settings.paper_send_no_trade)
 
     try:
-        code = daily(store, notifier, build, args.until, args.start, settings.heartbeat_url.reveal(), secrets)
+        code = daily(store, notifier, build, args.until, args.start, settings.heartbeat_url.reveal(), secrets,
+                     backup_dir=database.parent / "backups")
     except Exception:  # the run record itself failed (e.g. a locked database): log it, with secrets masked
         log.exception("The daily run could not be recorded")
         code = 1

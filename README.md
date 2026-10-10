@@ -205,6 +205,11 @@ What sends you a Telegram alert:
 The health check also counts clean sessions in a row since the last failure. The roadmap asks for 60
 before broker integration (Phase 8).
 
+After every run that didn't fail, the records are copied to `state/backups/paper-<date>.db` (inside
+OneDrive here, so the copies leave the PC), and the record of what happened (fills, closed trades,
+decisions, session snapshots) can't be edited or deleted: the database refuses. **What each alert means,
+what to do about it, and the plan for losses decided in advance are in [docs/runbook.md](docs/runbook.md).**
+
 ## Market calendars
 
 `config/market_calendars.toml` holds each exchange's holidays and hours, taken from the official lists.

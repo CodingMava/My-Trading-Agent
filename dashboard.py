@@ -31,7 +31,7 @@ store = PaperStore(database, settings.paper_starting_capital) if database.exists
 registry = StrategyRegistry.load()
 now = datetime.now(IST)
 checks = health_checks(store, load_calendars()["NSE"], registry, KillSwitch(), settings, now,
-                       load_gate_config().max_evidence_age_days)
+                       load_gate_config().max_evidence_age_days, backup_dir=database.parent / "backups")
 active = [r.id for r in registry.records() if r.status in ACTIVE]
 
 st.title("Trading agent")
