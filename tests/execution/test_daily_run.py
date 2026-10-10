@@ -1,0 +1,87 @@
+"""The unattended daily run: every run recorded, failures alerted, missing data halts, heartbeat on success."""
+import logging
+from datetime import date
+
+import pandas as pd
+import requests
+
+from tests.execution.test_paper_trader import CLOCK, IST, SIGNAL_DAY, UNIVERSE, FakeNotifier, make_trader
+from trader.execution.eod import daily, ping_heartbeat
+from trader.execution.store import PaperStore
+
+URL = "https://hc.example/ping/SECRETUUID"
+
+
+class FakeHTTP:
+    def __init__(self, status=200):
+        self.status, self.urls = status, []
+
+    def get(self, url, timeout):
+        self.urls.append(url)
+        return type("Response", (), {"status_code": self.status})()
+
+
+def run_daily(trader, http=None, **kwargs):
+    return daily(trader.store, trader.notifier, lambda: trader, heartbeat=URL, http=http or FakeHTTP(),
+                 clock=lambda: CLOCK, **kwargs)
+
+
+def test_a_clean_run_is_recorded_and_pings_the_heartbeat(tmp_path):
+    trader, http = make_trader(tmp_path), FakeHTTP()
+    assert run_daily(trader, http, until=date(2026, 8, 18), start=SIGNAL_DAY) == 0
+    run = trader.store.runs().iloc[0]
+    assert run["status"] == "ok" and run["sessions"] == 7 and http.urls == [URL]
+
+
+def test_a_failed_setup_is_recorded_and_alerted_with_secrets_masked(tmp_path):
+    store, notifier, http = PaperStore(tmp_path / "p.db", 1_000_000), FakeNotifier(), FakeHTTP()
+
+    def build():
+        raise RuntimeError("Kite rejected the access token SECRET123")
+
+    assert daily(store, notifier, build, heartbeat=URL, secrets=["SECRET123"], http=http, clock=lambda: CLOCK) == 1
+    run = store.runs().iloc[0]
+    assert run["status"] == "failed" and "SECRET123" not in run["detail"] and "***" in run["detail"]
+    assert notifier.sent[0].startswith("<b>[PAPER] RISK ALERT: Daily run failed</b>")
+    assert "SECRET123" not in notifier.sent[0] and http.urls == []  # no heartbeat after a failure
+
+
+def test_a_failure_mid_run_keeps_every_finished_session_and_is_recorded(tmp_path, monkeypatch):
+    trader, http = make_trader(tmp_path), FakeHTTP()
+    original = trader.store.record_session
+
+    def crash_on_13th(session, equity, cash):
+        if session == date(2026, 8, 13):
+            raise OSError("disk full")
+        original(session, equity, cash)
+
+    monkeypatch.setattr(trader.store, "record_session", crash_on_13th)
+    assert run_daily(trader, http, until=date(2026, 8, 18), start=SIGNAL_DAY) == 1
+    assert trader.store.last_session() == date(2026, 8, 12) and trader.store.runs().iloc[0]["status"] == "failed"
+    assert any("Daily run failed" in text for text in trader.notifier.sent) and http.urls == []
+
+
+def test_missing_market_data_halts_the_run_and_the_next_run_catches_up(tmp_path):
+    cut = pd.Timestamp("2026-08-14", tz=IST)
+    trader, http = make_trader(tmp_path, frames={s: f[f.index < cut] for s, f in UNIVERSE.items()}), FakeHTTP()
+    assert run_daily(trader, http, until=date(2026, 8, 18), start=SIGNAL_DAY) == 2  # data ends on the 13th
+    assert trader.store.last_session() == date(2026, 8, 13) and trader.store.runs().iloc[0]["status"] == "halted"
+    assert any("RISK ALERT: Market data missing" in text and "2026-08-14" in text for text in trader.notifier.sent)
+    assert http.urls == []
+    trader.provider.frames = UNIVERSE  # the data arrives
+    assert run_daily(trader, http, until=date(2026, 8, 18)) == 0
+    uninterrupted = make_trader(tmp_path, db="single.db")
+    uninterrupted.run(until=date(2026, 8, 18), start=SIGNAL_DAY)
+    pd.testing.assert_frame_equal(trader.store.trades().drop(columns="id"),
+                                  uninterrupted.store.trades().drop(columns="id"))
+
+
+def test_heartbeat_failures_never_raise_or_log_the_url(caplog):
+    class Down:
+        def get(self, url, timeout):
+            raise requests.ConnectionError(f"cannot reach {url}")
+
+    with caplog.at_level(logging.WARNING):
+        assert ping_heartbeat(URL, Down()) is False
+        assert ping_heartbeat(URL, FakeHTTP(status=404)) is False
+    assert "SECRETUUID" not in caplog.text and "ConnectionError" in caplog.text and "HTTP 404" in caplog.text

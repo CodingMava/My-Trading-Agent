@@ -78,11 +78,13 @@ class Settings:
     paper_starting_capital: float = 1_000_000.0
     paper_database: str = "state/paper.db"
     paper_send_no_trade: bool = False
+    heartbeat_url: Secret = Secret("")  # pinged after each successful daily run; empty = off
     warnings: tuple[str, ...] = ()
 
     def secret_values(self) -> list[str]:
         """Raw secret strings, for log redaction only."""
-        secrets = (self.telegram_bot_token, self.gemini_api_key, self.kite_api_key, self.kite_api_secret)
+        secrets = (self.telegram_bot_token, self.gemini_api_key, self.kite_api_key, self.kite_api_secret,
+                   self.heartbeat_url)
         return [s.reveal() for s in secrets if s]
 
 
@@ -139,5 +141,6 @@ def load_settings(env: dict[str, str] | None = None, settings_file: Path = SETTI
         paper_starting_capital=float(paper.get("starting_capital", 1_000_000)),
         paper_database=str(paper.get("database", "state/paper.db")),
         paper_send_no_trade=bool(paper.get("send_no_trade_messages", False)),
+        heartbeat_url=Secret(env.get("HEARTBEAT_URL")),
         warnings=tuple(warnings),
     )

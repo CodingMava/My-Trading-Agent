@@ -11,7 +11,9 @@ For each session, in order, with the same fill rules as the backtester:
   5. entry signals from strategies whose evidence supports PAPER pass the risk engine, and approved ones
      queue buys for the next open.
 Each session is one database transaction. Telegram messages are queued inside it and sent only after it
-commits; anything unsent is retried on the next run.
+commits; anything unsent is retried on the next run. If a session's market data is broadly missing, the
+run stops before that session and alerts, rather than recording a day it couldn't see. Every run is
+recorded for monitoring (python -m trader.ops.health), and a failed run sends an alert.
 """
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import requests
 
 from trader.config import ROOT, load_settings
 from trader.core.models import PortfolioState, Position, TradeIntent
@@ -32,7 +35,7 @@ from trader.data.providers import fetch_many, make_provider
 from trader.data.validate import DAILY_SETTLE, drop_incomplete_bars, placeholder_bars, validate_bars
 from trader.execution.store import PaperStore
 from trader.gate import EVIDENCE_DIR, DecayThresholds, decay_check, load_evidence, load_gate_config
-from trader.logging_setup import configure_logging
+from trader.logging_setup import configure_logging, redact
 from trader.markets.calendar import load_calendars
 from trader.notify import templates
 from trader.notify.telegram import notifier_from_settings
@@ -50,6 +53,7 @@ LOOKBACK_DAYS = 420  # calendar days of history: a 200-day average plus a margin
 CASH_BUFFER = 1.02  # cash set aside per pending buy, in case the next open gaps up
 BUY_COST_HEADROOM = 1.005  # leave room for buy-side charges when sizing a fill to the cash available
 ADV_DAYS = 20
+MIN_DATA_COVERAGE = 0.8  # share of instruments that must have a session's bar before that session is processed
 
 
 @dataclass
@@ -60,6 +64,7 @@ class RunSummary:
     trades: int = 0
     messages_sent: int = 0
     notes: list = field(default_factory=list)
+    halted: str = ""  # why the run stopped before the latest session, if it did
 
 
 def market_of(symbol: str) -> str:
@@ -122,6 +127,12 @@ class PaperTrader:
     def _row(self, symbol: str, session: date) -> int | None:
         return self._rows.get(symbol, {}).get(session)
 
+    def _not_yet_available(self, symbol: str, session: date) -> bool:
+        """No bar on or after `session` yet: the data may still arrive. (A gap with later bars after it is
+        a hole in the history that no later run can fill; that session goes ahead with a stale-data alert.)"""
+        days = self._rows.get(symbol)
+        return not days or max(days) < session
+
     def signals_for(self, strategy_id: str, symbol: str, frames: dict):
         """A strategy's signals on one stock's bars, computed once per run (indicators are causal, so the
         values at a session only use bars up to that session)."""
@@ -148,6 +159,14 @@ class PaperTrader:
             self._rows, self._signals = {}, {}
             for_exits, for_entries, problems = self.load_bars(symbols, sessions[0], now) if symbols else ({}, {}, {})
             for session in sessions:
+                missing = [symbol for symbol in symbols if self._not_yet_available(symbol, session)]
+                if len(missing) > (1 - MIN_DATA_COVERAGE) * len(symbols):
+                    examples = ", ".join(missing[:3]) + (", ..." if len(missing) > 3 else "")
+                    summary.halted = (f"no {session} market data yet for {len(missing)} of {len(symbols)} instruments "
+                                      f"({examples}); stopped before that session, and the next run will retry it")
+                    with self.store.transaction():
+                        self.store.queue_message(session, self._alert("Market data missing", summary.halted))
+                    break
                 with self.store.transaction():
                     self.process_session(session, for_exits, for_entries, strategies, problems, summary,
                                          final=session == sessions[-1])
@@ -372,6 +391,54 @@ class PaperTrader:
         return sent
 
 
+def ping_heartbeat(url: str, http=requests) -> bool:
+    """Tell an external dead man's switch (e.g. healthchecks.io) that the run succeeded: if the pings stop,
+    it alerts you even when this computer is off. Never raises, and never logs the URL (it is a secret)."""
+    try:
+        response = http.get(url, timeout=10)
+    except requests.RequestException as exc:
+        log.warning("Heartbeat ping failed (%s)", type(exc).__name__)
+        return False
+    if response.status_code >= 400:
+        log.warning("Heartbeat ping failed (HTTP %s)", response.status_code)
+        return False
+    return True
+
+
+def daily(store: PaperStore, notifier, build, until: date | None = None, start: date | None = None,
+          heartbeat: str = "", secrets=(), http=requests, clock=None) -> int:
+    """One unattended run, recorded in the store's runs table. `build()` makes the PaperTrader, so setup
+    failures (a broken config, no Kite login) count as failed runs too. A failure sends an alert with
+    every secret masked; a halt for missing data has queued its own alert; only a clean run pings the
+    heartbeat. Returns the process exit code: 0 ok, 1 failed, 2 halted."""
+    clock = clock or (lambda: datetime.now(IST))
+    run_id = store.start_run(clock())
+    try:
+        trader = build()
+        summary = trader.run(until, start)
+    except Exception as exc:  # every failure is recorded and reported, never swallowed
+        detail = redact(f"{type(exc).__name__}: {exc}", secrets)[:500]
+        log.error("Daily run failed: %s", detail, exc_info=True)
+        store.finish_run(run_id, "failed", clock(), 0, detail)
+        notifier.send(templates.risk_alert(title="Daily run failed", detail=f"{detail}. Nothing after the last "
+                                           "processed session was recorded; fix the cause and run it again."))
+        return 1
+    status = "halted" if summary.halted else "ok"
+    store.finish_run(run_id, status, clock(), len(summary.sessions), summary.halted or "; ".join(summary.notes))
+    for note in summary.notes:
+        log.info(note)
+    if summary.halted:
+        log.warning("Stopped early: %s", summary.halted)
+    history = store.equity_history()
+    log.info("Paper trading: %d session(s) processed (%s), %d order(s), %d fill(s), %d closed trade(s), "
+             "%d message(s) sent; equity %s", len(summary.sessions),
+             ", ".join(map(str, summary.sessions)) or "none", summary.orders, summary.fills, summary.trades,
+             summary.messages_sent, f"{history.iloc[-1]:,.2f}" if len(history) else "n/a")
+    if status == "ok" and heartbeat:
+        ping_heartbeat(heartbeat, http)
+    return 0 if status == "ok" else 2
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="End-of-day paper trading. Never places a real order.")
     parser.add_argument("--until", type=date.fromisoformat, help="last session to process (default: latest completed)")
@@ -379,28 +446,27 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     settings = load_settings()
-    configure_logging(secrets=settings.secret_values() + session_secrets())
+    secrets = settings.secret_values() + session_secrets()
+    configure_logging(secrets=secrets)
     for warning in settings.warnings:
         log.warning(warning)
-    registry = StrategyRegistry.load()
-    for problem in registry.problems:
-        log.warning("Registry: %s", problem)
-    try:
-        provider = make_provider(settings)
-    except Exception as exc:  # e.g. Kite selected but nobody logged in today
-        log.error("No market data source: %s", exc)
-        raise SystemExit(1)
     store = PaperStore(ROOT / settings.paper_database, settings.paper_starting_capital)
-    trader = PaperTrader(store=store, provider=provider, calendar=load_calendars()["NSE"], registry=registry,
-                         risk=RiskEngine(load_limits(), KillSwitch()), notifier=notifier_from_settings(settings),
-                         decay=load_gate_config().decay, send_no_trade=settings.paper_send_no_trade)
-    summary = trader.run(args.until, args.start)
-    for note in summary.notes:
-        log.info(note)
-    log.info("Paper trading: %d session(s) processed (%s), %d order(s), %d fill(s), %d closed trade(s), "
-             "%d message(s) sent; equity %s", len(summary.sessions),
-             ", ".join(map(str, summary.sessions)) or "none", summary.orders, summary.fills, summary.trades,
-             summary.messages_sent, f"{store.equity_history().iloc[-1]:,.2f}" if len(store.equity_history()) else "n/a")
+    notifier = notifier_from_settings(settings)
+
+    def build() -> PaperTrader:
+        registry = StrategyRegistry.load()
+        for problem in registry.problems:
+            log.warning("Registry: %s", problem)
+        return PaperTrader(store=store, provider=make_provider(settings), calendar=load_calendars()["NSE"],
+                           registry=registry, risk=RiskEngine(load_limits(), KillSwitch()), notifier=notifier,
+                           decay=load_gate_config().decay, send_no_trade=settings.paper_send_no_trade)
+
+    try:
+        code = daily(store, notifier, build, args.until, args.start, settings.heartbeat_url.reveal(), secrets)
+    except Exception:  # the run record itself failed (e.g. a locked database): log it, with secrets masked
+        log.exception("The daily run could not be recorded")
+        code = 1
+    raise SystemExit(code)
 
 
 if __name__ == "__main__":

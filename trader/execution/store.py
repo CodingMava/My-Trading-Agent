@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS decisions (
 CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY, session TEXT NOT NULL, text TEXT NOT NULL,
     sent INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS suspended (strategy_id TEXT PRIMARY KEY, session TEXT NOT NULL, reason TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT,
+    status TEXT NOT NULL CHECK (status IN ('running', 'ok', 'halted', 'failed')),
+    sessions INTEGER NOT NULL DEFAULT 0, detail TEXT NOT NULL DEFAULT '');
 """
 
 
@@ -167,7 +170,7 @@ class PaperStore:
         return pd.read_sql_query(query + " ORDER BY id", self.conn, params=args)
 
     def table(self, name: str) -> pd.DataFrame:
-        if name not in {"orders", "fills", "positions", "trades", "decisions", "outbox", "sessions", "suspended"}:
+        if name not in {"orders", "fills", "positions", "trades", "decisions", "outbox", "sessions", "suspended", "runs"}:
             raise ValueError(name)
         return pd.read_sql_query(f"SELECT * FROM {name} ORDER BY rowid", self.conn)
 
@@ -190,6 +193,19 @@ class PaperStore:
 
     def suspended(self) -> dict[str, str]:
         return {r["strategy_id"]: r["reason"] for r in self.conn.execute("SELECT * FROM suspended")}
+
+    # runs: one row per unattended run, for monitoring
+    def start_run(self, started_at: datetime) -> int:
+        return self.conn.execute("INSERT INTO runs (started_at, status) VALUES (?, 'running')",
+                                 (started_at.isoformat(),)).lastrowid
+
+    def finish_run(self, run_id: int, status: str, finished_at: datetime, sessions: int = 0, detail: str = "") -> None:
+        self.conn.execute("UPDATE runs SET status = ?, finished_at = ?, sessions = ?, detail = ? WHERE id = ?",
+                          (status, finished_at.isoformat(), sessions, detail, run_id))
+
+    def runs(self, limit: int = 200) -> pd.DataFrame:
+        """The latest runs, newest first."""
+        return pd.read_sql_query("SELECT * FROM runs ORDER BY id DESC LIMIT ?", self.conn, params=[limit])
 
     def reconcile(self, tolerance: float = 0.01) -> list[str]:
         """Rebuild cash and holdings from the fills and compare them with the stored state."""

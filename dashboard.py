@@ -1,113 +1,115 @@
-import streamlit as st
-import plotly.graph_objects as go
+"""Ops console for the trading agent: health, the paper account, decisions, strategies and runs.
+Read-only: nothing on this page can trade or change a setting.
+
+    streamlit run dashboard.py
+"""
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
 import pandas as pd
-from data_engine import MarketTracker
-from ta_engine import TechnicalAnalyzer
-from signal_engine import SignalDetector
-from universe import get_nifty_universe
+import plotly.graph_objects as go
+import streamlit as st
 
-# --- Page Configuration ---
-st.set_page_config(page_title="AI Trading Command Center", layout="wide")
-st.title("📈 AI Quantitative Trading Dashboard")
+from trader.config import ROOT, load_settings
+from trader.data.providers import YahooProvider
+from trader.execution.store import PaperStore
+from trader.features.indicators import sma
+from trader.gate import load_gate_config
+from trader.markets.calendar import load_calendars
+from trader.ops import console
+from trader.ops.health import ACTIVE, ALERT, WARN, health_checks
+from trader.registry import StrategyRegistry
+from trader.risk.killswitch import KillSwitch
+from trader.strategies.catalog import load_universes
 
-# --- Initialize Engines (Cached for speed) ---
-@st.cache_resource
-def get_detector():
-    return SignalDetector()
+IST = ZoneInfo("Asia/Kolkata")
+st.set_page_config(page_title="Trading agent", layout="wide")
 
-@st.cache_resource
-def get_tracker():
-    return MarketTracker(get_nifty_universe())
+settings = load_settings()
+database = ROOT / settings.paper_database
+store = PaperStore(database, settings.paper_starting_capital) if database.exists() else None
+registry = StrategyRegistry.load()
+now = datetime.now(IST)
+checks = health_checks(store, load_calendars()["NSE"], registry, KillSwitch(), settings, now,
+                       load_gate_config().max_evidence_age_days)
+active = [r.id for r in registry.records() if r.status in ACTIVE]
 
-detector = get_detector()
-tracker = get_tracker()
+st.title("Trading agent")
+mode = f"Paper trading: {', '.join(active)}" if active else "NO TRADE: no strategy has the evidence to trade"
+st.caption(f"{mode} · {now:%d %b %Y %H:%M} IST · read-only")
+alerts = [c for c in checks if c.level == ALERT]
+warnings = [c for c in checks if c.level == WARN]
+if alerts:
+    st.error("Needs attention: " + "; ".join(f"{c.name}: {c.detail}" for c in alerts))
+elif warnings:
+    st.warning("; ".join(f"{c.name}: {c.detail}" for c in warnings))
+else:
+    st.success("All health checks pass.")
 
-# --- Sidebar Controls ---
-st.sidebar.header("Control Panel")
-if st.sidebar.button("🔄 Scan Market for Signals"):
-    with st.spinner("Scanning universe and calculating technicals..."):
-        # We only run the detector, NOT the Telegram/AI alerts here
-        signals = detector.scan_market()
-        st.session_state['latest_signals'] = signals
-        st.session_state['blocked_count'] = len(detector.last_rejected)
-        if signals:
-            st.sidebar.success(f"Found {len(signals)} approved setups!")
-        else:
-            st.sidebar.warning("NO TRADE: no approved strategy fired.")
+account_tab, decisions_tab, strategies_tab, health_tab, chart_tab = st.tabs(
+    ["Account", "Decisions", "Strategies", "Health and runs", "Chart"])
+NO_RECORDS = "No paper-trading records yet: the first daily run creates them (python -m trader.execution.eod)."
 
-# --- Main Dashboard Area ---
-col1, col2 = st.columns([1, 2]) # Split screen: 1/3 for signals, 2/3 for charts
-
-# Left Column: Live Signals
-with col1:
-    st.subheader("🚨 Active Setups")
-    
-    if 'latest_signals' in st.session_state and st.session_state['latest_signals']:
-        for s in st.session_state['latest_signals']:
-            # Create a nice visual card for each signal
-            with st.expander(f"{s['signal']} | {s['ticker']}", expanded=True):
-                st.write(f"**Strategy:** {s['strategy']}")
-                st.write(f"**Entry Price:** ₹{s['price']:.2f}")
-                st.write(f"**Target:** ₹{s['target']} 🎯")
-                st.write(f"**Stop Loss:** ₹{s['stop_loss']} 🛑")
-                st.write(f"**RSI:** {s['rsi']}")
-    elif 'latest_signals' in st.session_state:
-        st.info("NO TRADE. Only strategies approved in config/strategies.toml can produce setups, "
-                "and none has passed the profitability gate yet (see README.md).")
-        if st.session_state.get('blocked_count'):
-            st.caption(f"{st.session_state['blocked_count']} candidate signal(s) from rejected or disabled "
-                       "rules were blocked. Do not trade them.")
+with account_tab:
+    if store is None:
+        st.info(NO_RECORDS)
     else:
-        st.info("Click 'Scan Market' in the sidebar to run a scan.")
+        numbers = console.account(store)
+        equity, cash, held, last = st.columns(4)
+        equity.metric("Equity", f"₹{numbers['equity']:,.0f}", f"{numbers['return']:+.2%} since the start")
+        cash.metric("Cash", f"₹{numbers['cash']:,.0f}")
+        held.metric("Open positions", numbers["positions"])
+        last.metric("Last session", str(numbers["last_session"] or "-"))
+        history = store.equity_history()
+        if len(history) > 1:
+            st.line_chart(history.rename("Equity"))
+        st.subheader("Open positions")
+        st.dataframe(console.positions_table(store), hide_index=True)
+        st.subheader("Closed trades")
+        st.dataframe(console.newest_first(store.trades()), hide_index=True)
 
-# Right Column: Interactive Charting
-with col2:
-    st.subheader("📊 Chart Analysis")
-    
-    # Let the user pick a stock from our universe
-    selected_ticker = st.selectbox("Select a stock to analyze:", get_nifty_universe())
-    
-    with st.spinner(f"Fetching latest chart data for {selected_ticker}..."):
-        # Fetch 1 month of 15-minute data for a cleaner chart
-        chart_data_dict = tracker.fetch_latest_data(interval="15m", period="1mo")
-        
-        if selected_ticker in chart_data_dict:
-            df = chart_data_dict[selected_ticker]
-            
-            # Apply technical indicators to the chart data
-            ta = TechnicalAnalyzer()
-            df = ta.apply_indicators(df)
-            
-            # Build the interactive Plotly Candlestick chart
-            fig = go.Figure()
-            
-            # Add Candlesticks
-            fig.add_trace(go.Candlestick(
-                x=df.index,
-                open=df['open'], high=df['high'], low=df['low'], close=df['close'],
-                name="Price"
-            ))
-            
-            # Add 20 SMA
-            fig.add_trace(go.Scatter(
-                x=df.index, y=df['sma_20'], 
-                line=dict(color='orange', width=1.5), name="20 SMA"
-            ))
-            
-            # Add 50 SMA
-            fig.add_trace(go.Scatter(
-                x=df.index, y=df['sma_50'], 
-                line=dict(color='blue', width=1.5), name="50 SMA"
-            ))
+with decisions_tab:
+    if store is None:
+        st.info(NO_RECORDS)
+    else:
+        st.caption("Every signal the engine saw and what it did, including each NO TRADE and its reason.")
+        st.dataframe(console.newest_first(store.table("decisions")), hide_index=True)
 
-            fig.update_layout(
-                title=f"{selected_ticker} Intraday Chart",
-                yaxis_title="Price (₹)",
-                xaxis_rangeslider_visible=False,
-                height=600,
-                template="plotly_dark" # Gives it a professional trading terminal look
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
+with strategies_tab:
+    st.caption("A status is only kept if its evidence in docs/research/evidence supports it.")
+    st.dataframe(console.strategy_table(registry), hide_index=True)
+
+with health_tab:
+    st.dataframe(pd.DataFrame([{"Check": c.name, "Level": c.level.upper(), "Detail": c.detail} for c in checks]),
+                 hide_index=True)
+    if store is not None:
+        st.subheader("Runs")
+        st.dataframe(store.runs(limit=100), hide_index=True)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def daily_bars(symbol: str) -> pd.DataFrame:
+    end = datetime.now(IST)
+    return YahooProvider().history(symbol, "1d", end - timedelta(days=550), end)
+
+
+with chart_tab:
+    symbols = sorted({s for listed in load_universes().values() for s in listed} | set(store.positions() if store else {}))
+    choice = st.selectbox("Instrument (daily bars from Yahoo)", ["-", *symbols])
+    if choice != "-":
+        bars = daily_bars(choice)
+        if bars.empty:
+            st.error(f"No data for {choice}.")
         else:
-            st.error("Could not fetch data for charting.")
+            fig = go.Figure([go.Candlestick(x=bars.index, open=bars["open"], high=bars["high"], low=bars["low"],
+                                            close=bars["close"], name=choice),
+                             go.Scatter(x=bars.index, y=sma(bars["close"], 200), name="200-day average")])
+            trades = store.trades() if store is not None else pd.DataFrame()
+            trades = trades[trades["symbol"] == choice] if len(trades) else trades
+            for column, price, label, symbol in (("entry_session", "entry_price", "Paper entry", "triangle-up"),
+                                                 ("exit_session", "exit_price", "Paper exit", "triangle-down")):
+                if len(trades):
+                    fig.add_trace(go.Scatter(x=pd.to_datetime(trades[column]), y=trades[price], mode="markers",
+                                             marker_symbol=symbol, marker_size=12, name=label))
+            fig.update_layout(height=560, xaxis_rangeslider_visible=False, margin=dict(t=30))
+            st.plotly_chart(fig, use_container_width=True)

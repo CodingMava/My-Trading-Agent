@@ -14,6 +14,14 @@ LOG_FORMAT = "%(asctime)s %(levelname)-7s %(name)s | %(message)s"
 NOISY_LOGGERS = ("httpx", "httpcore", "urllib3", "peewee")
 
 
+def redact(text: str, secrets: Iterable[str]) -> str:
+    """`text` with every known secret replaced by '***' (for logs, and for alerts built from errors)."""
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "***")
+    return text
+
+
 class RedactingFormatter(logging.Formatter):
     """Formats as usual, then masks every known secret, including inside tracebacks."""
 
@@ -22,10 +30,7 @@ class RedactingFormatter(logging.Formatter):
         self._secrets = [s for s in secrets if s]
 
     def format(self, record: logging.LogRecord) -> str:
-        text = super().format(record)
-        for secret in self._secrets:
-            text = text.replace(secret, "***")
-        return text
+        return redact(super().format(record), self._secrets)
 
 
 def make_console_utf8() -> None:

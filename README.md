@@ -80,10 +80,10 @@ ETFs in recent years. Nine hypotheses over three rounds, none passed: the system
 
 | Path | What it is |
 |---|---|
-| `signal_engine.py` | Live scanner (5-minute NSE bars). Only registry-approved strategies can emit signals. |
-| `data_engine.py`, `ta_engine.py`, `universe.py` | Yahoo Finance fetcher, indicators, stock list |
-| `alert_engine.py`, `ai_engine.py` | Telegram alerts; optional Gemini commentary (off by default) |
-| `dashboard.py` | Streamlit dashboard |
+| `dashboard.py` | Ops console (Streamlit, read-only): health, the paper account, decisions, strategies, runs |
+| `scripts/register_tasks.ps1` | Creates the two Windows scheduled tasks: the daily run and the health check |
+| `signal_engine.py` | Legacy intraday scanner (5-minute bars). Every one of its rules was rejected, so it never signals |
+| `data_engine.py`, `ta_engine.py`, `universe.py`, `alert_engine.py`, `ai_engine.py` | Legacy helpers of that scanner; optional Gemini commentary (off) |
 | `config/settings.toml` | Non-secret settings (data source, Telegram, AI) |
 | `config/strategies.toml` | Strategy registry: each strategy's status |
 | `config/gate.toml` | The profitability gate: the evidence each status requires |
@@ -98,6 +98,7 @@ ETFs in recent years. Nine hypotheses over three rounds, none passed: the system
 | `trader/features/` | Tested, look-ahead-free indicators (SMA, Wilder RSI, ATR) |
 | `trader/strategies/` | Strategy rules (the Phase 3 swing hypotheses) and the catalog the paper trader runs |
 | `trader/execution/` | End-of-day paper trading and its SQLite store; paper evidence for the gate |
+| `trader/ops/` | Health checks (alerts on failure and on silence) and the console's read-only views |
 | `trader/notify/` | Telegram message formats and a sender that retries and never logs the token |
 | `trader/research/` | Backtesting harness: simulator, costs, metrics, validation, audit and Phase 3 runners |
 | `docs/research/` | Pre-registrations, evidence reports, and machine-readable verdicts (`evidence/`) |
@@ -118,13 +119,16 @@ Then fill in your credentials in `.env`. It is git-ignored; never commit it.
 ## Usage
 
 ```bash
-python signal_engine.py          # scan every 5 minutes during NSE hours (09:15-15:30 IST)
-python signal_engine.py --once   # one scan now, then exit
-python alert_engine.py           # send a Telegram test message
-streamlit run dashboard.py       # dashboard
+python -m trader.execution.eod            # the daily run: paper trading after the NSE close
+python -m trader.ops.health               # is it running, and is it safe? (exit code 1 if not)
+streamlit run dashboard.py                # ops console, read-only
+python -m trader.risk.killswitch status   # the kill switch
+python alert_engine.py                    # send a Telegram test message
 ```
 
-Logs go to the console and to `logs/trader.log` (UTF-8, rotated, secrets masked).
+Logs go to the console and to `logs/trader.log` and `logs/health.log` (UTF-8, rotated, secrets masked).
+The original intraday scanner (`python signal_engine.py`) still runs, but every one of its rules was
+rejected in the audit, so it never signals.
 
 ## Market data
 
@@ -172,9 +176,34 @@ the next run. A strategy whose paper results drift from its research (`[decay]` 
 suspended automatically.
 
 Only strategies whose status `PAPER` is backed by research evidence are traded. **Today there are none**
-(all three swing hypotheses were rejected), so every run records NO TRADE. To run it daily, add a Windows
-Task Scheduler task for weekdays at 18:00 IST that runs `venv\Scripts\python.exe -m trader.execution.eod`
-with "Start in" set to this folder.
+(none of the nine swing hypotheses passed), so every run records NO TRADE. To run it every day, see
+[Running unattended](#running-unattended).
+
+## Running unattended
+
+Two Windows scheduled tasks run the system. `scripts/register_tasks.ps1` creates both: review it, then run
+it once with `powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1`.
+
+| Task | When | Runs |
+|---|---|---|
+| Daily run | 18:00 IST every day; if the PC was off then, as soon as it is back | `python -m trader.execution.eod` |
+| Health check | 21:00 IST every day | `python -m trader.ops.health --notify` |
+
+What sends you a Telegram alert:
+
+- **The run fails** (a crash, a broken config, no Kite login): an alert straight away, with secrets masked.
+  Every run is recorded, and a failure leaves no half-processed session behind.
+- **Market data is missing**: when more than 20% of the instruments have no bar yet for a session, the
+  run stops before that session instead of recording a day it couldn't see, and the next run retries it.
+- **The run didn't happen**: the 21:00 health check alerts when the latest session isn't processed, the
+  last run failed, halted or died, the kill switch is on, Telegram messages are stuck, or cash and
+  holdings don't reconcile with the fills.
+- **The PC is off**, so nothing on it can alert (optional): create a free check at healthchecks.io or a
+  similar dead man's switch and put its ping URL in `.env` as `HEARTBEAT_URL`. Every clean run pings it,
+  and the service alerts you when the pings stop.
+
+The health check also counts clean sessions in a row since the last failure. The roadmap asks for 60
+before broker integration (Phase 8).
 
 ## Market calendars
 
@@ -246,9 +275,11 @@ python -m trader.risk.killswitch status
 | 3c | Research round 3: confirm or retire H6 on unseen data | Done: not confirmed; pullback rules retired |
 | 4 | Profitability gate enforced from evidence reports | Done |
 | 5-6 | Risk engine and portfolio limits | Done |
-| 7 | Paper trading (end-of-day, for swing strategies) | Done: no strategy is eligible yet |
-| 8 | Zerodha Kite order placement (India) | |
-| 9-12 | AI research layer, full Telegram monitoring, production monitoring, small live trading | |
+| 7 | Paper trading (end-of-day, for swing strategies) | Done: no strategy is eligible yet. Its 60 unattended sessions start once the tasks are scheduled |
+| 8 | Broker integration: Zerodha Kite orders, still on paper capital | Waits for those 60 sessions and a strategy that qualifies |
+| 9 | AI research layer: news to structured tags, advisory only | Waits for a strategy it could measurably improve |
+| 10 | Observability: run records, alerts on failure and on silence, health checks, ops console | Done |
+| 11 | Controlled live trading | Needs paper-trading evidence first |
 
 ## Data
 
