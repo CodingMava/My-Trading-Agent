@@ -61,7 +61,8 @@ def run_checks(store: PaperStore | None, calendar: MarketCalendar, now: datetime
     latest = next(runs.itertuples(), None) if len(runs) else None
     last = store.last_session() if store is not None else None
     if last is None and latest is None:
-        return [Health("daily run", WARN, "it has never run: schedule it with scripts/register_tasks.ps1")]
+        return [Health("daily run", WARN, "it hasn't run yet; the first run creates the records "
+                                          "(scripts/register_tasks.ps1 schedules it daily)")]
     checks = []
     if last is not None and last >= expected:
         checks.append(Health("daily run", OK, f"processed through {last}"))

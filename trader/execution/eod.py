@@ -33,7 +33,7 @@ from trader.config import ROOT, load_settings
 from trader.core.models import PortfolioState, Position, TradeIntent
 from trader.data.kite import session_secrets
 from trader.data.providers import fetch_many, make_provider
-from trader.data.validate import DAILY_SETTLE, drop_incomplete_bars, placeholder_bars, validate_bars
+from trader.data.validate import COLUMNS, DAILY_SETTLE, drop_incomplete_bars, placeholder_bars, validate_bars
 from trader.execution.store import PaperStore
 from trader.gate import EVIDENCE_DIR, DecayThresholds, decay_check, load_evidence, load_gate_config
 from trader.logging_setup import configure_logging, redact
@@ -103,13 +103,20 @@ class PaperTrader:
         return self.calendar.trading_days(start or until, until)
 
     def load_bars(self, symbols: list[str], first_session: date, now: datetime):
-        """Validated daily bars. As in research, bars without prices and holiday placeholders are dropped
-        first (that day then simply has no bar). Exits may use a stock whose latest bar jumped suspiciously
-        (a stop must still work); new entries may not. Returns (bars for exits, bars for entries, problems)."""
+        """Validated daily bars. As in research, repeated timestamps keep their first bar, and bars without
+        prices and holiday placeholders are dropped (that day then simply has no bar). A frame that isn't
+        usable at all only rules out its own instrument. Exits may use a stock whose latest bar jumped
+        suspiciously (a stop must still work); new entries may not. Returns (bars for exits, bars for
+        entries, problems)."""
         start = datetime.combine(first_session - timedelta(days=LOOKBACK_DAYS), time(0), IST)
         frames, problems = fetch_many(self.provider, symbols, "1d", start, now)
         for_exits, for_entries = {}, {}
         for symbol, frame in frames.items():
+            if (any(c not in frame.columns for c in COLUMNS) or not isinstance(frame.index, pd.DatetimeIndex)
+                    or frame.index.tz is None):
+                problems[symbol] = validate_bars(frame, symbol, "1d").summary()  # names what is wrong
+                continue
+            frame = frame[~frame.index.duplicated(keep="first")].sort_index()
             priced = frame[["open", "high", "low", "close"]].notna().all(axis=1)
             frame = drop_incomplete_bars(frame[priced & ~placeholder_bars(frame)], "1d", now, self.calendar)
             report = validate_bars(frame, symbol, "1d", calendar=self.calendar)
