@@ -1,6 +1,6 @@
 # Research round 5 results: a batch of documented monthly effects
 
-Generated 2026-10-11 17:19 by `python -m trader.research.round5`, judged against [the pre-registration](round5-preregistration.md) (SHA-256 `2a2526fa940f65a3...`, unchanged since it was recorded before these rules ran on this data). Returns are per trade, net of costs, over each hypothesis's whole span.
+Generated 2026-10-11 17:28 by `python -m trader.research.round5`, judged against [the pre-registration](round5-preregistration.md) (SHA-256 `a78ed4f22df5095c...`, unchanged since it was recorded before these rules ran on this data). Returns are per trade, net of costs, over each hypothesis's whole span.
 
 ## Verdict
 

@@ -7,7 +7,6 @@ strategy ran, and this runner refuses to judge against a different version of th
 """
 from __future__ import annotations
 
-import hashlib
 from dataclasses import asdict
 from datetime import date, datetime
 
@@ -20,7 +19,7 @@ from trader.features.indicators import sma
 from trader.gate import Evidence, ResearchThresholds, decide, research_checks, save_evidence
 from trader.logging_setup import make_console_utf8
 from trader.research.costs import US_COMMISSION_FREE, ZERODHA_DELIVERY, ZERODHA_ETF_DELIVERY
-from trader.research.datasets import DATA_DIR, load_dataset
+from trader.research.datasets import DATA_DIR, load_dataset, text_sha256
 from trader.research.metrics import summarize
 from trader.research.simulator import concat_trades, select_trades, simulate, trade_rows
 from trader.research.validation import random_entry_test
@@ -53,7 +52,7 @@ PREREGISTERED = ResearchThresholds(min_trades=50, min_win_rate=0.50, min_profit_
 
 
 def check_preregistration() -> str:
-    digest = hashlib.sha256(PREREGISTRATION.read_bytes()).hexdigest()
+    digest = text_sha256(PREREGISTRATION)
     if digest != PREREGISTRATION_SHA256:
         raise SystemExit(f"{PREREGISTRATION.name} changed after it was recorded (sha256 {digest}); "
                          "pre-register a new hypothesis set instead of editing this one.")

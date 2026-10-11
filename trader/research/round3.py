@@ -8,7 +8,6 @@ H7 runs H6's rules on the 9 original sector SPDRs over 2000-2015, H8 on 15 iShar
 """
 from __future__ import annotations
 
-import hashlib
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timedelta
 
@@ -20,7 +19,7 @@ from trader.gate import Check, Evidence, ResearchThresholds, decide, research_ch
 from trader.logging_setup import make_console_utf8
 from trader.research import round2
 from trader.research.costs import US_COMMISSION_FREE
-from trader.research.datasets import DATA_DIR
+from trader.research.datasets import DATA_DIR, text_sha256
 from trader.research.metrics import summarize
 from trader.research.phase3 import holm, trading_days
 from trader.research.simulator import concat_trades
@@ -67,7 +66,7 @@ CLASSIFIED_MOVES = {
 
 
 def check_preregistration() -> str:
-    digest = hashlib.sha256(PREREGISTRATION.read_bytes()).hexdigest()
+    digest = text_sha256(PREREGISTRATION)
     if digest != PREREGISTRATION_SHA256:
         raise SystemExit(f"{PREREGISTRATION.name} changed after it was recorded (sha256 {digest}); "
                          "pre-register a new hypothesis set instead of editing this one.")

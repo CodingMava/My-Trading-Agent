@@ -8,7 +8,6 @@ was recorded before the rule ran on any data.
 """
 from __future__ import annotations
 
-import hashlib
 from dataclasses import asdict
 from datetime import date, datetime
 
@@ -20,7 +19,7 @@ from trader.gate import Evidence, decide, save_evidence
 from trader.logging_setup import make_console_utf8
 from trader.research import round2, round3
 from trader.research.costs import US_COMMISSION_FREE, ZERODHA_ETF_DELIVERY
-from trader.research.datasets import DATA_DIR
+from trader.research.datasets import DATA_DIR, text_sha256
 from trader.research.phase3 import base_symbol, holm, in_window
 from trader.research.round3 import Hypothesis
 from trader.research.simulator import concat_trades, select_trades, simulate, trade_rows
@@ -41,7 +40,7 @@ CLASSIFIED_MOVES: dict[tuple[str, str], str] = {}  # the data-quality report fou
 
 
 def check_preregistration() -> str:
-    digest = hashlib.sha256(PREREGISTRATION.read_bytes()).hexdigest()
+    digest = text_sha256(PREREGISTRATION)
     if digest != PREREGISTRATION_SHA256:
         raise SystemExit(f"{PREREGISTRATION.name} changed after it was recorded (sha256 {digest}); "
                          "pre-register a new hypothesis set instead of editing this one.")

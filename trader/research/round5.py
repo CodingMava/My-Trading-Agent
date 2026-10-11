@@ -10,7 +10,6 @@ any of these rules ran on this data.
 """
 from __future__ import annotations
 
-import hashlib
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -23,14 +22,14 @@ from trader.gate import Check, Evidence, decide, save_evidence
 from trader.logging_setup import make_console_utf8
 from trader.research import round2, round3, round4
 from trader.research.costs import US_COMMISSION_FREE, ZERODHA_ETF_DELIVERY
-from trader.research.datasets import DATA_DIR
+from trader.research.datasets import DATA_DIR, text_sha256
 from trader.research.phase3 import base_symbol, holm, in_window, selection_test
 from trader.research.round3 import Hypothesis
 from trader.research.validation import same_day_random_test
 from trader.strategies.swing import MomentumParams, momentum_panel, momentum_trades, select_top
 
 PREREGISTRATION = ROOT / "docs" / "research" / "round5-preregistration.md"
-PREREGISTRATION_SHA256 = "2a2526fa940f65a30a25b2b0a6c7b27680ffca0df5a8fd783fe9e6219cefaca7"  # 2026-10-11 17:16 IST
+PREREGISTRATION_SHA256 = "a78ed4f22df5095c1af45133fc4c0c9d11ab7d7857393c480065bb0934c2b3cf"  # 2026-10-11 17:16 IST
 RESULTS = ROOT / "docs" / "research" / "round5-results.md"
 END = date(2026, 10, 8)
 MOMENTUM_TOP_3 = MomentumParams(top_n=3)
@@ -79,7 +78,7 @@ CLASSIFIED_MOVES = {
 
 
 def check_preregistration() -> str:
-    digest = hashlib.sha256(PREREGISTRATION.read_bytes()).hexdigest()
+    digest = text_sha256(PREREGISTRATION)
     if digest != PREREGISTRATION_SHA256:
         raise SystemExit(f"{PREREGISTRATION.name} changed after it was recorded (sha256 {digest}); "
                          "pre-register a new hypothesis set instead of editing this one.")

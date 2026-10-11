@@ -36,6 +36,12 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def text_sha256(path: Path) -> str:
+    """SHA-256 of a text file with LF line endings, as git stores it, so a Windows tool that rewrites them as
+    CRLF can't break a pre-registration's pin."""
+    return hashlib.sha256(path.read_bytes().replace(b"\r\n", b"\n")).hexdigest()
+
+
 def period_days(period: str) -> int:
     """"60d", "6mo", "10y" -> a number of calendar days (rounded up)."""
     match = re.fullmatch(r"(\d+)(d|wk|mo|y)", period)

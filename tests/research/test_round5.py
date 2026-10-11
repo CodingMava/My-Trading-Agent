@@ -6,7 +6,7 @@ from trader.research import round5
 
 
 def test_the_preregistration_is_unchanged():
-    assert round5.check_preregistration().startswith("2a2526fa")
+    assert round5.check_preregistration().startswith("a78ed4f2")
 
 
 def test_each_third_of_the_span_must_be_profitable():

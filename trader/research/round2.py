@@ -9,7 +9,6 @@ unclassified: the pre-registration requires each one to be classified before the
 """
 from __future__ import annotations
 
-import hashlib
 from dataclasses import asdict
 from datetime import date, datetime
 from pathlib import Path
@@ -22,7 +21,7 @@ from trader.features.indicators import sma
 from trader.gate import Check, Evidence, ResearchThresholds, decide, research_checks, save_evidence
 from trader.logging_setup import make_console_utf8
 from trader.research.costs import US_COMMISSION_FREE, ZERODHA_ETF_DELIVERY
-from trader.research.datasets import DATA_DIR, load_dataset
+from trader.research.datasets import DATA_DIR, load_dataset, text_sha256
 from trader.research.phase3 import base_symbol, clean_daily, holm, in_window, stats_table, trading_days
 from trader.research.simulator import concat_trades, select_trades, simulate, trade_rows
 from trader.research.validation import clustered_t, random_entry_test, same_day_random_test
@@ -85,7 +84,7 @@ COMPANY_NEWS = {
 
 
 def check_preregistration() -> str:
-    digest = hashlib.sha256(PREREGISTRATION.read_bytes()).hexdigest()
+    digest = text_sha256(PREREGISTRATION)
     if digest != PREREGISTRATION_SHA256:
         raise SystemExit(f"{PREREGISTRATION.name} changed after it was recorded (sha256 {digest}); "
                          "pre-register a new hypothesis set instead of editing this one.")

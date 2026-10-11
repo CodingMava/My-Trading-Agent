@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from tests.helpers import daily_session_bars
-from trader.research.datasets import load_dataset, main, period_days, save_dataset
+from trader.research.datasets import load_dataset, main, period_days, save_dataset, text_sha256
 
 DAYS = [date(2026, 8, d) for d in (3, 4, 5, 6, 7)]
 
@@ -32,3 +32,10 @@ def test_validate_command_reports_gaps(tmp_path, capsys):
     main(["validate", str(out)])
     printed = capsys.readouterr().out
     assert "GAP.NS" in printed and "most other NSE instruments traded" in printed
+
+
+def test_a_text_pin_ignores_windows_line_endings(tmp_path):
+    lf, crlf = tmp_path / "lf.md", tmp_path / "crlf.md"
+    lf.write_bytes(b"# Hypotheses\nH1: one\n")
+    crlf.write_bytes(b"# Hypotheses\r\nH1: one\r\n")
+    assert text_sha256(lf) == text_sha256(crlf) == "2e49b7ebe7b008f9c68c77432dbbbfb9a2a8581685f9048cadeee4248e5b0b99"
