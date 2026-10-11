@@ -116,15 +116,28 @@ def test_every_registered_strategy_holds_its_status():
 
 def test_paper_checks_and_decision():
     good = pd.Series([0.012, -0.006] * 25)  # 50 trades averaging +0.3%
-    checks = paper_checks(good, weeks=10, research_mean=0.003, research_sd=0.02, research_n=400,
-                          realised_cost=0.0035, modelled_cost=0.003)
+    research = dict(research_mean=0.003, research_sd=0.02, research_n=400, modelled_cost=0.003)
+    ready = dict(clean_sessions=60, reviewed_trades=20)
+    checks = paper_checks(good, weeks=13, realised_cost=0.0035, **research, **ready)
     assert all(c.passed for c in checks) and decide_paper(checks) == "LIVE_SMALL"
-    early = paper_checks(good[:20], weeks=3, research_mean=0.003, research_sd=0.02, research_n=400,
-                         realised_cost=0.003, modelled_cost=0.003)
-    assert decide_paper(early) == "PAPER"  # promising but not enough time or trades yet
-    off = paper_checks(-good, weeks=10, research_mean=0.003, research_sd=0.02, research_n=400,
-                       realised_cost=0.003, modelled_cost=0.003)
+    early = paper_checks(good[:20], weeks=3, realised_cost=0.003, **research, clean_sessions=15)
+    assert decide_paper(early) == "PAPER"  # promising but not enough time, trades, sessions or review yet
+    off = paper_checks(-good, weeks=13, realised_cost=0.003, **research, **ready)
     assert decide_paper(off) == "RESEARCH"  # results contradict the research
+
+
+def test_level_5_needs_three_months_a_clean_system_and_a_human_review():
+    good = pd.Series([0.012, -0.006] * 25)
+    research = dict(research_mean=0.003, research_sd=0.02, research_n=400, realised_cost=0.003, modelled_cost=0.003)
+    failing = lambda checks: {c.number for c in checks if not c.passed}  # noqa: E731
+    two_months = paper_checks(good, weeks=9, **research, clean_sessions=60, reviewed_trades=20)
+    assert failing(two_months) == {1} and decide_paper(two_months) == "PAPER"
+    crashed = paper_checks(good, weeks=13, **research, clean_sessions=59, reviewed_trades=20)
+    assert failing(crashed) == {6} and decide_paper(crashed) == "PAPER"
+    defect = paper_checks(good, weeks=13, **research, clean_sessions=60, duplicate_orders=1, reviewed_trades=20)
+    assert failing(defect) == {7} and decide_paper(defect) == "PAPER"  # fix the system, not the strategy
+    unreviewed = paper_checks(good, weeks=13, **research, clean_sessions=60, reconciliation_problems=0)
+    assert failing(unreviewed) == {8} and decide_paper(unreviewed) == "PAPER"
 
 
 def test_decay_monitor():

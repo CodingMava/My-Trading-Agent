@@ -98,3 +98,21 @@ def test_every_run_that_did_not_fail_leaves_a_dated_backup(tmp_path):
 
     daily(failing, FakeNotifier(), build, clock=lambda: CLOCK, backup_dir=tmp_path / "failed")
     assert not (tmp_path / "failed").exists()
+
+
+def test_paper_evidence_carries_the_systems_record_and_the_review(tmp_path):
+    from trader.execution.report import paper_evidence
+    from trader.gate import Evidence, save_evidence
+
+    trader = make_trader(tmp_path)
+    run_daily(trader, until=date(2026, 8, 18), start=SIGNAL_DAY)
+    save_evidence(Evidence("T1", "research", "PAPER", "2026-08-01", "test",
+                           stats={"holdout_mean_net": 0.003, "holdout_sd_net": 0.02, "holdout_trades": 400,
+                                  "holdout_win_rate": 0.6}), tmp_path / "evidence")
+    evidence = paper_evidence(trader.store, "T1", date(2026, 8, 20), evidence_dir=tmp_path / "evidence",
+                              reviewed_trades=25, now=CLOCK)
+    stats = evidence.stats
+    assert (stats["clean_sessions"], stats["duplicate_orders"], stats["reconciliation_problems"]) == (7, 0, 0)
+    failed = {c["number"] for c in evidence.checks if not c["passed"]}
+    assert {1, 2, 6} <= failed and 7 not in failed and 8 not in failed  # 25 reviewed >= 20
+    assert evidence.decision in ("PAPER", "RESEARCH")

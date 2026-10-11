@@ -96,17 +96,27 @@ def safety_checks(store: PaperStore | None, kill_switch: KillSwitch) -> list[Hea
     return checks
 
 
-def unattended_record(store: PaperStore | None, now: datetime) -> Health:
-    """Sessions processed since the last run that failed or died: Phase 7's 60-session requirement."""
-    if store is None:
-        return Health("unattended record", INFO, f"0 of {UNATTENDED_TARGET} clean sessions before broker integration")
+def clean_sessions(store: PaperStore, now: datetime) -> int:
+    """Sessions processed since the last run that failed or died (Level 5's 60 in a row)."""
     clean = 0
     for run in store.runs(limit=100_000).itertuples():  # newest first
         if run.status == "failed" or _died(run, now):
             break
         clean += int(run.sessions)
+    return clean
+
+
+def duplicate_orders(store: PaperStore) -> int:
+    """Orders the database refused as duplicates: each one means something tried to place an order twice."""
     decisions = store.table("decisions")
-    duplicates = int((decisions["detail"] == "duplicate order prevented").sum()) if len(decisions) else 0
+    return int((decisions["detail"] == "duplicate order prevented").sum()) if len(decisions) else 0
+
+
+def unattended_record(store: PaperStore | None, now: datetime) -> Health:
+    """Sessions processed since the last run that failed or died: Phase 7's 60-session requirement."""
+    if store is None:
+        return Health("unattended record", INFO, f"0 of {UNATTENDED_TARGET} clean sessions before broker integration")
+    clean, duplicates = clean_sessions(store, now), duplicate_orders(store)
     detail = f"{clean} of {UNATTENDED_TARGET} clean sessions in a row before broker integration"
     if duplicates:
         return Health("unattended record", WARN, f"{detail}; {duplicates} duplicate order(s) were prevented: find out why")

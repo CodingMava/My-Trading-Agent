@@ -18,11 +18,14 @@ min_breadth = 0.60           # stock strategies: share of stocks (with min_trade
 min_trades_per_stock = 5
 
 [paper]
-# Paper-trading criteria before LIVE_SMALL.
-min_weeks = 8
+# Paper-trading criteria before LIVE_SMALL: the audit's Level 5.
+min_weeks = 13               # at least three months
 min_trades = 40
 max_cost_ratio = 1.5         # realised costs at most this multiple of the modelled costs
-# The paper expectancy must also sit inside the research holdout's 95% confidence interval.
+min_clean_sessions = 60      # unattended sessions in a row without a failed run
+min_reviewed_trades = 20     # paper trades a person has reviewed and agreed with (python -m trader.execution.report --reviewed N)
+# The paper expectancy must also sit inside the research holdout's 95% confidence interval, no duplicate
+# order may have been attempted, and the records must reconcile.
 
 [evidence]
 max_age_days = 365           # older evidence no longer supports PAPER or LIVE statuses

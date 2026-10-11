@@ -47,9 +47,11 @@ class ResearchThresholds:
 
 @dataclass(frozen=True)
 class PaperThresholds:
-    min_weeks: int = 8
+    min_weeks: int = 13
     min_trades: int = 40
     max_cost_ratio: float = 1.5
+    min_clean_sessions: int = 60
+    min_reviewed_trades: int = 20
 
 
 @dataclass(frozen=True)
@@ -153,9 +155,13 @@ def research_checks(trades: pd.DataFrame, cost: float, holdout_start: date, sess
 
 
 def paper_checks(paper_net: pd.Series, weeks: float, research_mean: float, research_sd: float, research_n: int,
-                 realised_cost: float, modelled_cost: float, t: PaperThresholds = PaperThresholds()) -> list[Check]:
-    """Score paper-trading results (net return per trade) against the research holdout they should match
-    (its mean, standard deviation and trade count, as stored in the research evidence)."""
+                 realised_cost: float, modelled_cost: float, t: PaperThresholds = PaperThresholds(),
+                 clean_sessions: int = 0, duplicate_orders: int = 0, reconciliation_problems: int = 0,
+                 reviewed_trades: int = 0) -> list[Check]:
+    """Score paper trading (the audit's Level 5): results (net return per trade) against the research
+    holdout they should match (its mean, standard deviation and trade count, from the research evidence),
+    and the system's own record: clean unattended sessions, duplicate orders, reconciliation, and how many
+    trades a person has reviewed."""
     n = len(paper_net)
     mean = float(paper_net.mean()) if n else math.nan
     half_width = 1.96 * research_sd / math.sqrt(research_n) if research_n > 1 else math.inf
@@ -168,13 +174,26 @@ def paper_checks(paper_net: pd.Series, weeks: float, research_mean: float, resea
         Check(4, "Paper expectancy above 0", f"{100 * mean:+.3f}%", n > 0 and mean > 0),
         Check(5, f"Realised costs at most {t.max_cost_ratio}x modelled",
               f"{100 * realised_cost:.3f}% vs {100 * modelled_cost:.3f}%", realised_cost <= t.max_cost_ratio * modelled_cost),
+        Check(6, f"At least {t.min_clean_sessions} unattended sessions in a row without a failed run",
+              f"{clean_sessions}", clean_sessions >= t.min_clean_sessions),
+        Check(7, "No duplicate order attempted, and the records reconcile",
+              f"{duplicate_orders} duplicate(s), {reconciliation_problems} reconciliation problem(s)",
+              duplicate_orders == 0 and reconciliation_problems == 0),
+        Check(8, f"A person reviewed at least {t.min_reviewed_trades} paper trades and agreed with them",
+              f"{reviewed_trades} reviewed", reviewed_trades >= t.min_reviewed_trades),
     ]
 
 
+# Paper checks that say "not yet" (time, trades, a clean run of sessions, a system defect to fix, the
+# person's review) rather than "the research was wrong": failing only these keeps a strategy in PAPER.
+NOT_YET = {1, 2, 6, 7, 8}
+
+
 def decide_paper(checks: list[Check]) -> str:
-    """All pass -> LIVE_SMALL; only time or trade count short -> PAPER (keep going); otherwise RESEARCH."""
+    """All pass -> LIVE_SMALL; only "not yet" checks failing -> PAPER (keep going); results or costs out
+    of line with the research -> RESEARCH."""
     failed = {c.number for c in checks if not c.passed}
-    return "LIVE_SMALL" if not failed else ("PAPER" if failed <= {1, 2} else "RESEARCH")
+    return "LIVE_SMALL" if not failed else ("PAPER" if failed <= NOT_YET else "RESEARCH")
 
 
 @dataclass(frozen=True)

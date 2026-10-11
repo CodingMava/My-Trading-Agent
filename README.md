@@ -278,7 +278,10 @@ summarize(trades, ZERODHA_DELIVERY.round_trip(100_000), session_dates)
 - A status must be earned, not typed: when the registry loads, `PAPER` needs passing research evidence
   in `docs/research/evidence/`, `LIVE_SMALL` also needs passing paper-trading evidence, and `LIVE` also
   needs small-capital live evidence, none older than a year (`config/gate.toml`). Anything else is
-  lowered automatically and the daily run logs why.
+  lowered automatically and the daily run logs why. Paper-trading evidence (the audit's Level 5,
+  `python -m trader.execution.report`) needs three months and 40+ trades in line with the research,
+  60 unattended sessions in a row without a failed run, no duplicate order, records that reconcile, and
+  your review of 20+ of the paper trades (`--reviewed N`).
 - No decision on incomplete, stale or implausible data, and none on a day the calendar can't vouch for.
 - Every trade passes the risk engine (`config/risk.toml`): it risks at most 0.5% of equity, stays within
   position, cash, liquidity, sector, gross-exposure and correlation limits, and is refused after a 2% daily
