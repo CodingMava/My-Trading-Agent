@@ -89,6 +89,8 @@ def test_nse_tick_sizes():
     assert [broker.tick_size(p) for p in prices] == [0.01, 0.05, 0.05, 0.10, 0.10, 0.50, 0.50, 1.00, 1.00, 5.00]
     assert broker.to_tick(95.953) == 95.95 and broker.to_tick(1234.56) == 1234.6 and broker.to_tick(1234.56, down=True) == 1234.5
     assert broker.on_tick(1234.5) and not broker.on_tick(1234.55)
+    assert broker.to_tick(900.03) == 900.0 and broker.on_tick(900.0)  # rounds as if in the Rs 1,000-5,000 band
+    assert broker.to_tick(180.07) == 180.05  # as if Rs 250-1,000: still a valid Rs 0.01 price
     assert broker.stop_limit(95.95) == 91.15 and broker.stop_limit(2000.0) == 1900.0  # 5% under the stop, on a tick
 
 

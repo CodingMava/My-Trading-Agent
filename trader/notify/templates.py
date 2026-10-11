@@ -59,6 +59,11 @@ def risk_alert(*, title: str, detail: str, paper: bool = True) -> str:
     return _message(f"RISK ALERT: {title}", [("Detail", detail)], paper)
 
 
+def live_update(*, title: str, lines: list[str]) -> str:
+    """A message about real orders (Phase 11): labelled [LIVE], never [PAPER]."""
+    return "\n".join([f"<b>[LIVE] {escape(title)}</b>", "", *(escape(line) for line in lines)])
+
+
 def daily_summary(*, session: str, equity: float, day_change: float, cash: float, positions: list[tuple[str, int, float]],
                   strategies: int, paper: bool = True) -> str:
     held = "; ".join(f"{symbol} x{quantity} @ {rupees(price)}" for symbol, quantity, price in positions) or "none"

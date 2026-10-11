@@ -33,11 +33,15 @@ Every alert is a `RISK ALERT` on Telegram with one of these titles.
 | Stale data | No price today for a stock you hold, so its stop wasn't checked today. | Usually a one-day gap. If it repeats for days, find out why (a trading suspension, a delisting, a symbol change). |
 | Rejected order | A queued buy couldn't fill at the open: not enough cash, no price, or the strategy is gone. | Nothing, unless it keeps happening. |
 | Duplicate order prevented | Something tried to place the same order twice and the database refused it. | A bug: find out why before trusting the next run. |
+| [LIVE] Reconciliation failed | Before sending anything, a live job found the account holding fewer shares than the system believes it holds. Nothing was sent and the kill switch is engaged. | Compare `python -m trader.execution.live status` with Kite's holdings. Find out why (a manual sale? a corporate action?) before releasing the kill switch. |
+| [LIVE] Live morning / evening / preclose failed | A live job couldn't run: usually no Kite login today, or Kite unreachable. | Log in (`python -m trader.data.kite login`) and run the job by hand within its window, e.g. `python -m trader.execution.live morning`. |
 | Dry-run order invalid | Kite would refuse a request the dry run prepared: a price off NSE's tick, a bad quantity, a stop above the price. Nothing was sent. | A bug in the order path: look at it with `python -m trader.execution.broker` and fix it before any live trading. |
 
 The dashboard and `python -m trader.ops.health` also show warnings that don't page you: research evidence
 about to expire, next year's market holidays missing (all of December), no Kite login, a stale backup,
-dry-run Kite requests that Kite would refuse.
+dry-run Kite requests that Kite would refuse. When trading live, it also alerts on a live request whose
+outcome is unknown and on a live holding without a stop at Kite (place one by hand), and warns about
+refused or long-unanswered live orders.
 
 ## The plan for losses, decided in advance
 
@@ -99,7 +103,8 @@ Kill switch log (date, why it engaged, what changed before it was released):
 ## Before the first real order
 
 Indian orders are a dry run until Phase 11: `python -m trader.execution.broker` shows the Kite request
-behind each paper step and when a live system would send it. Before any of them is sent for real:
+behind each paper step and when it would be sent. The live machinery (`python -m trader.execution.live`)
+is built and locked. Before it sends anything for real:
 
 - **Evidence:** a strategy at `LIVE_SMALL`, earned by paper-trading evidence (see the README's safety
   rules), and a dry run whose health check has stayed OK: Kite would have accepted every request.
@@ -108,13 +113,19 @@ behind each paper step and when a live system would send it. Before any of them 
   orders from a server that has one.
 - **A DDPI with Zerodha:** without it, every sale of shares from the demat account needs a TPIN
   approval by hand, which an unattended system can't give.
-- **A Kite login every trading day before 09:00:** sessions expire at 06:00 IST, and live orders go out
-  at 09:20 and 15:15 as well as 18:00.
-- **Two more scheduled jobs:** 09:20 (each new holding's stop as a GTT, the GTTs of holdings sold at the
-  open, gap exits) and 15:15 (time exits), as `trader/execution/broker.py` describes.
-- **Tick sizes from Kite's instrument list:** NSE re-sets each stock's tick every month; the dry run uses
-  its price bands.
-- **No orders from a catch-up:** a run that catches up missed sessions must not send their requests late.
+- **A Kite login every trading day before 09:15:** sessions expire at 06:00 IST, and the live jobs run at
+  09:20, 15:15 and 18:30. The health check warns when there's no login.
+- **Turn it on, deliberately:** in `config/settings.toml` set `[live] enabled = true` and `capital` (the
+  rupees the live strategies may use; start small). Then register the live jobs:
+  `powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1 -Live`.
+- **The first weeks:** read every `[LIVE]` message, and compare live fills with paper ones
+  (`python -m trader.execution.live track`). Phase 11 is done when live tracks paper for three months.
+
+The locks stay on once it's running. Only `LIVE_SMALL` or `LIVE` strategies' NSE orders go out, each entry
+is its paper order scaled to the live capital and capped in size and number per day, and a job refuses
+to send outside its window (so a late start can't send a time exit after the close). Before sending, every
+job checks that the account holds every share the system believes it holds; if not, the kill switch
+engages and nothing is sent. A request whose answer was lost is looked up at Kite, never sent twice.
 
 ## Stopping everything
 

@@ -1,7 +1,7 @@
-"""Zerodha Kite orders in a dry run (Phase 8). Each step of paper trading becomes the exact Kite Connect
-request that would carry it out with real shares. The request is checked against Kite's and NSE's rules and
-recorded with its session, but never sent: this module has no network code. Sending is Phase 11, once a
-strategy has earned real money.
+"""Zerodha Kite orders (Phase 8). Each step of paper trading becomes the exact Kite Connect request that
+would carry it out with real shares. The request is checked against Kite's and NSE's rules and recorded with
+its session as a dry run; this module has no network code. Only trader/execution/live.py sends such
+requests, for strategies that have earned real money (Phase 11).
 
     python -m trader.execution.broker                       # the latest session's requests
     python -m trader.execution.broker --session 2026-10-12
@@ -19,8 +19,8 @@ When a live system would send each request (IST):
   15:15, before the close      time exit: deletes the GTT, then sells at MARKET (paper trading sells at the close).
 
 Before the first real order: register a static IP with Kite (since April 2026 it rejects order requests from
-any other address), give Zerodha a DDPI (without one, every sale of delivery shares needs a TPIN approval by
-hand), and take each stock's tick size from Kite's instrument list instead of NSE's price bands below.
+any other address) and give Zerodha a DDPI (without one, every sale of delivery shares needs a TPIN approval
+by hand). docs/runbook.md has the full list.
 """
 from __future__ import annotations
 
@@ -40,8 +40,8 @@ AFTER_CLOSE, AFTER_OPEN, BEFORE_CLOSE = "18:00", "09:20", "15:15"  # IST
 AUTO_PROTECTION = -1  # Kite's automatic market protection
 STOP_LIMIT_BAND = 0.05  # a triggered stop sells at no less than 5% below the stop
 # NSE cash-market ticks from 15 Apr 2025 (circular 33/2025), as (highest price, tick); Rs 0.01 below Rs 250.
-# NSE sets each stock's band monthly from its last close, so near an edge Kite's instrument list decides.
 NSE_TICKS = ((1_000, 0.05), (5_000, 0.10), (10_000, 0.50), (20_000, 1.00), (math.inf, 5.00))
+TICK_HEADROOM = 1.5  # prices are rounded to the tick of a price this much higher (see to_tick)
 TRADINGSYMBOL = re.compile(r"[A-Z0-9&_-]+")
 TAG = re.compile(r"[A-Za-z0-9]{1,20}")
 
@@ -49,7 +49,7 @@ TAG = re.compile(r"[A-Za-z0-9]{1,20}")
 @dataclass(frozen=True)
 class KiteRequest:
     symbol: str  # as paper trading names it (RELIANCE.NS)
-    purpose: str  # entry, exit, stop, cancel stop, gap exit or time exit
+    purpose: str  # entry, exit, stop, cancel stop, gap exit, stop exit or time exit
     send_at: str  # IST
     method: str
     path: str  # under https://api.kite.trade; <...> stands for an id Kite assigns when the GTT is created
@@ -65,8 +65,11 @@ def tick_size(price: float) -> float:
 
 
 def to_tick(price: float, down: bool = False) -> float:
-    """The price on a tick: the nearest one, or the one at or below it."""
-    tick = tick_size(price)
+    """The price on a tick: the nearest one, or the one at or below it. NSE sets each stock's tick monthly
+    from its last close, so a stock can trade in one band while its tick is another's. Every tick is a
+    multiple of the smaller ones, so rounding to the tick of a price half as high again stays valid unless
+    the stock has fallen by a third since that close."""
+    tick = tick_size(price * TICK_HEADROOM)
     steps = math.floor(price / tick + 1e-9) if down else round(price / tick)
     return round(steps * tick, 2)
 
@@ -122,13 +125,25 @@ def stop_order(position: Position, last_price: float | None = None) -> KiteReque
 
 
 def cancel_stop(position: Position, send_at: str) -> KiteRequest:
-    return KiteRequest(position.symbol, "cancel stop", send_at, "DELETE", f"/gtt/triggers/{_gtt(position)}",
-                       tag=_tag("C", _held(position)))
+    return cancel_stop_tagged(position.symbol, _tag("S", _held(position)), send_at)
+
+
+def cancel_stop_tagged(symbol: str, stop_tag: str, send_at: str) -> KiteRequest:
+    """Delete the GTT placed under `stop_tag` (a holding's stop, after the holding was sold)."""
+    return KiteRequest(symbol, "cancel stop", send_at, "DELETE", f"/gtt/triggers/<GTT {stop_tag}>",
+                       tag="C" + stop_tag[1:])
 
 
 def gap_exit(position: Position) -> KiteRequest:
     return KiteRequest(position.symbol, "gap exit", AFTER_OPEN, "PUT", f"/orders/regular/<order from {_gtt(position)[1:-1]}>",
                        {"order_type": "MARKET", "market_protection": AUTO_PROTECTION}, _tag("G", _held(position)))
+
+
+def stop_exit(position: Position) -> KiteRequest:
+    """A new holding already at or below its stop when its GTT would go in: sell it at once."""
+    tag = _tag("K", _held(position))
+    return KiteRequest(position.symbol, "stop exit", AFTER_OPEN, "POST", "/orders/regular",
+                       _market_order(position.symbol, "SELL", position.quantity, tag), tag)
 
 
 def time_exit(position: Position) -> KiteRequest:

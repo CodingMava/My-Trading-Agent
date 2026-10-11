@@ -1,12 +1,17 @@
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+from dataclasses import replace
+
 from trader.config import load_settings
+from trader.core.models import Position
+from trader.execution import broker
+from trader.execution.oms import LiveStore
 from trader.execution.store import PaperStore
 from trader.gate import Evidence, save_evidence
 from trader.markets.calendar import load_calendars
 from trader.ops.health import ALERT, INFO, OK, WARN, backup_check, calendar_checks, data_checks, dry_run_check, \
-    health_checks, run_checks, safety_checks, strategy_checks, unattended_record
+    health_checks, live_checks, run_checks, safety_checks, strategy_checks, unattended_record
 from trader.registry import StrategyRecord, StrategyRegistry
 from trader.risk.killswitch import KillSwitch
 
@@ -117,3 +122,26 @@ def test_dry_run_orders_kite_would_refuse_are_a_warning(tmp_path):
     check = dry_run_check(store, today)
     assert check.level == WARN and "AAA.NS stop on 2026-08-18: trigger 96.003" in check.detail
     assert dry_run_check(store, today + timedelta(days=31)).level == OK  # fixed a month ago
+
+
+def test_the_live_account_is_watched(tmp_path):
+    settings, no_login = load_settings(env={}), tmp_path / "session.json"
+    assert levels(live_checks(settings, None, EVENING, no_login)) == {"live trading": INFO}  # off
+    assert levels(live_checks(replace(settings, live_enabled=True), None, EVENING, no_login)) == {"live login": WARN}
+    store = LiveStore(tmp_path / "live.db")
+    held = Position("T1", "AAA.NS", 10, 100.0, 95.0, date(2026, 8, 17))
+    store.save_position(held)
+    checks = live_checks(settings, store, EVENING, no_login)
+    assert levels(checks) == {"live stops": ALERT} and "no stop at Kite for AAA.NS" in checks[0].detail
+    store.record(EVENING, date(2026, 8, 17), "T1", broker.stop_order(held), "SENT")
+    assert levels(live_checks(settings, store, EVENING, no_login)) == {"live trading": OK}
+    day = date(2026, 8, 18)
+    store.record(EVENING - timedelta(days=2), day, "T1", broker.entry_order("k1", "BBB.NS", 5), "SENT")
+    store.record(EVENING, day, "T1", broker.entry_order("k2", "CCC.NS", 5), "UNKNOWN")
+    store.record(EVENING, day, "T1", broker.entry_order("k3", "DDD.NS", 5), "REJECTED", "MarginException: no funds")
+    checks = live_checks(settings, store, EVENING, no_login)
+    assert levels(checks) == {"live unknown orders": ALERT, "live stale orders": WARN, "live refusals": WARN}
+    assert "DDD.NS entry: MarginException: no funds" in checks[-1].detail
+    everything = health_checks(None, NSE, StrategyRegistry([]), KillSwitch(tmp_path / "KILL"), settings, EVENING,
+                               session_file=no_login, live_store=store)
+    assert everything[0].name == "live unknown orders"  # worst first

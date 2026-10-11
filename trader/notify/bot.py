@@ -26,7 +26,7 @@ from trader.markets.calendar import load_calendars
 from trader.notify.telegram import notifier_from_settings
 from trader.notify.templates import rupees
 from trader.ops import console
-from trader.ops.health import ACTIVE, ALERT, WARN, Health, health_checks
+from trader.ops.health import ACTIVE, ALERT, WARN, Health, health_checks, open_live_store
 from trader.registry import StrategyRegistry
 from trader.risk.killswitch import KillSwitch
 
@@ -57,7 +57,8 @@ def load_context(settings, kill_switch: KillSwitch) -> Context:
     store = PaperStore(database, settings.paper_starting_capital) if database.exists() else None
     registry = StrategyRegistry.load()
     checks = health_checks(store, load_calendars()["NSE"], registry, kill_switch, settings, datetime.now(IST),
-                           load_gate_config().max_evidence_age_days, backup_dir=database.parent / "backups")
+                           load_gate_config().max_evidence_age_days, backup_dir=database.parent / "backups",
+                           live_store=open_live_store(settings))
     return Context(store, registry, kill_switch, checks)
 
 

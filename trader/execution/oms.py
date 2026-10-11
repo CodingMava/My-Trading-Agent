@@ -43,7 +43,7 @@ CREATE TRIGGER IF NOT EXISTS live_fills_no_update BEFORE UPDATE ON live_fills BE
 CREATE TRIGGER IF NOT EXISTS live_fills_no_delete BEFORE DELETE ON live_fills BEGIN SELECT RAISE(ABORT, 'live fills are append-only'); END;
 """
 UNSETTLED = ("SENDING", "SENT", "TRIGGERED", "UNKNOWN")  # Kite may still act on these
-ORDER_PURPOSES = ("entry", "exit", "time exit")
+ORDER_PURPOSES = ("entry", "exit", "time exit", "stop exit")
 GTT_GONE = ("deleted", "cancelled", "expired", "disabled", "rejected")
 STOP_IN_PATH = re.compile(r"GTT (S[0-9a-f]{19})>")
 
@@ -260,9 +260,10 @@ class OMS:
             self.store.update(self.clock(), row["tag"], order["status"], why)
             return [f"{row['symbol']} {row['purpose']} {order['status'].lower()}: {why}"]
         detail = "" if filled == order["quantity"] else f"only {filled} of {order['quantity']} filled"
-        self.store.add_fill(session, row["tag"], row["strategy_id"], row["symbol"], side, filled, price)
-        self._hold(row, side, filled, price, session)
-        self.store.update(self.clock(), row["tag"], "DONE", detail, filled=filled, average_price=price)
+        with self.store.transaction():  # the fill, the holding and the status change together or not at all
+            self.store.add_fill(session, row["tag"], row["strategy_id"], row["symbol"], side, filled, price)
+            self._hold(row, side, filled, price, session)
+            self.store.update(self.clock(), row["tag"], "DONE", detail, filled=filled, average_price=price)
         return [f"{row['symbol']} {row['purpose']}: {side} {filled} at {price:,.2f}" + (f" ({detail})" if detail else "")]
 
     def _hold(self, row: sqlite3.Row, side: str, quantity: int, price: float, session: date) -> None:

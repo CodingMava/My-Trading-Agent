@@ -11,6 +11,16 @@ starting_capital = 1000000          # rupees
 database = "state/paper.db"         # git-ignored
 send_no_trade_messages = false      # Telegram a NO TRADE message for every refused signal (they're always logged)
 
+[live]
+# Real orders through Zerodha Kite (Phase 11; python -m trader.execution.live). They go out only for
+# strategies whose status is LIVE_SMALL or LIVE on paper-trading evidence, and only once this is on.
+# Read docs/runbook.md, "Before the first real order", first.
+enabled = false
+capital = 0                         # rupees for the live strategies; each paper order is scaled by capital / paper capital
+database = "state/live.db"          # git-ignored
+max_orders_per_day = 10             # new entries per day, at most
+max_order_fraction = 0.25           # one entry's value at most this share of the live capital
+
 [notifications]
 # Telegram alerts go out only for strategies approved in config/strategies.toml, and only when
 # TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set in .env.

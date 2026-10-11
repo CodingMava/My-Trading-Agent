@@ -108,3 +108,16 @@ def test_a_client_needs_todays_kite_session(tmp_path):
         from_session(settings, session_file)
     save_session(KiteSession("key", "AT", "U", datetime.now(ZoneInfo("Asia/Kolkata"))), session_file)
     assert isinstance(from_session(settings, session_file), KiteOrders)
+
+
+def test_an_unreadable_answer():
+    class Garbled:
+        def request(self, *args, **kwargs):
+            return FakeResponse(200, None)
+
+        def get(self, *args, **kwargs):
+            return FakeResponse(200, None)
+    with pytest.raises(OutcomeUnknown, match="HTTP 200"):  # did it place the order? Unknown
+        client(Garbled()).place_order("amo", ORDER)
+    with pytest.raises(KiteError, match="HTTP 200"):
+        client(Garbled()).orders()

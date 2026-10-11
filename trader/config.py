@@ -78,6 +78,11 @@ class Settings:
     paper_database: str = "state/paper.db"
     paper_send_no_trade: bool = False
     heartbeat_url: Secret = Secret("")  # pinged after each successful daily run; empty = off
+    live_enabled: bool = False  # real orders (Phase 11): also needs a strategy with live evidence
+    live_capital: float = 0.0
+    live_database: str = "state/live.db"
+    live_max_orders_per_day: int = 10
+    live_max_order_fraction: float = 0.25
     warnings: tuple[str, ...] = ()
 
     def secret_values(self) -> list[str]:
@@ -95,7 +100,7 @@ def load_settings(env: dict[str, str] | None = None, settings_file: Path = SETTI
     with open(settings_file, "rb") as fh:
         cfg = tomllib.load(fh)
     notifications, ai, data = cfg.get("notifications", {}), cfg.get("ai", {}), cfg.get("data", {})
-    paper = cfg.get("paper", {})
+    paper, live = cfg.get("paper", {}), cfg.get("live", {})
 
     token = Secret(env.get("TELEGRAM_BOT_TOKEN"))
     chat_id = (env.get("TELEGRAM_CHAT_ID") or "").strip()
@@ -140,5 +145,10 @@ def load_settings(env: dict[str, str] | None = None, settings_file: Path = SETTI
         paper_database=str(paper.get("database", "state/paper.db")),
         paper_send_no_trade=bool(paper.get("send_no_trade_messages", False)),
         heartbeat_url=Secret(env.get("HEARTBEAT_URL")),
+        live_enabled=bool(live.get("enabled", False)),
+        live_capital=float(live.get("capital", 0)),
+        live_database=str(live.get("database", "state/live.db")),
+        live_max_orders_per_day=int(live.get("max_orders_per_day", 10)),
+        live_max_order_fraction=float(live.get("max_order_fraction", 0.25)),
         warnings=tuple(warnings),
     )

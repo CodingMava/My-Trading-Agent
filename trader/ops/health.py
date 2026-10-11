@@ -17,6 +17,8 @@ from zoneinfo import ZoneInfo
 from trader.config import ROOT, load_settings
 from trader.data.kite import SESSION_FILE, load_session, session_secrets
 from trader.data.validate import DAILY_SETTLE
+from trader.execution import broker
+from trader.execution.oms import ORDER_PURPOSES, LiveStore
 from trader.execution.store import PaperStore
 from trader.gate import EVIDENCE_DIR, REQUIREMENTS, load_evidence, load_gate_config
 from trader.logging_setup import configure_logging, make_console_utf8
@@ -33,6 +35,7 @@ RUN_TIMEOUT = timedelta(hours=2)  # a run still marked running after this long d
 EVIDENCE_NOTICE = timedelta(days=30)
 BACKUP_MAX_AGE = timedelta(days=3)
 DRY_RUN_WINDOW = timedelta(days=30)
+LIVE_SETTLE = timedelta(days=1)  # a live order still without a result after this needs a look
 UNATTENDED_TARGET = 60  # clean sessions in a row that Level 5 asks for before any real order
 ACTIVE = ("PAPER", "LIVE_SMALL", "LIVE")
 
@@ -139,6 +142,46 @@ def dry_run_check(store: PaperStore | None, today: date) -> Health:
                   "from the last 30 days")
 
 
+def open_live_store(settings) -> LiveStore | None:
+    """The live account's records, if a live job has ever run."""
+    path = ROOT / settings.live_database
+    return LiveStore(path) if path.exists() else None
+
+
+def live_checks(settings, store: LiveStore | None, now: datetime, session_file: Path = SESSION_FILE) -> list[Health]:
+    """Phase 11: what the live account needs from a person (python -m trader.execution.live status)."""
+    checks = []
+    if store is not None:
+        unclear = store.orders(("SENDING", "UNKNOWN"))
+        if unclear:
+            checks.append(Health("live unknown orders", ALERT, f"{len(unclear)} request(s) whose outcome is unknown ("
+                                 + ", ".join(f"{r['symbol']} {r['purpose']}" for r in unclear[:3]) + "): check "
+                                 "Kite's order book; the next live job looks them up before sending anything"))
+        held = store.positions()
+        bare = [symbol for symbol, position in held.items()
+                if (stop := store.order(broker.stop_order(position).tag)) is None or stop["status"] not in ("SENT", "TRIGGERED")]
+        if bare:
+            checks.append(Health("live stops", ALERT, f"no stop at Kite for {', '.join(bare)}: place one by hand "
+                                 "(a GTT at the stop in python -m trader.execution.live status)"))
+        stale = [r for r in store.orders(("SENT",)) if r["purpose"] in ORDER_PURPOSES
+                 and datetime.fromisoformat(r["updated_at"]) < now - LIVE_SETTLE]
+        if stale:
+            checks.append(Health("live stale orders", WARN, f"{len(stale)} order(s) sent over a day ago still have no "
+                                 "result: check Kite's order book"))
+        refused = [r for r in store.orders(("REJECTED",)) if r["session"] >= (now.date() - timedelta(days=7)).isoformat()]
+        if refused:
+            last = refused[-1]
+            checks.append(Health("live refusals", WARN, f"Kite refused {len(refused)} request(s) in the last 7 days, "
+                                 f"e.g. {last['symbol']} {last['purpose']}: {last['detail']}"))
+        if not checks:
+            checks.append(Health("live trading", OK, f"{len(held)} live holding(s), each with a stop at Kite; "
+                                 "nothing unsettled"))
+    if settings.live_enabled and load_session(session_file) is None:
+        checks.append(Health("live login", WARN, "no Kite login today: the 09:20, 15:15 and 18:30 live jobs need one "
+                             "(python -m trader.data.kite login)"))
+    return checks or [Health("live trading", INFO, "off: no real order has been sent; Indian orders are a dry run")]
+
+
 def backup_check(store: PaperStore | None, backup_dir: Path | None, today: date) -> list[Health]:
     """The daily run copies the records to <database folder>/backups after every run that didn't fail."""
     if store is None or backup_dir is None:
@@ -194,12 +237,12 @@ def data_checks(settings, now: datetime, session_file: Path = SESSION_FILE) -> H
 def health_checks(store: PaperStore | None, calendar: MarketCalendar, registry: StrategyRegistry,
                   kill_switch: KillSwitch, settings, now: datetime, max_age_days: int = 365,
                   evidence_dir: Path = EVIDENCE_DIR, session_file: Path = SESSION_FILE,
-                  backup_dir: Path | None = None) -> list[Health]:
+                  backup_dir: Path | None = None, live_store: LiveStore | None = None) -> list[Health]:
     """Every check, worst first. `store` is None before the first daily run."""
     checks = [*run_checks(store, calendar, now), *safety_checks(store, kill_switch), unattended_record(store, now),
               dry_run_check(store, now.date()), *backup_check(store, backup_dir, now.date()),
               *strategy_checks(registry, now.date(), max_age_days, evidence_dir), calendar_checks(calendar, now.date()),
-              data_checks(settings, now, session_file)]
+              data_checks(settings, now, session_file), *live_checks(settings, live_store, now, session_file)]
     order = (ALERT, WARN, INFO, OK)
     return sorted(checks, key=lambda c: order.index(c.level))
 
@@ -215,7 +258,8 @@ def main(argv: list[str] | None = None) -> None:
     store = PaperStore(database, settings.paper_starting_capital) if database.exists() else None
     now = datetime.now(IST)
     checks = health_checks(store, load_calendars()["NSE"], StrategyRegistry.load(), KillSwitch(), settings, now,
-                           load_gate_config().max_evidence_age_days, backup_dir=database.parent / "backups")
+                           load_gate_config().max_evidence_age_days, backup_dir=database.parent / "backups",
+                           live_store=open_live_store(settings))
     print(f"Health at {now:%Y-%m-%d %H:%M} IST")
     width = max(len(c.name) for c in checks)
     for check in checks:

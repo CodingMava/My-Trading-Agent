@@ -128,7 +128,7 @@ Fourteen hypotheses over five rounds, none passed.
 | `trader/data/` | Data providers (Yahoo, Zerodha Kite) and the checks every bar must pass |
 | `trader/features/` | Tested, look-ahead-free indicators (SMA, Wilder RSI, ATR) |
 | `trader/strategies/` | Strategy rules (the Phase 3 swing hypotheses) and the catalog the paper trader runs |
-| `trader/execution/` | End-of-day paper trading and its SQLite store; the dry run of Zerodha orders; paper evidence for the gate |
+| `trader/execution/` | End-of-day paper trading and its SQLite store; Zerodha orders (dry run, order management, live jobs, locked); paper evidence for the gate |
 | `trader/ops/` | Health checks (alerts on failure and on silence) and the console's read-only views |
 | `trader/notify/` | Telegram message formats, a sender that retries and never logs the token, and the commands |
 | `trader/research/` | Backtesting harness: simulator, costs, metrics, validation; the research-round runners; the audit, with the original rules and indicator code kept so it can be reproduced |
@@ -195,6 +195,7 @@ python -m trader.execution.eod                       # process every completed s
 python -m trader.execution.eod --start 2026-10-01    # first run only: replay from this session
 python -m trader.execution.report                    # score each strategy's paper trades against the gate
 python -m trader.execution.broker                    # the Kite requests the dry run prepared (never sent)
+python -m trader.execution.live status               # live trading: its locks, live holdings, open requests
 ```
 
 Each run uses the same fill rules as the backtester: orders decided at a close fill at the next open,
@@ -313,11 +314,13 @@ python -m trader.risk.killswitch status
 ```
 - AI never creates, sizes or approves trades.
 - Secrets live only in `.env`. A test fails the build if a credential appears in the repository.
-- US trades are placed by hand. Indian orders run as a dry run (Phase 8): each paper step for an NSE
-  stock records the exact Zerodha Kite request that would carry it out, checked against Kite's and NSE's
-  rules and never sent (`python -m trader.execution.broker`, or the dashboard's Decisions tab). Sending
-  them (Phase 11) needs paper-trading evidence first, plus a static IP registered with Kite and a DDPI
-  with Zerodha ([docs/runbook.md](docs/runbook.md#before-the-first-real-order)).
+- US trades are placed by hand. Each paper step for an NSE stock records the exact Zerodha Kite request
+  that would carry it out (a dry run: `python -m trader.execution.broker`, or the dashboard's Decisions
+  tab). Live trading (`python -m trader.execution.live`) is built and locked: it sends those orders only
+  for a strategy at `LIVE_SMALL` or `LIVE` on paper-trading evidence, after you turn it on, within limits
+  on size and count, and only while the account holds every share the system believes it holds. Never
+  the same order twice, even after a crash or a lost answer. Going live also needs a static IP
+  registered with Kite and a DDPI with Zerodha ([docs/runbook.md](docs/runbook.md#before-the-first-real-order)).
 
 ## Roadmap
 
@@ -334,10 +337,10 @@ python -m trader.risk.killswitch status
 | 4 | Profitability gate enforced from evidence reports | Done |
 | 5-6 | Risk engine and portfolio limits | Done |
 | 7 | Paper trading (end-of-day, for swing strategies) | Done: no strategy is eligible yet. Its 60 unattended sessions start once the tasks are scheduled |
-| 8 | Broker integration: Zerodha Kite orders, still on paper capital | Done as a dry run: the exact Kite request for each paper step is checked and recorded, never sent |
+| 8 | Broker integration: Zerodha Kite orders, still on paper capital | Done: the dry run, and the order management system (orders and GTT stops, never sent twice, rejects, partial fills, reconciliation with the account), tested against an in-memory Kite (Kite has no sandbox) |
 | 9 | AI research layer: news to structured tags, advisory only | Waits for a strategy it could measurably improve |
 | 10 | Observability: run records, alerts on failure and on silence, health checks, ops console | Done |
-| 11 | Controlled live trading | Needs paper-trading evidence first |
+| 11 | Controlled live trading | Built and locked: the live jobs (18:30, 09:20, 15:15), their locks, and live-against-paper tracking. Nothing is sent until a strategy earns `LIVE_SMALL` on paper-trading evidence and you turn it on |
 
 ## Data
 

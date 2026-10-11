@@ -158,3 +158,42 @@ def test_the_live_record_is_append_only_and_backed_up(tmp_path):
     copy.close()
     with pytest.raises(ValueError):
         oms.store.table("sqlite_master")
+
+
+def test_lost_answers_for_stops_and_gap_exits_are_looked_up(tmp_path):
+    kite, oms = make(tmp_path)
+    bought(kite, oms)
+    held = oms.store.positions()["INFY.NS"]
+    stop = broker.stop_order(held, last_price=101.0)
+    kite.failures = [("timeout", True)]
+    assert oms.submit(NEXT, "T1", stop) == "UNKNOWN"
+    assert oms.submit(NEXT, "T1", stop) == "SENT" and len(kite.gtts) == 1  # found by stock, trigger and quantity
+    sell = kite.trigger(next(iter(kite.gtts)))
+    oms.refresh(NEXT)
+    kite.failures = [("http", 502, "NetworkException", True)]
+    assert oms.submit(NEXT, "T1", broker.gap_exit(held)) == "UNKNOWN"
+    assert oms.submit(NEXT, "T1", broker.gap_exit(held)) == "DONE" and sell["order_type"] == "MARKET"
+    assert len([call for call in kite.calls if call[0] == "PUT"]) == 1
+
+
+def test_holdings_follow_the_fills(tmp_path):
+    kite, oms = make(tmp_path)
+    bought(kite, oms, price=100.0)
+    more = broker.entry_order("T1:INFY.NS:2026-08-11:buy", "INFY.NS", 5)
+    oms.submit(NEXT, "T1", more, stop_distance=0.05)
+    kite.fill(kite.by_tag(more.tag), 110.0)
+    oms.refresh(NEXT)
+    held = oms.store.positions()["INFY.NS"]
+    assert (held.quantity, held.entry_price, held.stop_price) == (10, pytest.approx(105.0), pytest.approx(99.75))
+    stop = broker.stop_order(held, last_price=106.0)
+    oms.submit(NEXT, "T1", stop)
+    sell = kite.trigger(next(iter(kite.gtts)))
+    oms.refresh(NEXT)
+    kite.fill(sell, 99.5, quantity=4, then="CANCELLED")  # the stop sold only 4 before the day ended
+    oms.refresh(NEXT)
+    assert oms.store.positions()["INFY.NS"].quantity == 6 and oms.reconcile() == []
+    stray = broker.exit_order("T1:TCS.NS:2026-08-10:sell", "TCS.NS", 2)  # a sale of shares it never bought
+    oms.submit(DAY, "T1", stray)
+    kite.fill(kite.by_tag(stray.tag), 50.0)
+    oms.refresh(NEXT)
+    assert oms.reconcile() == ["TCS.NS: holding 0 shares but the fills imply -2"]

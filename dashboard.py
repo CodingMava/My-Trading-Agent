@@ -17,7 +17,7 @@ from trader.features.indicators import sma
 from trader.gate import load_gate_config
 from trader.markets.calendar import load_calendars
 from trader.ops import console
-from trader.ops.health import ACTIVE, ALERT, WARN, health_checks
+from trader.ops.health import ACTIVE, ALERT, WARN, health_checks, open_live_store
 from trader.registry import StrategyRegistry
 from trader.risk.killswitch import KillSwitch
 from trader.strategies.catalog import load_universes
@@ -30,8 +30,10 @@ database = ROOT / settings.paper_database
 store = PaperStore(database, settings.paper_starting_capital) if database.exists() else None
 registry = StrategyRegistry.load()
 now = datetime.now(IST)
+live_store = open_live_store(settings)
 checks = health_checks(store, load_calendars()["NSE"], registry, KillSwitch(), settings, now,
-                       load_gate_config().max_evidence_age_days, backup_dir=database.parent / "backups")
+                       load_gate_config().max_evidence_age_days, backup_dir=database.parent / "backups",
+                       live_store=live_store)
 active = [r.id for r in registry.records() if r.status in ACTIVE]
 
 st.title("Trading agent")
@@ -46,8 +48,8 @@ elif warnings:
 else:
     st.success("All health checks pass.")
 
-account_tab, decisions_tab, strategies_tab, health_tab, chart_tab = st.tabs(
-    ["Account", "Decisions", "Strategies", "Health and runs", "Chart"])
+account_tab, decisions_tab, live_tab, strategies_tab, health_tab, chart_tab = st.tabs(
+    ["Account", "Decisions", "Live", "Strategies", "Health and runs", "Chart"])
 NO_RECORDS = "No paper-trading records yet: the first daily run creates them (python -m trader.execution.eod)."
 
 with account_tab:
@@ -78,6 +80,20 @@ with decisions_tab:
         st.caption("The exact Zerodha request a live system would send for each step, and when "
                    "(python -m trader.execution.broker).")
         st.dataframe(console.newest_first(store.table("dry_run_orders")), hide_index=True)
+
+with live_tab:
+    if live_store is None:
+        st.info("Live trading is off: no real order has been sent. Indian orders are a dry run (Decisions tab); "
+                "docs/runbook.md lists what going live needs.")
+    else:
+        st.subheader("Live holdings")
+        st.dataframe(pd.DataFrame([{"Stock": p.symbol, "Strategy": p.strategy_id, "Quantity": p.quantity,
+                                    "Entry": p.entry_price, "Stop": p.stop_price, "Since": p.entry_date}
+                                   for p in live_store.positions().values()]), hide_index=True)
+        st.subheader("Requests sent to Kite")
+        st.dataframe(console.newest_first(live_store.table("broker_orders")), hide_index=True)
+        st.subheader("Live fills")
+        st.dataframe(console.newest_first(live_store.table("live_fills")), hide_index=True)
 
 with strategies_tab:
     st.caption("A status is only kept if its evidence in docs/research/evidence supports it.")
