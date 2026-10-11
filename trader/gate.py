@@ -83,6 +83,9 @@ class Check:
     value: str
     passed: bool
 
+    def __post_init__(self):  # a numpy boolean would otherwise reach the evidence files as the text "False"
+        object.__setattr__(self, "passed", bool(self.passed))
+
 
 def decide(checks: list[Check]) -> str:
     """All checks pass -> PAPER; only the sample-size check (#1) fails -> RESEARCH; otherwise REJECTED."""
@@ -213,7 +216,7 @@ class Evidence:
 
 
 def _jsonable(value):
-    if isinstance(value, (np.floating, np.integer)):
+    if isinstance(value, (np.floating, np.integer, np.bool_)):
         return value.item()
     if isinstance(value, date):
         return value.isoformat()

@@ -1,10 +1,11 @@
+from dataclasses import asdict
 from datetime import date
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from trader.gate import (Check, Evidence, GateConfig, ResearchThresholds, decay_check, decide, decide_paper,
+from trader.gate import (EVIDENCE_DIR, Check, Evidence, GateConfig, ResearchThresholds, decay_check, decide, decide_paper,
                          load_evidence, load_gate_config, paper_checks, research_checks, save_evidence,
                          supported_status)
 from trader.registry import StrategyRegistry
@@ -149,3 +150,17 @@ def test_decay_monitor():
     assert decay_check(np.tile([0.5, 0.5, -1.5], 17)[:50], 0.6)[0] == "demote"  # wins 2 in 3 but loses money
     assert decay_check(np.full(30, -1.0), 0.6)[0] == "disable"  # 30R drawdown
     assert decide([Check(1, "", "", True)]) == "PAPER"
+
+
+def test_check_results_are_stored_as_real_booleans(tmp_path):
+    check = Check(6, "Profit factor at least 1.3", "1.27", np.float64(1.27) >= 1.3)  # a numpy comparison
+    assert check.passed is False
+    save_evidence(Evidence("X1", "research", "REJECTED", "2026-10-11", "test", checks=(asdict(check),)), tmp_path)
+    assert load_evidence("X1", "research", tmp_path).checks[0]["passed"] is False  # not the truthy text "False"
+
+
+def test_every_committed_evidence_file_stores_booleans():
+    import json
+    for path in sorted(EVIDENCE_DIR.glob("*.json")):
+        checks = json.loads(path.read_text(encoding="utf-8"))["checks"]
+        assert all(isinstance(c["passed"], bool) for c in checks), path.name
