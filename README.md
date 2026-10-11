@@ -7,7 +7,7 @@ orders**. US stocks are researched with the same tools and traded manually.
 > **Current mode: NO TRADE.** Nothing tested so far makes money after costs in a way that beats chance:
 > not the original nine intraday rules (audit, 2026-10-08), and not the fourteen pre-registered swing
 > hypotheses of five research rounds. The daily paper-trading run records NO TRADE until a strategy
-> passes the profitability gate.
+> passes the profitability gate. Research is paused ([why](#research-status-paused-2026-10-11)).
 
 ## Audit results (2026-10-08)
 
@@ -108,6 +108,18 @@ once a month (each third of the span must be profitable):
 The turn of the month is the strongest effect found so far: it beat random timing in every market
 tested. But it isn't steady enough to trade, and in India it has lost money since the start of 2024.
 Fourteen hypotheses over five rounds, none passed.
+
+## Research status: paused (2026-10-11)
+
+Five rounds have tested every well-documented daily-bar idea that fits the hard rule (most trades must
+win, and the profit must survive costs and beat random entries): pullbacks, the turn of the month,
+momentum. None passed. Testing more ideas on the same data until one passes would only find a lucky
+backtest, so research is paused. It restarts only with something genuinely new: different data (for
+example Kite's minute history, for intraday ideas) or a deliberate change to the rules.
+
+In January 2027 the two near-misses (H11, H12) get a look on the months since their data ended, to see
+whether their recent losses continue. That is a check, not a test: a strategy that trades once a month
+needs years of new data before a pre-registered round could confirm it.
 
 ## Project layout
 

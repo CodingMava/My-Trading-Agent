@@ -96,6 +96,8 @@ Kill switch log (date, why it engaged, what changed before it was released):
   Chart tab: going live needs 20+ paper trades you have reviewed and agree with.
 - **December:** add NSE's next-year holidays to `config/market_calendars.toml` when NSE publishes them,
   and NSE's Muhurat session when it is announced. Without the next year, nothing trades from 1 January.
+- **January 2027:** look at the near-misses H11 and H12 on the months since their data ended (README,
+  "Research status"). It is a check, not a reason to trade them.
 - **Yearly:** research evidence expires after 365 days; the health check warns 30 days before.
 - **After 31 March, once live:** `python -m trader.execution.records live <year>` writes the year's
   round trips (intraday, short- and long-term) to `state/reports/`. Check them against Zerodha's tax P&L
