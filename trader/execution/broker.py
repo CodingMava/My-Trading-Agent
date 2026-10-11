@@ -109,10 +109,11 @@ def exit_order(key: str, symbol: str, quantity: int) -> KiteRequest:
     return KiteRequest(symbol, "exit", AFTER_CLOSE, "POST", "/orders/amo", _market_order(symbol, "SELL", quantity, tag), tag)
 
 
-def stop_order(position: Position) -> KiteRequest:
+def stop_order(position: Position, last_price: float | None = None) -> KiteRequest:
+    """`last_price` is the price when the GTT is placed (Kite wants it); paper trading uses the fill."""
     tradingsymbol = position.symbol.removesuffix(".NS")
     condition = {"exchange": "NSE", "tradingsymbol": tradingsymbol, "trigger_values": [to_tick(position.stop_price)],
-                 "last_price": float(position.entry_price)}
+                 "last_price": float(position.entry_price if last_price is None else last_price)}
     orders = [{"exchange": "NSE", "tradingsymbol": tradingsymbol, "transaction_type": "SELL",
                "quantity": int(position.quantity), "order_type": "LIMIT", "product": "CNC",
                "price": stop_limit(position.stop_price)}]

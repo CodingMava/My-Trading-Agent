@@ -64,6 +64,20 @@ CREATE TRIGGER IF NOT EXISTS dry_run_no_delete BEFORE DELETE ON dry_run_orders B
 """
 
 
+def backup_copy(conn: sqlite3.Connection, target: Path) -> Path:
+    """A consistent copy of a whole database (SQLite's online backup) at `target`. It is written under a
+    temporary name first, so a crash can't leave a half-written backup."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_name(target.name + ".partial")
+    copy = sqlite3.connect(str(partial))
+    try:
+        conn.backup(copy)
+    finally:
+        copy.close()
+    os.replace(partial, target)
+    return target
+
+
 @dataclass(frozen=True)
 class Order:
     id: int
@@ -219,19 +233,8 @@ class PaperStore:
         return {r["strategy_id"]: r["reason"] for r in self.conn.execute("SELECT * FROM suspended")}
 
     def backup(self, directory: Path | str, day: date) -> Path:
-        """A consistent copy of the whole database (SQLite's online backup) as <directory>/paper-<day>.db.
-        It is written under a temporary name first, so a crash can't leave a half-written backup."""
-        directory = Path(directory)
-        directory.mkdir(parents=True, exist_ok=True)
-        target = directory / f"paper-{day.isoformat()}.db"
-        partial = target.with_name(target.name + ".partial")
-        copy = sqlite3.connect(str(partial))
-        try:
-            self.conn.backup(copy)
-        finally:
-            copy.close()
-        os.replace(partial, target)
-        return target
+        """A consistent copy of the whole database as <directory>/paper-<day>.db."""
+        return backup_copy(self.conn, Path(directory) / f"paper-{day.isoformat()}.db")
 
     # runs: one row per unattended run, for monitoring
     def start_run(self, started_at: datetime) -> int:
