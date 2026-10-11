@@ -128,7 +128,7 @@ Fourteen hypotheses over five rounds, none passed.
 | `trader/data/` | Data providers (Yahoo, Zerodha Kite) and the checks every bar must pass |
 | `trader/features/` | Tested, look-ahead-free indicators (SMA, Wilder RSI, ATR) |
 | `trader/strategies/` | Strategy rules (the Phase 3 swing hypotheses) and the catalog the paper trader runs |
-| `trader/execution/` | End-of-day paper trading and its SQLite store; paper evidence for the gate |
+| `trader/execution/` | End-of-day paper trading and its SQLite store; the dry run of Zerodha orders; paper evidence for the gate |
 | `trader/ops/` | Health checks (alerts on failure and on silence) and the console's read-only views |
 | `trader/notify/` | Telegram message formats, a sender that retries and never logs the token, and the commands |
 | `trader/research/` | Backtesting harness: simulator, costs, metrics, validation; the research-round runners; the audit, with the original rules and indicator code kept so it can be reproduced |
@@ -194,6 +194,7 @@ Swing strategies are paper traded once a day, after the NSE close. No real order
 python -m trader.execution.eod                       # process every completed session not yet done
 python -m trader.execution.eod --start 2026-10-01    # first run only: replay from this session
 python -m trader.execution.report                    # score each strategy's paper trades against the gate
+python -m trader.execution.broker                    # the Kite requests the dry run prepared (never sent)
 ```
 
 Each run uses the same fill rules as the backtester: orders decided at a close fill at the next open,
@@ -243,8 +244,8 @@ What sends you a Telegram alert:
   similar dead man's switch and put its ping URL in `.env` as `HEARTBEAT_URL`. Every clean run pings it,
   and the service alerts you when the pings stop.
 
-The health check also counts clean sessions in a row since the last failure. The roadmap asks for 60
-before broker integration (Phase 8).
+The health check also counts clean sessions in a row since the last failure. Paper-trading evidence
+(the audit's Level 5) needs 60 before any real order.
 
 After every run that didn't fail, the records are copied to `state/backups/paper-<date>.db` (inside
 OneDrive here, so the copies leave the PC), and the record of what happened (fills, closed trades,
@@ -312,8 +313,11 @@ python -m trader.risk.killswitch status
 ```
 - AI never creates, sizes or approves trades.
 - Secrets live only in `.env`. A test fails the build if a credential appears in the repository.
-- US trades are placed manually. Indian order placement (Zerodha Kite Connect) comes later, and only
-  after backtest, walk-forward and paper-trading evidence.
+- US trades are placed by hand. Indian orders run as a dry run (Phase 8): each paper step for an NSE
+  stock records the exact Zerodha Kite request that would carry it out, checked against Kite's and NSE's
+  rules and never sent (`python -m trader.execution.broker`, or the dashboard's Decisions tab). Sending
+  them (Phase 11) needs paper-trading evidence first, plus a static IP registered with Kite and a DDPI
+  with Zerodha ([docs/runbook.md](docs/runbook.md#before-the-first-real-order)).
 
 ## Roadmap
 
@@ -330,7 +334,7 @@ python -m trader.risk.killswitch status
 | 4 | Profitability gate enforced from evidence reports | Done |
 | 5-6 | Risk engine and portfolio limits | Done |
 | 7 | Paper trading (end-of-day, for swing strategies) | Done: no strategy is eligible yet. Its 60 unattended sessions start once the tasks are scheduled |
-| 8 | Broker integration: Zerodha Kite orders, still on paper capital | Waits for those 60 sessions and a strategy that qualifies |
+| 8 | Broker integration: Zerodha Kite orders, still on paper capital | Done as a dry run: the exact Kite request for each paper step is checked and recorded, never sent |
 | 9 | AI research layer: news to structured tags, advisory only | Waits for a strategy it could measurably improve |
 | 10 | Observability: run records, alerts on failure and on silence, health checks, ops console | Done |
 | 11 | Controlled live trading | Needs paper-trading evidence first |

@@ -1,10 +1,11 @@
 """Paper-trading state in SQLite: account, orders, fills, positions, closed trades, session snapshots,
-decisions, an outbox of notifications, and suspended strategies.
+decisions, an outbox of notifications, suspended strategies, and the Kite requests of the dry run.
 
 Each session is processed inside one transaction, so a crash leaves the state exactly as it was before
 that session and re-running it gives the same result. Order keys are unique (strategy, stock, session,
 side), so the same order can never be placed twice. The record of what happened (fills, closed trades,
-decisions, session snapshots) is append-only: the database itself refuses to change or delete it.
+decisions, session snapshots, dry-run Kite requests) is append-only: the database itself refuses to
+change or delete it.
 """
 from __future__ import annotations
 
@@ -47,6 +48,9 @@ CREATE TABLE IF NOT EXISTS suspended (strategy_id TEXT PRIMARY KEY, session TEXT
 CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT,
     status TEXT NOT NULL CHECK (status IN ('running', 'ok', 'halted', 'failed')),
     sessions INTEGER NOT NULL DEFAULT 0, detail TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS dry_run_orders (id INTEGER PRIMARY KEY, session TEXT NOT NULL, tag TEXT UNIQUE NOT NULL,
+    symbol TEXT NOT NULL, purpose TEXT NOT NULL, send_at TEXT NOT NULL, request TEXT NOT NULL,
+    problems TEXT NOT NULL DEFAULT '');
 CREATE TRIGGER IF NOT EXISTS fills_no_update BEFORE UPDATE ON fills BEGIN SELECT RAISE(ABORT, 'fills are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS fills_no_delete BEFORE DELETE ON fills BEGIN SELECT RAISE(ABORT, 'fills are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS trades_no_update BEFORE UPDATE ON trades BEGIN SELECT RAISE(ABORT, 'trades are append-only'); END;
@@ -55,6 +59,8 @@ CREATE TRIGGER IF NOT EXISTS decisions_no_update BEFORE UPDATE ON decisions BEGI
 CREATE TRIGGER IF NOT EXISTS decisions_no_delete BEFORE DELETE ON decisions BEGIN SELECT RAISE(ABORT, 'decisions are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS sessions_no_update BEFORE UPDATE ON sessions BEGIN SELECT RAISE(ABORT, 'sessions are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS sessions_no_delete BEFORE DELETE ON sessions BEGIN SELECT RAISE(ABORT, 'sessions are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS dry_run_no_update BEFORE UPDATE ON dry_run_orders BEGIN SELECT RAISE(ABORT, 'dry-run orders are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS dry_run_no_delete BEFORE DELETE ON dry_run_orders BEGIN SELECT RAISE(ABORT, 'dry-run orders are append-only'); END;
 """
 
 
@@ -180,7 +186,8 @@ class PaperStore:
         return pd.read_sql_query(query + " ORDER BY id", self.conn, params=args)
 
     def table(self, name: str) -> pd.DataFrame:
-        if name not in {"orders", "fills", "positions", "trades", "decisions", "outbox", "sessions", "suspended", "runs"}:
+        if name not in {"orders", "fills", "positions", "trades", "decisions", "outbox", "sessions", "suspended", "runs",
+                        "dry_run_orders"}:
             raise ValueError(name)
         return pd.read_sql_query(f"SELECT * FROM {name} ORDER BY rowid", self.conn)
 
@@ -197,6 +204,13 @@ class PaperStore:
 
     def mark_sent(self, message_id: int) -> None:
         self.conn.execute("UPDATE outbox SET sent = 1 WHERE id = ?", (message_id,))
+
+    def add_dry_run_order(self, session: date, tag: str, symbol: str, purpose: str, send_at: str, request: str,
+                          problems: str = "") -> None:
+        """A Kite request the dry run prepared (never sent). Its tag is unique, so preparing the same step twice
+        fails the session instead of recording a second request."""
+        self.conn.execute("INSERT INTO dry_run_orders (session, tag, symbol, purpose, send_at, request, problems) "
+                          "VALUES (?, ?, ?, ?, ?, ?, ?)", (session.isoformat(), tag, symbol, purpose, send_at, request, problems))
 
     def suspend(self, strategy_id: str, session: date, reason: str) -> None:
         self.conn.execute("INSERT OR IGNORE INTO suspended VALUES (?, ?, ?)", (strategy_id, session.isoformat(), reason))

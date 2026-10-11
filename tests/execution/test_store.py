@@ -47,10 +47,14 @@ def test_the_record_of_what_happened_can_only_be_added_to(tmp_path):
     store.add_decision(DAY, "T1", "AAA", "BUY_SIGNAL", "10 shares")
     store.record_session(DAY, 100_000, 99_000)
     store.add_trade("T1", "AAA", 10, DAY, 100.0, DAY, 101.0, "Time Exit", 2.0, 8.0, 0.008, 0.16)
+    store.add_dry_run_order(DAY, "E1", "AAA.NS", "entry", "18:00", "{}")
     for statement in ("UPDATE fills SET price = 1", "DELETE FROM fills", "UPDATE trades SET net_pnl = 1e6",
-                      "DELETE FROM decisions", "UPDATE sessions SET equity = 1", "DELETE FROM sessions"):
+                      "DELETE FROM decisions", "UPDATE sessions SET equity = 1", "DELETE FROM sessions",
+                      "UPDATE dry_run_orders SET problems = ''", "DELETE FROM dry_run_orders"):
         with pytest.raises(sqlite3.DatabaseError, match="append-only"):
             store.conn.execute(statement)
+    with pytest.raises(sqlite3.IntegrityError):  # the same step can't be prepared for Kite twice
+        store.add_dry_run_order(DAY, "E1", "AAA.NS", "entry", "18:00", "{}")
     store.save_position(Position("T1", "AAA", 10, 100.0, 95.0, DAY))
     store.delete_position("AAA")  # live state (positions, orders, cash) still changes as it must
     assert store.positions() == {}

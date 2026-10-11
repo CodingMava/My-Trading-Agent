@@ -74,6 +74,10 @@ with decisions_tab:
     else:
         st.caption("Every signal the engine saw and what it did, including each NO TRADE and its reason.")
         st.dataframe(console.newest_first(store.table("decisions")), hide_index=True)
+        st.subheader("Kite orders (dry run: never sent)")
+        st.caption("The exact Zerodha request a live system would send for each step, and when "
+                   "(python -m trader.execution.broker).")
+        st.dataframe(console.newest_first(store.table("dry_run_orders")), hide_index=True)
 
 with strategies_tab:
     st.caption("A status is only kept if its evidence in docs/research/evidence supports it.")

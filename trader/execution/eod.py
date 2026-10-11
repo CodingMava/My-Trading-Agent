@@ -10,6 +10,8 @@ For each session, in order, with the same fill rules as the backtester:
   4. exit signals at the close queue sells for the next open;
   5. entry signals from strategies whose evidence supports PAPER pass the risk engine, and approved ones
      queue buys for the next open.
+Alongside, every step for an NSE stock records the exact Zerodha Kite request that would carry it out with
+real shares (trader/execution/broker.py: Phase 8's dry run; nothing is sent).
 Each session is one database transaction. Telegram messages are queued inside it and sent only after it
 commits; anything unsent is retried on the next run. If a session's market data is broadly missing, the
 run stops before that session and alerts, rather than recording a day it couldn't see. Every run is
@@ -34,6 +36,7 @@ from trader.core.models import PortfolioState, Position, TradeIntent
 from trader.data.kite import session_secrets
 from trader.data.providers import fetch_many, make_provider
 from trader.data.validate import COLUMNS, DAILY_SETTLE, drop_incomplete_bars, placeholder_bars, validate_bars
+from trader.execution import broker
 from trader.execution.store import PaperStore
 from trader.gate import EVIDENCE_DIR, DecayThresholds, decay_check, load_evidence, load_gate_config
 from trader.logging_setup import configure_logging, redact
@@ -238,6 +241,7 @@ class PaperTrader:
             store.save_position(position)
             store.set_order_status(order.id, "FILLED", s)
             store.add_fill(s, order.id, order.strategy_id, order.symbol, "buy", quantity, price, fees, "Entry")
+            self._dry_run(s, broker.stop_order(position), messages)
             summary.fills += 1
             messages.append(templates.buy_executed(symbol=order.symbol, price=price, quantity=quantity,
                                                    stop=position.stop_price, strategy=self._name(order.strategy_id),
@@ -267,8 +271,10 @@ class PaperTrader:
         for symbol, position in sorted(positions.items()):
             signals, row = self.signals_for(position.strategy_id, symbol, for_exits), self._row(symbol, s)
             if signals is not None and row is not None and signals.exit[row]:
-                if store.add_order(f"{position.strategy_id}:{symbol}:{s}:sell", position.strategy_id, symbol, "sell",
-                                   position.quantity, s, position.price, 0.0, "Strategy Exit"):
+                key = f"{position.strategy_id}:{symbol}:{s}:sell"
+                if store.add_order(key, position.strategy_id, symbol, "sell", position.quantity, s, position.price, 0.0,
+                                   "Strategy Exit"):
+                    self._dry_run(s, broker.exit_order(key, symbol, position.quantity), messages)
                     summary.orders += 1
                     store.add_decision(s, position.strategy_id, symbol, "EXIT_SIGNAL", "exit rule met: sell at the next open")
 
@@ -314,11 +320,13 @@ class PaperTrader:
                         messages.append(templates.no_trade(symbol=symbol, strategy=self._name(spec.id),
                                                            reason=decision.reason, paper=self.paper))
                     continue
-                if not store.add_order(f"{spec.id}:{symbol}:{s}:buy", spec.id, symbol, "buy", decision.quantity, s,
-                                       intent.reference_price, intent.stop_distance, "Entry"):
+                key = f"{spec.id}:{symbol}:{s}:buy"
+                if not store.add_order(key, spec.id, symbol, "buy", decision.quantity, s, intent.reference_price,
+                                       intent.stop_distance, "Entry"):
                     store.add_decision(s, spec.id, symbol, "NO_TRADE", "duplicate order prevented")
                     messages.append(self._alert("Duplicate order prevented", f"{spec.id} {symbol} {s} buy already exists."))
                     continue
+                self._dry_run(s, broker.entry_order(key, symbol, decision.quantity), messages)
                 summary.orders += 1
                 reserved += decision.quantity * intent.reference_price * CASH_BUFFER
                 # The pending buy counts as a position worth the cash set aside for it, so equity (and the
@@ -377,9 +385,28 @@ class PaperTrader:
                              position.entry_price, s, price, reason, fees + position.entry_fees, pnl,
                              pnl / entry_notional, pnl / risk_amount if risk_amount > 0 else float("nan"))
         self.store.delete_position(position.symbol)
+        if order_id is not None:  # its after-market sell filled at the open, so the stop's GTT goes
+            self._dry_run(s, broker.cancel_stop(position, broker.AFTER_OPEN), messages)
+        elif reason == "Time Exit":
+            self._dry_run(s, broker.cancel_stop(position, broker.BEFORE_CLOSE), messages)
+            self._dry_run(s, broker.time_exit(position), messages)
+        elif price < broker.stop_limit(position.stop_price):  # opened below the GTT's limit: that sell can't fill
+            self._dry_run(s, broker.gap_exit(position), messages)
         messages.append(templates.sell_executed(symbol=position.symbol, price=price, quantity=position.quantity,
                                                 pnl=pnl, net_return=pnl / entry_notional, reason=reason, paper=self.paper))
         return cash + notional - fees
+
+    def _dry_run(self, s: date, request: broker.KiteRequest, messages: list) -> None:
+        """Record the Kite request a live system would send for this step (never sent). US stocks are traded
+        by hand, so only NSE stocks get one."""
+        if market_of(request.symbol) != "NSE":
+            return
+        problems = "; ".join(broker.problems(request))
+        self.store.add_dry_run_order(s, request.tag, request.symbol, request.purpose, request.send_at, request.json(),
+                                     problems)
+        if problems:
+            messages.append(self._alert("Dry-run order invalid", f"Kite would refuse the {request.purpose} for "
+                                        f"{request.symbol}: {problems}. Fix this before any live trading."))
 
     def _name(self, strategy_id: str) -> str:
         record = self.registry.get_by_id(strategy_id)

@@ -5,8 +5,8 @@ from trader.config import load_settings
 from trader.execution.store import PaperStore
 from trader.gate import Evidence, save_evidence
 from trader.markets.calendar import load_calendars
-from trader.ops.health import ALERT, INFO, OK, WARN, backup_check, calendar_checks, data_checks, health_checks, run_checks, \
-    safety_checks, strategy_checks, unattended_record
+from trader.ops.health import ALERT, INFO, OK, WARN, backup_check, calendar_checks, data_checks, dry_run_check, \
+    health_checks, run_checks, safety_checks, strategy_checks, unattended_record
 from trader.registry import StrategyRecord, StrategyRegistry
 from trader.risk.killswitch import KillSwitch
 
@@ -104,3 +104,16 @@ def _settings(tmp_path, data_line):
     path = tmp_path / "settings.toml"
     path.write_text(f"[data]\n{data_line}\n", encoding="utf-8")
     return path
+
+
+def test_dry_run_orders_kite_would_refuse_are_a_warning(tmp_path):
+    today = EVENING.date()
+    assert dry_run_check(None, today).level == INFO
+    store = store_with(tmp_path)
+    assert dry_run_check(store, today).level == INFO  # nothing prepared yet
+    store.add_dry_run_order(date(2026, 8, 17), "E1", "AAA.NS", "entry", "18:00", "{}")
+    assert dry_run_check(store, today).level == OK
+    store.add_dry_run_order(date(2026, 8, 18), "S1", "AAA.NS", "stop", "09:20", "{}", "trigger 96.003 isn't on the tick")
+    check = dry_run_check(store, today)
+    assert check.level == WARN and "AAA.NS stop on 2026-08-18: trigger 96.003" in check.detail
+    assert dry_run_check(store, today + timedelta(days=31)).level == OK  # fixed a month ago

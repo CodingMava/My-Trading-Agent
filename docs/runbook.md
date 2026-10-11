@@ -33,9 +33,11 @@ Every alert is a `RISK ALERT` on Telegram with one of these titles.
 | Stale data | No price today for a stock you hold, so its stop wasn't checked today. | Usually a one-day gap. If it repeats for days, find out why (a trading suspension, a delisting, a symbol change). |
 | Rejected order | A queued buy couldn't fill at the open: not enough cash, no price, or the strategy is gone. | Nothing, unless it keeps happening. |
 | Duplicate order prevented | Something tried to place the same order twice and the database refused it. | A bug: find out why before trusting the next run. |
+| Dry-run order invalid | Kite would refuse a request the dry run prepared: a price off NSE's tick, a bad quantity, a stop above the price. Nothing was sent. | A bug in the order path: look at it with `python -m trader.execution.broker` and fix it before any live trading. |
 
 The dashboard and `python -m trader.ops.health` also show warnings that don't page you: research evidence
-about to expire, next year's market holidays missing (all of December), no Kite login, a stale backup.
+about to expire, next year's market holidays missing (all of December), no Kite login, a stale backup,
+dry-run Kite requests that Kite would refuse.
 
 ## The plan for losses, decided in advance
 
@@ -93,6 +95,26 @@ Kill switch log (date, why it engaged, what changed before it was released):
 - **Yearly:** research evidence expires after 365 days; the health check warns 30 days before.
 - **After changing any code:** `pytest` and `pytest -m slow` must pass. The scheduled tasks run whatever
   branch is checked out.
+
+## Before the first real order
+
+Indian orders are a dry run until Phase 11: `python -m trader.execution.broker` shows the Kite request
+behind each paper step and when a live system would send it. Before any of them is sent for real:
+
+- **Evidence:** a strategy at `LIVE_SMALL`, earned by paper-trading evidence (see the README's safety
+  rules), and a dry run whose health check has stayed OK: Kite would have accepted every request.
+- **A static IP:** since April 2026 Kite rejects order requests from any address not registered in its
+  developer console. Most home connections don't have a fixed address: ask the ISP for one, or send
+  orders from a server that has one.
+- **A DDPI with Zerodha:** without it, every sale of shares from the demat account needs a TPIN
+  approval by hand, which an unattended system can't give.
+- **A Kite login every trading day before 09:00:** sessions expire at 06:00 IST, and live orders go out
+  at 09:20 and 15:15 as well as 18:00.
+- **Two more scheduled jobs:** 09:20 (each new holding's stop as a GTT, the GTTs of holdings sold at the
+  open, gap exits) and 15:15 (time exits), as `trader/execution/broker.py` describes.
+- **Tick sizes from Kite's instrument list:** NSE re-sets each stock's tick every month; the dry run uses
+  its price bands.
+- **No orders from a catch-up:** a run that catches up missed sessions must not send their requests late.
 
 ## Stopping everything
 

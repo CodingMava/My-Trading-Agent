@@ -32,7 +32,8 @@ RUN_DEADLINE = timedelta(hours=4)  # once a session's data has settled, the dail
 RUN_TIMEOUT = timedelta(hours=2)  # a run still marked running after this long died without finishing
 EVIDENCE_NOTICE = timedelta(days=30)
 BACKUP_MAX_AGE = timedelta(days=3)
-UNATTENDED_TARGET = 60  # clean sessions in a row that Phase 7 asks for before broker integration
+DRY_RUN_WINDOW = timedelta(days=30)
+UNATTENDED_TARGET = 60  # clean sessions in a row that Level 5 asks for before any real order
 ACTIVE = ("PAPER", "LIVE_SMALL", "LIVE")
 
 
@@ -113,14 +114,29 @@ def duplicate_orders(store: PaperStore) -> int:
 
 
 def unattended_record(store: PaperStore | None, now: datetime) -> Health:
-    """Sessions processed since the last run that failed or died: Phase 7's 60-session requirement."""
+    """Sessions processed since the last run that failed or died: Level 5's 60-session requirement."""
     if store is None:
-        return Health("unattended record", INFO, f"0 of {UNATTENDED_TARGET} clean sessions before broker integration")
+        return Health("unattended record", INFO, f"0 of {UNATTENDED_TARGET} clean sessions before live trading")
     clean, duplicates = clean_sessions(store, now), duplicate_orders(store)
-    detail = f"{clean} of {UNATTENDED_TARGET} clean sessions in a row before broker integration"
+    detail = f"{clean} of {UNATTENDED_TARGET} clean sessions in a row before live trading"
     if duplicates:
         return Health("unattended record", WARN, f"{detail}; {duplicates} duplicate order(s) were prevented: find out why")
     return Health("unattended record", OK if clean >= UNATTENDED_TARGET else INFO, detail)
+
+
+def dry_run_check(store: PaperStore | None, today: date) -> Health:
+    """Phase 8: Kite must accept every request the dry run prepares (python -m trader.execution.broker)."""
+    rows = store.table("dry_run_orders") if store is not None else None
+    if rows is None or rows.empty:
+        return Health("dry-run orders", INFO, "no Kite requests prepared yet (none is ever sent)")
+    refused = rows[(rows["problems"] != "") & (rows["session"] >= (today - DRY_RUN_WINDOW).isoformat())]
+    if len(refused):
+        last = refused.iloc[-1]
+        return Health("dry-run orders", WARN, f"Kite would refuse {len(refused)} request(s) from the last 30 days, "
+                      f"e.g. {last['symbol']} {last['purpose']} on {last['session']}: {last['problems']}. Fix the "
+                      "order path before any live trading")
+    return Health("dry-run orders", OK, f"{len(rows)} Kite request(s) prepared, none sent; Kite would accept all "
+                  "from the last 30 days")
 
 
 def backup_check(store: PaperStore | None, backup_dir: Path | None, today: date) -> list[Health]:
@@ -181,7 +197,7 @@ def health_checks(store: PaperStore | None, calendar: MarketCalendar, registry: 
                   backup_dir: Path | None = None) -> list[Health]:
     """Every check, worst first. `store` is None before the first daily run."""
     checks = [*run_checks(store, calendar, now), *safety_checks(store, kill_switch), unattended_record(store, now),
-              *backup_check(store, backup_dir, now.date()),
+              dry_run_check(store, now.date()), *backup_check(store, backup_dir, now.date()),
               *strategy_checks(registry, now.date(), max_age_days, evidence_dir), calendar_checks(calendar, now.date()),
               data_checks(settings, now, session_file)]
     order = (ALERT, WARN, INFO, OK)
