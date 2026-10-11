@@ -215,7 +215,9 @@ Only strategies whose status `PAPER` is backed by research evidence are traded. 
 ## Running unattended
 
 Three Windows scheduled tasks run the system. `scripts/register_tasks.ps1` creates them: review it, then
-run it once with `powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1`.
+run it once with `powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1`. They run on
+battery too: by Windows' default a laptop that isn't plugged in would skip them. Run the script again
+whenever it changes.
 
 | Task | When | Runs |
 |---|---|---|
