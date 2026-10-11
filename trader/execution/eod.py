@@ -58,6 +58,7 @@ CASH_BUFFER = 1.02  # cash set aside per pending buy, in case the next open gaps
 BUY_COST_HEADROOM = 1.005  # leave room for buy-side charges when sizing a fill to the cash available
 ADV_DAYS = 20
 MIN_DATA_COVERAGE = 0.8  # share of instruments that must have a session's bar before that session is processed
+ACTIVE_STATUSES = ("PAPER", "LIVE_SMALL", "LIVE")  # a strategy earning live money keeps paper trading too
 
 
 @dataclass
@@ -93,10 +94,11 @@ class PaperTrader:
 
     # --- what to run -----------------------------------------------------------------------------
     def active_strategies(self) -> list[StrategySpec]:
-        """Catalog strategies whose evidence-checked status is PAPER and that aren't suspended."""
+        """Catalog strategies whose evidence-checked status is PAPER or above and that aren't suspended. One that
+        trades live keeps paper trading alongside, so live results can be held to the paper ones."""
         suspended = self.store.suspended()
         return [spec for spec in self.catalog.values()
-                if (record := self.registry.get_by_id(spec.id)) is not None and record.status == "PAPER"
+                if (record := self.registry.get_by_id(spec.id)) is not None and record.status in ACTIVE_STATUSES
                 and spec.id not in suspended]
 
     def sessions_to_process(self, until: date, start: date | None) -> list[date]:
