@@ -1,4 +1,5 @@
-"""The Phase 3 swing hypotheses, exactly as pre-registered in docs/research/phase3-preregistration.md.
+"""The swing hypotheses, exactly as pre-registered in docs/research/ (the pullback and momentum rules in
+phase3-preregistration.md, the turn-of-the-month rule in round4-preregistration.md).
 
 Parameters are fixed there. Changing one makes a new hypothesis that needs its own pre-registration
 and fresh data, never a re-run on the data these were judged on.
@@ -114,3 +115,33 @@ def momentum_trades(panel: pd.DataFrame, selected, rule: str = "H3") -> pd.DataF
         "tod": "00:00", "gross": picked["gross"].to_numpy(float), "reason": TIME,
         "hold_bars": picked["hold_bars"].to_numpy(int), "risk": np.nan,
     })
+
+
+@dataclass(frozen=True)
+class TurnOfMonthParams:
+    """H9 and H10: hold over the turn of the month (Lakonishok & Smidt 1988; McConnell & Xu 2008)."""
+    hold_days: int = 4  # the month's last trading day and the next month's first three
+    atr_length: int = 14
+    atr_stop: float = 2.5
+
+
+TURN_OF_MONTH = TurnOfMonthParams()
+
+
+def turn_of_month_signals(bars: pd.DataFrame, params: TurnOfMonthParams = TURN_OF_MONTH) -> Signals:
+    """Enter at the close of each month's second-to-last trading day (filled at the next open, the month's
+    last trading day); the time limit ends each trade at the close of the next month's third trading day;
+    protective stop 2.5 x ATR(14) below entry. Month-ends come from the bars' own dates, so the final bars,
+    whose next month isn't in the data yet, never signal; neither does a day without an ATR yet."""
+    index = pd.DatetimeIndex(bars.index)
+    months = (index.year * 12 + index.month).to_numpy()
+    last_of_month = np.zeros(len(bars), dtype=bool)
+    last_of_month[:-1] = months[1:] != months[:-1]  # the next bar starts a new month
+    stop = (params.atr_stop * atr(bars["high"], bars["low"], bars["close"], params.atr_length) / bars["close"]).to_numpy(float)
+    entry = np.zeros(len(bars), dtype=bool)
+    entry[:-1] = last_of_month[1:]  # the day before the month's last trading day
+    return Signals(entry & np.isfinite(stop), np.zeros(len(bars), dtype=bool), stop)
+
+
+def turn_of_month_rules(params: TurnOfMonthParams = TURN_OF_MONTH) -> ExitRules:
+    return ExitRules(max_hold_bars=params.hold_days)

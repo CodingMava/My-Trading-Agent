@@ -102,3 +102,16 @@ evidence = "1,085 trades, 71.1% winners, +0.323%/trade net (t=5.30, cluster-robu
 name = "Swing: oversold pullback in an uptrend, iShares country ETFs 2016-2026"
 status = "REJECTED"
 evidence = "1,154 trades on 15 country ETFs, 61.6% winners, +0.072%/trade net (t=1.16, cluster-robust 0.76), PF 1.10, no better than random entry days (Holm p=0.19): the effect did not carry over."
+
+# Research round 4 (docs/research/round4-preregistration.md): the turn-of-the-month effect, judged on each
+# whole span in docs/research/round4-results.md. Reproduce: python -m trader.research.round4
+
+[H9]
+name = "Swing: turn of the month, S&P 500 (SPY)"
+status = "REJECTED"
+evidence = "404 trades 1993-2026, 57.7% winners, +0.229%/trade net (t=2.26), PF 1.34, both halves positive, but not clearly better than random 4-day holds (p=0.067) and only 61% of years positive (needs 70%)."
+
+[H10]
+name = "Swing: turn of the month, NIFTY 50 via NIFTYBEES"
+status = "REJECTED"
+evidence = "225 trades 2008-2026, 56.4% winners, +0.277%/trade net, PF 1.34; beat random 4-day holds (+0.38% vs +0.03% gross, Holm p=0.033) but too few trades to be sure it is positive (t=1.65, needs 2.0) and only 61% of years positive; 2024-2026 slightly negative."

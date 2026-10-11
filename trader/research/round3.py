@@ -86,12 +86,13 @@ def halves_check(trades: pd.DataFrame, cost: float, split: date) -> Check:
                  all(value > 0 for value in halves))
 
 
-def evaluate(trades: pd.DataFrame, h: Hypothesis, pieces: dict, p_holm: float):
+def evaluate(trades: pd.DataFrame, h: Hypothesis, pieces: dict, p_holm: float, several_instruments: bool = True):
     """Criteria 1-11 on the whole span: 1-7, 9 and 10 through the shared gate (the whole span as its
-    'holdout'), 8 replaced by the halves check, 11 the cluster-robust t."""
+    'holdout'; 10, breadth across instruments, only with several), 8 replaced by the halves check, 11 the
+    cluster-robust t."""
     days = trading_days(pieces, h.start, h.end)
     checks, details = research_checks(trades, h.cost, h.start, {"design": [], "holdout": days, "all": days},
-                                      p_holm, True, PREREGISTERED)
+                                      p_holm, several_instruments, PREREGISTERED)
     checks = [halves_check(trades, h.cost, h.split) if c.number == 8
               else replace(c, criterion=c.criterion.replace(" holdout", "")) if c.number == 1 else c for c in checks]
     t_week = clustered_t(trades["gross"] - h.cost, [round2.signal_week(d) for d in trades["signal_date"]])

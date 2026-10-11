@@ -1,0 +1,83 @@
+{
+  "strategy_id": "H9",
+  "kind": "research",
+  "decision": "REJECTED",
+  "generated": "2026-10-11",
+  "source": "docs/research/round4-results.md (python -m trader.research.round4)",
+  "checks": [
+    {
+      "number": 1,
+      "criterion": "At least 50 trades",
+      "value": "404",
+      "passed": true
+    },
+    {
+      "number": 2,
+      "criterion": "Win rate at least 50%",
+      "value": "57.7%",
+      "passed": "True"
+    },
+    {
+      "number": 3,
+      "criterion": "Expectancy above 0 at base and 1.5x costs",
+      "value": "+0.229% / +0.207%",
+      "passed": "True"
+    },
+    {
+      "number": 4,
+      "criterion": "t-statistic at least 2.0",
+      "value": "2.26",
+      "passed": "True"
+    },
+    {
+      "number": 5,
+      "criterion": "Beats random entries (Holm-adjusted p < 0.05)",
+      "value": "0.067",
+      "passed": false
+    },
+    {
+      "number": 6,
+      "criterion": "Profit factor at least 1.3",
+      "value": "1.34",
+      "passed": "True"
+    },
+    {
+      "number": 7,
+      "criterion": "Avg loss at most 1.5x avg win; worst trade no worse than -3R",
+      "value": "-1.59% vs +1.56%; worst -1.3R",
+      "passed": true
+    },
+    {
+      "number": 8,
+      "criterion": "Expectancy above 0 in each half of the span",
+      "value": "+0.184% / +0.274%",
+      "passed": true
+    },
+    {
+      "number": 9,
+      "criterion": "At least 70% of years (10+ trades) positive",
+      "value": "61% of 33 years",
+      "passed": false
+    },
+    {
+      "number": 11,
+      "criterion": "Cluster-robust t-statistic (signal weeks as clusters) at least 2.0",
+      "value": "2.26",
+      "passed": true
+    }
+  ],
+  "stats": {
+    "evaluation_span": "1993-02-01 to 2026-10-08",
+    "holdout_trades": 404,
+    "holdout_win_rate": 0.5767326732673267,
+    "holdout_mean_net": 0.002288250509986119,
+    "holdout_sd_net": 0.020387778309976543,
+    "holdout_profit_factor": 1.339655400404689,
+    "holdout_t": 2.255923393484594,
+    "holdout_t_clustered": 2.255923393484594,
+    "p_random_raw": 0.0665,
+    "p_random_holm": 0.0665,
+    "round_trip_cost": 0.00042780000000000004
+  },
+  "preregistration_sha256": "3346175fbab3abd907a0ba6aa80fa5f14095bb614a791fab0daf6125ec2cccca"
+}

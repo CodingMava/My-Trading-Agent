@@ -5,8 +5,8 @@ that have earned it through the profitability gate and reports on Telegram; it *
 orders**. US stocks are researched with the same tools and traded manually.
 
 > **Current mode: NO TRADE.** Nothing tested so far makes money after costs in a way that beats chance:
-> not the original nine intraday rules (audit, 2026-10-08), and not the eight pre-registered swing
-> hypotheses of three research rounds. The daily paper-trading run records NO TRADE until a strategy
+> not the original nine intraday rules (audit, 2026-10-08), and not the ten pre-registered swing
+> hypotheses of four research rounds. The daily paper-trading run records NO TRADE until a strategy
 > passes the profitability gate.
 
 ## Audit results (2026-10-08)
@@ -76,6 +76,21 @@ nothing had examined, and had to pass both tests ([results](docs/research/round3
 H6 is not confirmed, so the pullback rules (H1, H2, H4-H8) are retired: as pre-registered, no variant of
 them is tested again. The effect showed up strongly on US sector SPDRs before 2016 but did not carry over to other
 ETFs in recent years. Eight hypotheses over three rounds, none passed: the system stays in NO TRADE.
+
+## Research round 4: the turn of the month (2026-10-11)
+
+A different kind of effect, with nothing to fit: holding the index over the turn of the month (the
+month's last trading day and the next month's first three), documented for decades in many countries.
+[Pre-registered](docs/research/round4-preregistration.md) and judged on each whole span
+([results](docs/research/round4-results.md)):
+
+| Hypothesis | Trades | Winners | Net per trade | Why it failed | Status |
+|---|---:|---:|---:|---|---|
+| H9: S&P 500 via SPY, 1993-2026 | 404 | 57.7% | +0.23% | Not clearly better than random 4-day holds (p = 0.067); 61% of years positive (needs 70%) | REJECTED |
+| H10: NIFTY 50 via NIFTYBEES, 2008-2026 | 225 | 56.4% | +0.28% | Beat random 4-day holds (p = 0.033), but too few trades to be sure it is positive (t 1.65, needs 2.0); 61% of years positive; 2024-2026 slightly negative | REJECTED |
+
+The effect points the right way in both markets and in both halves of each span, but not strongly or
+steadily enough to trade. Ten hypotheses over four rounds, none passed.
 
 ## Project layout
 
@@ -177,7 +192,7 @@ the next run. A strategy whose paper results drift from its research (`[decay]` 
 suspended automatically.
 
 Only strategies whose status `PAPER` is backed by research evidence are traded. **Today there are none**
-(none of the eight swing hypotheses passed), so every run records NO TRADE. To run it every day, see
+(none of the ten swing hypotheses passed), so every run records NO TRADE. To run it every day, see
 [Running unattended](#running-unattended).
 
 ## Running unattended
@@ -237,6 +252,7 @@ python -m trader.research.datasets validate data/nse_daily_10y    # data-quality
 python -m trader.research.phase3                                  # re-run the Phase 3 evaluation
 python -m trader.research.round2                                  # re-run research round 2
 python -m trader.research.round3                                  # re-run research round 3
+python -m trader.research.round4                                  # re-run research round 4
 pytest                                                            # fast tests
 pytest -m slow                                                    # research regressions (need the frozen data in data/)
 ```
@@ -286,6 +302,7 @@ python -m trader.risk.killswitch status
 | 3 | Evidence: pre-registered swing-trading hypotheses, tested on frozen data | Done: 0 of 3 passed |
 | 3b | Research round 2: the same rules on US stocks, US sector ETFs and Indian index ETFs | Done: 0 of 3 passed |
 | 3c | Research round 3: confirm or retire H6 on unseen data | Done: not confirmed; pullback rules retired |
+| 3d | Research round 4: the turn-of-the-month effect, US and India | Done: 0 of 2 passed |
 | 4 | Profitability gate enforced from evidence reports | Done |
 | 5-6 | Risk engine and portfolio limits | Done |
 | 7 | Paper trading (end-of-day, for swing strategies) | Done: no strategy is eligible yet. Its 60 unattended sessions start once the tasks are scheduled |
