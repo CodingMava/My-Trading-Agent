@@ -5,8 +5,8 @@ that have earned it through the profitability gate and reports on Telegram; it *
 orders**. US stocks are researched with the same tools and traded manually.
 
 > **Current mode: NO TRADE.** Nothing tested so far makes money after costs in a way that beats chance:
-> not the original nine intraday rules (audit, 2026-10-08), and not the ten pre-registered swing
-> hypotheses of four research rounds. The daily paper-trading run records NO TRADE until a strategy
+> not the original nine intraday rules (audit, 2026-10-08), and not the fourteen pre-registered swing
+> hypotheses of five research rounds. The daily paper-trading run records NO TRADE until a strategy
 > passes the profitability gate.
 
 ## Audit results (2026-10-08)
@@ -91,6 +91,23 @@ month's last trading day and the next month's first three), documented for decad
 
 The effect points the right way in both markets and in both halves of each span, but not strongly or
 steadily enough to trade. Ten hypotheses over four rounds, none passed.
+
+## Research round 5: a batch of monthly effects (2026-10-11)
+
+Four documented effects tested at once ([pre-registration](docs/research/round5-preregistration.md),
+[results](docs/research/round5-results.md)), with a stability test fit for strategies that trade about
+once a month (each third of the span must be profitable):
+
+| Hypothesis | Trades | Winners | Net per trade | Result | Status |
+|---|---:|---:|---:|---|---|
+| H11: turn of the month, India's Bank, Next 50, IT and Pharma indices, 2008-2026 | 863 | 57.9% | +0.48% | Far better than random days (p < 0.001), but 2014-2020 was flat, and it lost money in each of 2024, 2025 and 2026 | REJECTED |
+| H12: turn of the month, 15 country ETFs, 2001-2026 | 4,334 | 54.9% | +0.27% | Beat random days and was profitable in every country, but its profit factor was 1.27 (needs 1.3) | REJECTED |
+| H13: momentum, top 3 US sector ETFs monthly | 960 | 59.0% | +0.86% | Three random sectors did nearly as well: market drift, not momentum | REJECTED |
+| H14: momentum, top 3 country ETFs monthly | 924 | 57.8% | +0.80% | Three random countries did nearly as well | REJECTED |
+
+The turn of the month is the strongest effect found so far: it beat random timing in every market
+tested. But it isn't steady enough to trade, and in India it has lost money since the start of 2024.
+Fourteen hypotheses over five rounds, none passed.
 
 ## Project layout
 
@@ -192,7 +209,7 @@ the next run. A strategy whose paper results drift from its research (`[decay]` 
 suspended automatically.
 
 Only strategies whose status `PAPER` is backed by research evidence are traded. **Today there are none**
-(none of the ten swing hypotheses passed), so every run records NO TRADE. To run it every day, see
+(none of the fourteen swing hypotheses passed), so every run records NO TRADE. To run it every day, see
 [Running unattended](#running-unattended).
 
 ## Running unattended
@@ -253,6 +270,7 @@ python -m trader.research.phase3                                  # re-run the P
 python -m trader.research.round2                                  # re-run research round 2
 python -m trader.research.round3                                  # re-run research round 3
 python -m trader.research.round4                                  # re-run research round 4
+python -m trader.research.round5                                  # re-run research round 5
 pytest                                                            # fast tests
 pytest -m slow                                                    # research regressions (need the frozen data in data/)
 ```
@@ -306,6 +324,7 @@ python -m trader.risk.killswitch status
 | 3b | Research round 2: the same rules on US stocks, US sector ETFs and Indian index ETFs | Done: 0 of 3 passed |
 | 3c | Research round 3: confirm or retire H6 on unseen data | Done: not confirmed; pullback rules retired |
 | 3d | Research round 4: the turn-of-the-month effect, US and India | Done: 0 of 2 passed |
+| 3e | Research round 5: four monthly effects at once | Done: 0 of 4 passed |
 | 4 | Profitability gate enforced from evidence reports | Done |
 | 5-6 | Risk engine and portfolio limits | Done |
 | 7 | Paper trading (end-of-day, for swing strategies) | Done: no strategy is eligible yet. Its 60 unattended sessions start once the tasks are scheduled |
