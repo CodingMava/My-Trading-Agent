@@ -7,3 +7,14 @@ addopts = "-m 'not slow'"
 markers = [
     "slow: reproduces the 2026-10-08 audit from the frozen data in data/ (run: pytest -m slow)",
 ]
+
+[tool.coverage.run]
+# The risk gate (risk engine, limits, kill switch, position sizing, exposure) must keep 100% branch
+# coverage: the audit's Level 1 criterion. CI runs `coverage run -m pytest` then `coverage report`.
+branch = true
+source = ["trader/risk", "trader/portfolio"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+exclude_also = ['if __name__ == "__main__":']

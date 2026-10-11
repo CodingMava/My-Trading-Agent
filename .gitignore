@@ -28,3 +28,4 @@ Thumbs.db
 
 # Runtime state: kill switch, paper-trading database
 /state/
+/.coverage

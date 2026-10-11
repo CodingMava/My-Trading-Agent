@@ -7,11 +7,8 @@ pandas==3.0.2
 numpy==2.2.6
 pyarrow==23.0.1
 
-# Technical analysis (beta release; used by the legacy ta_engine.py)
+# Technical analysis (beta release): only the audit's legacy indicator code (trader/research/legacy_indicators.py)
 pandas-ta==0.4.71b0
-
-# AI layer (optional; off by default in config/settings.toml)
-google-genai==1.70.0
 
 # Alerts
 requests==2.33.1

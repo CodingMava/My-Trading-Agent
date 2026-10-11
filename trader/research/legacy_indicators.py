@@ -1,3 +1,8 @@
+"""The original scanner's indicator code (ta_engine.py), moved here unchanged when the scanner was retired
+on 2026-10-11, so the 2026-10-08 audit can still be reproduced exactly (trader/research/legacy_rules.py).
+It mutates its argument and drops the warm-up rows, as audited. Don't use it for anything new: tested,
+look-ahead-free indicators are in trader/features/indicators.py.
+"""
 import pandas as pd
 import pandas_ta as ta
 
@@ -41,7 +46,7 @@ class TechnicalAnalyzer:
         # Shift(1) ensures we are comparing TODAY'S close against YESTERDAY'S rolling high/low
         df['resistance'] = df['high'].rolling(window=self.breakout_window).max().shift(1)
         df['support'] = df['low'].rolling(window=self.breakout_window).min().shift(1)
-        
+
         # Boolean columns: True if a breakout occurred
         df['breakout_bullish'] = df['close'] > df['resistance']
         df['breakout_bearish'] = df['close'] < df['support']
@@ -50,28 +55,3 @@ class TechnicalAnalyzer:
         df.dropna(inplace=True)
 
         return df
-
-# --- Testing the Integration (Connecting Step 1 and Step 2) ---
-if __name__ == "__main__":
-    # Import the data tracker we built in Step 1
-    # Ensure data_engine.py is in the same folder
-    from data_engine import MarketTracker
-    
-    symbols = ["RELIANCE.NS"]
-    tracker = MarketTracker(symbols)
-    
-    print("⏳ Fetching data...")
-    # Fetching 1 month of 5-min data to ensure we have >200 candles
-    market_data = tracker.fetch_latest_data(interval="5m", period="1mo")
-    
-    if "RELIANCE.NS" in market_data:
-        df = market_data["RELIANCE.NS"]
-        
-        print("⚙️ Applying Technical Analysis...")
-        analyzer = TechnicalAnalyzer()
-        analyzed_df = analyzer.apply_indicators(df)
-        
-        # Display the specific columns we care about for the last 3 candles
-        columns_to_show = ['close', 'sma_20', 'rsi_14', 'macd', 'vol_spike', 'breakout_bullish']
-        print("\n📊 Latest 3 Candles with Indicators:")
-        print(analyzed_df[columns_to_show].tail(3))

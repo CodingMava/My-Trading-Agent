@@ -40,7 +40,7 @@ def test_ai_is_off_in_the_repository_config():
 
 def test_data_provider_settings(tmp_path):
     default = load_settings(env={})
-    assert default.data_provider == "yahoo" and default.max_data_delay_minutes == 20
+    assert default.data_provider == "yahoo"
     config = tmp_path / "settings.toml"
     config.write_text('[data]\nprovider = "kite"\n', encoding="utf-8")
     without_keys = load_settings(env={}, settings_file=config)

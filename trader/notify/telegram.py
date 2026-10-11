@@ -1,6 +1,8 @@
 """Sending notifications to Telegram, with a timeout, retries, and the bot token never logged."""
 from __future__ import annotations
 
+import argparse
+
 import logging
 import time
 
@@ -59,3 +61,27 @@ def notifier_from_settings(settings):
         return TelegramNotifier(settings.telegram_bot_token.reveal(), settings.telegram_chat_id,
                                 timeout=settings.telegram_timeout_seconds)
     return LogNotifier()
+
+
+def main(argv: list[str] | None = None) -> None:
+    """python -m trader.notify.telegram --test: check that alerts reach your Telegram chat."""
+    from trader.config import load_settings
+    from trader.logging_setup import configure_logging
+
+    parser = argparse.ArgumentParser(description="Telegram alerts.")
+    parser.add_argument("--test", action="store_true", help="send a test message")
+    args = parser.parse_args(argv)
+    if not args.test:
+        parser.error("nothing to do: use --test")
+    settings = load_settings()
+    configure_logging(secrets=settings.secret_values())
+    if not settings.telegram_enabled:
+        raise SystemExit("Telegram is off: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env (see .env.example).")
+    sent = notifier_from_settings(settings).send(
+        "<b>Test message</b>\n\nThe trading agent can reach this chat. Mode: NO TRADE until a strategy passes "
+        "the profitability gate.")
+    raise SystemExit(0 if sent else "The test message could not be sent: see logs/trader.log.")
+
+
+if __name__ == "__main__":
+    main()

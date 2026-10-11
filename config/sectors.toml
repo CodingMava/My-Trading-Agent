@@ -1,5 +1,6 @@
 # Sector of each stock, used for the sector-exposure limit. Source: the NIFTY 50 constituents table
-# (as of 8 Dec 2025) plus the extra stocks in universe.py. Unlisted symbols count as sector "UNKNOWN".
+# (as of 8 Dec 2025) plus a few stocks from the original scanner's list. Unlisted symbols count as sector
+# "UNKNOWN".
 
 [sectors]
 "ADANIENT.NS" = "Metals & Mining"

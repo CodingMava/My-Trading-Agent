@@ -14,7 +14,7 @@ interpreting under pressure.
 
 No real order is ever placed: the system paper trades, and today it is in NO TRADE because no strategy has
 passed the profitability gate. Telegram alerts need `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env`;
-without them every alert only reaches the log files.
+without them every alert only reaches the log files. Check with `python -m trader.notify.telegram --test`.
 
 ## When an alert arrives
 

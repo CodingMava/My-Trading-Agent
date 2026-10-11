@@ -74,7 +74,6 @@ class Settings:
     kite_api_key: Secret
     kite_api_secret: Secret
     data_provider: str  # "yahoo" or "kite"
-    max_data_delay_minutes: float
     paper_starting_capital: float = 1_000_000.0
     paper_database: str = "state/paper.db"
     paper_send_no_trade: bool = False
@@ -137,7 +136,6 @@ def load_settings(env: dict[str, str] | None = None, settings_file: Path = SETTI
         kite_api_key=kite_key,
         kite_api_secret=kite_secret,
         data_provider=data_provider,
-        max_data_delay_minutes=float(data.get("max_delay_minutes", 20)),
         paper_starting_capital=float(paper.get("starting_capital", 1_000_000)),
         paper_database=str(paper.get("database", "state/paper.db")),
         paper_send_no_trade=bool(paper.get("send_no_trade_messages", False)),

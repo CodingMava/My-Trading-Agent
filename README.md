@@ -1,12 +1,13 @@
 # My Trading Agent
 
-A research-first trading assistant for Indian equities (NSE). It scans stocks and can send Telegram
-alerts, but it **never places orders**. US stocks are researched with the same tools and traded manually.
+A research-first trading system for Indian equities (NSE). Once a day it paper trades the strategies
+that have earned it through the profitability gate and reports on Telegram; it **never places real
+orders**. US stocks are researched with the same tools and traded manually.
 
-> **Current mode: NO TRADE.** An audit on 2026-10-08 found that none of the original eight strategies
-> makes money after costs, so all of them are switched off in `config/strategies.toml`. The scanner
-> still runs and logs every blocked signal, but it sends nothing until a strategy passes the
-> profitability gate.
+> **Current mode: NO TRADE.** Nothing tested so far makes money after costs in a way that beats chance:
+> not the original nine intraday rules (audit, 2026-10-08), and not the eight pre-registered swing
+> hypotheses of three research rounds. The daily paper-trading run records NO TRADE until a strategy
+> passes the profitability gate.
 
 ## Audit results (2026-10-08)
 
@@ -74,7 +75,7 @@ nothing had examined, and had to pass both tests ([results](docs/research/round3
 
 H6 is not confirmed, so the pullback rules (H1, H2, H4-H8) are retired: as pre-registered, no variant of
 them is tested again. The effect showed up strongly on US sector SPDRs before 2016 but did not carry over to other
-ETFs in recent years. Nine hypotheses over three rounds, none passed: the system stays in NO TRADE.
+ETFs in recent years. Eight hypotheses over three rounds, none passed: the system stays in NO TRADE.
 
 ## Project layout
 
@@ -82,8 +83,6 @@ ETFs in recent years. Nine hypotheses over three rounds, none passed: the system
 |---|---|
 | `dashboard.py` | Ops console (Streamlit, read-only): health, the paper account, decisions, strategies, runs |
 | `scripts/register_tasks.ps1` | Creates the two Windows scheduled tasks: the daily run and the health check |
-| `signal_engine.py` | Legacy intraday scanner (5-minute bars). Every one of its rules was rejected, so it never signals |
-| `data_engine.py`, `ta_engine.py`, `universe.py`, `alert_engine.py`, `ai_engine.py` | Legacy helpers of that scanner; optional Gemini commentary (off) |
 | `config/settings.toml` | Non-secret settings (data source, Telegram, AI) |
 | `config/strategies.toml` | Strategy registry: each strategy's status |
 | `config/gate.toml` | The profitability gate: the evidence each status requires |
@@ -100,7 +99,7 @@ ETFs in recent years. Nine hypotheses over three rounds, none passed: the system
 | `trader/execution/` | End-of-day paper trading and its SQLite store; paper evidence for the gate |
 | `trader/ops/` | Health checks (alerts on failure and on silence) and the console's read-only views |
 | `trader/notify/` | Telegram message formats and a sender that retries and never logs the token |
-| `trader/research/` | Backtesting harness: simulator, costs, metrics, validation, audit and Phase 3 runners |
+| `trader/research/` | Backtesting harness: simulator, costs, metrics, validation; the research-round runners; the audit, with the original rules and indicator code kept so it can be reproduced |
 | `docs/research/` | Pre-registrations, evidence reports, and machine-readable verdicts (`evidence/`) |
 | `tests/` | Test suite (`pytest`) |
 | `data/` | Frozen market data for research (git-ignored) |
@@ -123,18 +122,20 @@ python -m trader.execution.eod            # the daily run: paper trading after t
 python -m trader.ops.health               # is it running, and is it safe? (exit code 1 if not)
 streamlit run dashboard.py                # ops console, read-only
 python -m trader.risk.killswitch status   # the kill switch
-python alert_engine.py                    # send a Telegram test message
+python -m trader.notify.telegram --test   # send a Telegram test message
 ```
 
 Logs go to the console and to `logs/trader.log` and `logs/health.log` (UTF-8, rotated, secrets masked).
-The original intraday scanner (`python signal_engine.py`) still runs, but every one of its rules was
-rejected in the audit, so it never signals.
+The original intraday scanner was retired on 2026-10-11, after every one of its rules was rejected; its
+rules and indicator code live on in `trader/research/` so the audit can be reproduced.
 
 ## Market data
 
-Before any rule sees a bar, the scanner drops the candle that is still forming and checks the rest:
-fresh enough (`[data] max_delay_minutes`), no duplicates or broken prices, no implausible jump on the
-latest bar. Anything that fails is skipped and logged, which ends in NO TRADE for that stock.
+Before any rule sees a bar, the daily run drops the candle that is still forming, cleans the rest the
+way research does (repeated timestamps, bars without prices, holiday placeholders) and checks it: no
+broken prices, and no implausible jump on the latest bar, which blocks new entries but never a stop. An
+instrument whose data fails is skipped and logged, which ends in NO TRADE for it; when a session's data
+is broadly missing, the run stops and alerts.
 
 The default source is Yahoo Finance, which is free but unofficial. To use Zerodha Kite Connect instead:
 
@@ -176,7 +177,7 @@ the next run. A strategy whose paper results drift from its research (`[decay]` 
 suspended automatically.
 
 Only strategies whose status `PAPER` is backed by research evidence are traded. **Today there are none**
-(none of the nine swing hypotheses passed), so every run records NO TRADE. To run it every day, see
+(none of the eight swing hypotheses passed), so every run records NO TRADE. To run it every day, see
 [Running unattended](#running-unattended).
 
 ## Running unattended
@@ -214,8 +215,8 @@ what to do about it, and the plan for losses decided in advance are in [docs/run
 
 `config/market_calendars.toml` holds each exchange's holidays and hours, taken from the official lists.
 **Update it every December** when NSE publishes the next year's holidays: for any year that isn't
-listed, the scanner can't tell whether the market is open, so it refuses to trade. It warns throughout
-December if the next year is missing. Add NSE's Muhurat trading session there when it is announced.
+listed, the daily run can't tell which days are sessions, so it stops and alerts rather than guess. The
+health check warns throughout December if the next year is missing. Add NSE's Muhurat trading session there when it is announced.
 
 ## Research
 
@@ -225,7 +226,7 @@ approved. Results are always net of costs, and each strategy is compared against
 ```bash
 python -m trader.research.audit                                   # reproduce the audit (India 5-minute)
 python -m trader.research.audit --dataset in_1h_730d --blocks --regimes
-python -m trader.research.datasets fetch --name nse_daily_10y --interval 1d --period 10y --universe nifty
+python -m trader.research.datasets fetch --name nse_daily_10y --interval 1d --period 10y --universe nifty50
 python -m trader.research.datasets validate data/nse_daily_10y    # data-quality report
 python -m trader.research.phase3                                  # re-run the Phase 3 evaluation
 python -m trader.research.round2                                  # re-run research round 2
@@ -249,12 +250,13 @@ summarize(trades, ZERODHA_DELIVERY.round_trip(100_000), session_dates)
 
 ## Safety rules
 
-- Only strategies with status `LIVE_SMALL` or `LIVE` in `config/strategies.toml` can emit live
-  signals. Unknown strategies are blocked (fail closed).
+- Only a strategy whose status in `config/strategies.toml` is `PAPER` is paper traded, and only
+  `LIVE_SMALL` or `LIVE` could ever trade real money (Phase 11). A strategy missing from the registry is
+  blocked (fail closed).
 - A status must be earned, not typed: when the registry loads, `PAPER` needs passing research evidence
   in `docs/research/evidence/`, `LIVE_SMALL` also needs passing paper-trading evidence, and `LIVE` also
   needs small-capital live evidence, none older than a year (`config/gate.toml`). Anything else is
-  lowered automatically and the scanner logs why.
+  lowered automatically and the daily run logs why.
 - No decision on incomplete, stale or implausible data, and none on a day the calendar can't vouch for.
 - Every trade passes the risk engine (`config/risk.toml`): it risks at most 0.5% of equity, stays within
   position, cash, liquidity, sector, gross-exposure and correlation limits, and is refused after a 2% daily

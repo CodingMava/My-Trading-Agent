@@ -14,5 +14,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install -r requirements-dev.txt
-      # Fast tests only: no network, no market data. Includes the scan for committed secrets.
-      - run: pytest
+      # Fast tests only: no network, no market data. Includes the scan for committed secrets. The risk
+      # gate must keep 100% branch coverage (pyproject.toml [tool.coverage]).
+      - run: coverage run -m pytest
+      - run: coverage report

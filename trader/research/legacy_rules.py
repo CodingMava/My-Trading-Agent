@@ -1,8 +1,8 @@
 """The nine rules of the original signal_engine.py, kept verbatim as research fixtures.
 
-The 2026-10-08 audit rejected or disabled every one of them (see config/strategies.toml). They are
-kept so the audit can be reproduced, and so tests can prove this copy matches the live code in
-signal_engine.evaluate_latest(). Don't build new strategies on top of them.
+The 2026-10-08 audit rejected or disabled every one of them (see config/strategies.toml). They are kept
+so the audit can be reproduced. Until the scanner was retired on 2026-10-11, a test proved this copy
+matched its live code bar by bar. Don't build new strategies on top of them.
 """
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ import io
 import numpy as np
 import pandas as pd
 
-from ta_engine import TechnicalAnalyzer  # the exact indicator code that was audited
+from trader.research.legacy_indicators import TechnicalAnalyzer  # the exact indicator code that was audited
 from trader.research.simulator import ExitRules
 
 RULES = (  # (id, name used in alerts, side), in the original if/elif order

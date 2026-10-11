@@ -145,6 +145,10 @@ def test_sectors_and_correlation_helpers():
     assert correlation(a, a * 2) == pytest.approx(1.0)
     assert np.isnan(correlation(a.iloc[:30], a.iloc[:30]))  # too little shared history
     assert most_correlated(a, {"X": -a, "Y": a * 3}) == ("Y", pytest.approx(1.0))
+    # a weaker match found later, or a holding with too little shared history, never replaces the strongest
+    assert most_correlated(a, {"Y": a * 3, "X": -a, "Z": a.iloc[:30]}) == ("Y", pytest.approx(1.0))
+    best, value = most_correlated(a, {"Z": a.iloc[:30]})
+    assert best is None and np.isnan(value)
 
 
 def test_kill_switch_command(tmp_path, monkeypatch, capsys):
@@ -153,3 +157,12 @@ def test_kill_switch_command(tmp_path, monkeypatch, capsys):
     assert "ENGAGED" in capsys.readouterr().out and (tmp_path / "KILL_SWITCH").exists()
     killswitch.main(["release"])
     assert "released" in capsys.readouterr().out and not (tmp_path / "KILL_SWITCH").exists()
+    killswitch.main(["status"])
+    assert "released" in capsys.readouterr().out
+
+
+def test_engaging_again_keeps_the_original_reason(tmp_path):
+    switch = KillSwitch(tmp_path / "KILL_SWITCH")
+    switch.engage("drawdown 10.4% breached the 10% limit")
+    switch.engage("engaged by hand")  # e.g. a later alert or a person, while it is already engaged
+    assert "drawdown 10.4%" in switch.reason and "by hand" not in switch.reason

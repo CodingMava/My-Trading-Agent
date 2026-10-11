@@ -1,12 +1,9 @@
 # Non-secret runtime settings. Secrets (tokens, API keys) belong in .env, never in this file.
 
 [data]
-# Where the live scanner gets bars: "yahoo" (free, unofficial; fine for research) or "kite" (Zerodha
-# Kite Connect: needs KITE_API_KEY / KITE_API_SECRET in .env and a daily `python -m trader.data.kite login`).
+# Where the daily run gets bars: "yahoo" (free, unofficial; fine for research) or "kite" (Zerodha Kite
+# Connect: needs KITE_API_KEY / KITE_API_SECRET in .env and a daily `python -m trader.data.kite login`).
 provider = "yahoo"
-# The newest complete bar may lag the clock (or the last close, outside market hours) by at most
-# this many minutes; staler data ends the scan in NO TRADE.
-max_delay_minutes = 20
 
 [paper]
 # End-of-day paper trading (python -m trader.execution.eod). Pretend money only.
@@ -21,8 +18,9 @@ telegram_enabled = true
 telegram_timeout_seconds = 10
 
 [ai]
-# Off by default: the 2026-10-08 audit found the AI commentary added no measurable value.
-# AI never approves, sizes or places trades.
+# Reserved for the Phase 9 research layer (news to structured tags, advisory only); nothing uses it
+# yet. The audit found the old AI commentary added no measurable value. AI never approves, sizes or
+# places trades.
 enabled = false
 provider = "gemini"
 model = "gemini-2.5-flash"

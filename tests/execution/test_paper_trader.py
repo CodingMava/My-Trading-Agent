@@ -230,6 +230,15 @@ def test_bars_research_drops_are_dropped_here_too(tmp_path):
     assert "AAA.NS" in for_entries and not problems  # the stock stays tradable
 
 
+def test_only_a_strategy_registered_as_paper_may_paper_trade(tmp_path):
+    for status in ("REJECTED", "DISABLED", "RESEARCH", "LIVE_SMALL"):
+        assert make_trader(tmp_path, status=status, db=f"{status}.db").active_strategies() == []
+    unregistered = make_trader(tmp_path, db="unregistered.db")
+    unregistered.registry = StrategyRegistry([])  # in the catalog but not in the registry: fail closed
+    assert unregistered.active_strategies() == []
+    assert [spec.id for spec in make_trader(tmp_path, db="paper.db").active_strategies()] == ["T1"]
+
+
 def test_nothing_trades_without_a_paper_status(tmp_path):
     trader = make_trader(tmp_path, status="RESEARCH")
     summary = trader.run(until=date(2026, 8, 18), start=SIGNAL_DAY)

@@ -1,9 +1,9 @@
 """Frozen datasets: market data saved once, with checksums and a validation report, so every
 backtest can be reproduced and its data problems are known up front.
 
-    python -m trader.research.datasets fetch --name nse_daily_10y --interval 1d --period 10y --universe nifty
+    python -m trader.research.datasets fetch --name nse_daily_10y --interval 1d --period 10y --universe nifty50
     python -m trader.research.datasets fetch --name us_daily_10y --interval 1d --period 10y AAPL MSFT
-    python -m trader.research.datasets fetch --name nse_daily_kite --provider kite --period 5y --universe nifty
+    python -m trader.research.datasets fetch --name nse_daily_kite --provider kite --period 5y --universe nifty50
     python -m trader.research.datasets validate data/nse_daily_10y
     python -m trader.research.datasets info data/nse_daily_10y
 
@@ -101,7 +101,7 @@ def main(argv: list[str] | None = None) -> None:
     fetch.add_argument("--provider", choices=["yahoo", "kite"], default="yahoo")
     fetch.add_argument("--interval", default="1d")
     fetch.add_argument("--period", default="10y", help="how far back, e.g. 59d, 6mo, 10y")
-    fetch.add_argument("--universe", choices=["nifty"], help="add the tickers in universe.py")
+    fetch.add_argument("--universe", help="add a stock list from config/universes.toml (e.g. nifty50)")
     fetch.add_argument("tickers", nargs="*")
     validate = sub.add_parser("validate", help="re-check a frozen dataset and print the report")
     validate.add_argument("directory")
@@ -127,9 +127,12 @@ def main(argv: list[str] | None = None) -> None:
     from trader.data.providers import YahooProvider, fetch_many
 
     tickers = list(args.tickers)
-    if args.universe == "nifty":
-        from universe import get_nifty_universe
-        tickers += get_nifty_universe()
+    if args.universe:
+        from trader.strategies.catalog import load_universes
+        universes = load_universes()
+        if args.universe not in universes:
+            parser.error(f"--universe must be one of {', '.join(sorted(universes))}")
+        tickers += universes[args.universe]
     if not tickers:
         parser.error("give tickers or --universe")
     if args.provider == "kite":
