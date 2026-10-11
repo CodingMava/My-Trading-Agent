@@ -196,6 +196,7 @@ python -m trader.execution.eod --start 2026-10-01    # first run only: replay fr
 python -m trader.execution.report                    # score each strategy's paper trades against the gate
 python -m trader.execution.broker                    # the Kite requests the dry run prepared (never sent)
 python -m trader.execution.live status               # live trading: its locks, live holdings, open requests
+python -m trader.execution.records live 2026         # tax records: India's FY 2026-27 and the US's 2026 (CSV)
 ```
 
 Each run uses the same fill rules as the backtester: orders decided at a close fill at the next open,
