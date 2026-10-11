@@ -9,12 +9,16 @@ markers = [
 ]
 
 [tool.coverage.run]
-# The risk gate (risk engine, limits, kill switch, position sizing, exposure) must keep 100% branch
-# coverage: the audit's Level 1 criterion. CI runs `coverage run -m pytest` then `coverage report`.
+# Everything between a bug and real money must keep 100% branch coverage: the risk gate (risk engine,
+# limits, kill switch, position sizing, exposure; the audit's Level 1 criterion) and the order path
+# (Kite requests, the Kite client, the order management system, the live jobs). CI runs
+# `coverage run -m pytest` then `coverage report`.
 branch = true
-source = ["trader/risk", "trader/portfolio"]
+source = ["trader"]
 
 [tool.coverage.report]
+include = ["trader/risk/*", "trader/portfolio/*", "trader/execution/broker.py", "trader/execution/kite_orders.py",
+           "trader/execution/oms.py", "trader/execution/live.py"]
 fail_under = 100
 show_missing = true
 exclude_also = ['if __name__ == "__main__":']

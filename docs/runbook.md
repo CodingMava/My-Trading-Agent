@@ -118,6 +118,9 @@ is built and locked. Before it sends anything for real:
   orders from a server that has one.
 - **A DDPI with Zerodha:** without it, every sale of shares from the demat account needs a TPIN
   approval by hand, which an unattended system can't give.
+- **A connection check:** after `python -m trader.data.kite login`, `python -m trader.execution.live check`
+  shows the account as Kite reports it and confirms every field the order system relies on is there. It
+  is read-only. Run it once before going live, and again whenever Kite changes its API.
 - **A Kite login every trading day before 09:15:** sessions expire at 06:00 IST, and the live jobs run at
   09:20, 15:15 and 18:30. The health check warns when there's no login.
 - **Turn it on, deliberately:** in `config/settings.toml` set `[live] enabled = true` and `capital` (the

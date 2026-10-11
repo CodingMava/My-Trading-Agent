@@ -151,7 +151,7 @@ def open_live_store(settings) -> LiveStore | None:
 def live_checks(settings, store: LiveStore | None, now: datetime, session_file: Path = SESSION_FILE) -> list[Health]:
     """Phase 11: what the live account needs from a person (python -m trader.execution.live status)."""
     checks = []
-    if store is not None:
+    if store is not None and (store.orders() or store.positions()):
         unclear = store.orders(("SENDING", "UNKNOWN"))
         if unclear:
             checks.append(Health("live unknown orders", ALERT, f"{len(unclear)} request(s) whose outcome is unknown ("

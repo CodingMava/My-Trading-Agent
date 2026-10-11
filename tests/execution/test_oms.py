@@ -8,9 +8,10 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.execution.fake_kite import FakeKite
+from trader.core.models import Position
 from trader.execution import broker
 from trader.execution.kite_orders import KiteOrders
-from trader.execution.oms import OMS, LiveStore
+from trader.execution.oms import OMS, LiveStore, _stop_tag
 
 IST = ZoneInfo("Asia/Kolkata")
 DAY, NEXT = date(2026, 8, 10), date(2026, 8, 11)
@@ -197,3 +198,34 @@ def test_holdings_follow_the_fills(tmp_path):
     kite.fill(kite.by_tag(stray.tag), 50.0)
     oms.refresh(NEXT)
     assert oms.reconcile() == ["TCS.NS: holding 0 shares but the fills imply -2"]
+
+
+def test_the_live_store_rolls_back_a_half_done_change():
+    store = LiveStore(":memory:")
+    with pytest.raises(RuntimeError):
+        with store.transaction():
+            store.add_fill(DAY, "E1", "T1", "INFY.NS", "buy", 5, 100.0)
+            raise RuntimeError("crashed half-way")
+    assert store.table("live_fills").empty
+    store.close()
+    with pytest.raises(ValueError, match="no stop named"):
+        _stop_tag("/orders/regular")
+
+
+def test_requests_missing_from_kites_books_are_left_alone(tmp_path):
+    kite, oms = make(tmp_path)
+    oms.submit(DAY, "T1", ENTRY)
+    oms.submit(NEXT, "T1", broker.stop_order(Position("T1", "INFY.NS", 5, 100.0, 95.0, NEXT), last_price=101.0))
+    kite.orders.clear()
+    kite.gtts.clear()  # e.g. the day's order book has rolled over
+    assert oms.refresh(NEXT) == [] and {row["status"] for row in oms.store.orders()} == {"SENT"}
+
+
+def test_a_triggered_stop_waits_for_its_sell_to_reach_the_order_book(tmp_path):
+    kite, oms = make(tmp_path)
+    stop = broker.stop_order(Position("T1", "INFY.NS", 5, 100.0, 95.0, NEXT), last_price=101.0)
+    oms.submit(NEXT, "T1", stop)
+    kite.trigger(next(iter(kite.gtts)))
+    kite.orders.clear()  # the sell isn't in today's book (yet, or any more)
+    assert oms.refresh(NEXT) == ["INFY.NS: the stop was touched and its sell order placed"]
+    assert oms.store.order(stop.tag)["status"] == "TRIGGERED" and oms.store.table("live_fills").empty

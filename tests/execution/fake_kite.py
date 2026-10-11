@@ -32,6 +32,7 @@ class FakeKite:
         self.orders, self.gtts, self.holdings = [], {}, []
         self.positions = {"net": [], "day": []}
         self.prices: dict[str, float] = {}
+        self.cash = 100_000.0
         self.calls: list[tuple[str, str, dict | None]] = []
         self.failures: list[tuple] = []  # for the next writes: ("timeout", placed) or ("http", status, type, placed)
         self._ids = itertools.count(1001)
@@ -48,6 +49,8 @@ class FakeKite:
             return ok(list(self.holdings))
         if path == "/portfolio/positions":
             return ok(dict(self.positions))
+        if path == "/user/margins":
+            return ok({"equity": {"net": self.cash, "available": {"cash": self.cash}}, "commodity": {}})
         if path == "/quote/ltp":
             return ok({key: {"last_price": self.prices[key.split(":", 1)[1]]} for key in params["i"]})
         return error(404, "GeneralException", f"no route {path}")

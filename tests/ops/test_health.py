@@ -129,6 +129,7 @@ def test_the_live_account_is_watched(tmp_path):
     assert levels(live_checks(settings, None, EVENING, no_login)) == {"live trading": INFO}  # off
     assert levels(live_checks(replace(settings, live_enabled=True), None, EVENING, no_login)) == {"live login": WARN}
     store = LiveStore(tmp_path / "live.db")
+    assert levels(live_checks(settings, store, EVENING, no_login)) == {"live trading": INFO}  # empty: still off
     held = Position("T1", "AAA.NS", 10, 100.0, 95.0, date(2026, 8, 17))
     store.save_position(held)
     checks = live_checks(settings, store, EVENING, no_login)

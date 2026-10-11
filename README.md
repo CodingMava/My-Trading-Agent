@@ -193,10 +193,13 @@ python -m trader.data.kite login
 ```
 
 ```bash
-python -m trader.data.kite check RELIANCE.NS
+python -m trader.data.kite check RELIANCE.NS     # data: recent candles, validated
+python -m trader.execution.live check           # the account: read-only, places nothing
 ```
 
-The session token is stored in `.kite_session.json` (git-ignored) and is never printed or logged.
+The second check shows the account as Kite reports it (funds, holdings, orders, GTT stops) and confirms
+every field the order system relies on is there. The session token is stored in `.kite_session.json`
+(git-ignored) and is never printed or logged.
 
 ## Paper trading
 
@@ -340,7 +343,7 @@ python -m trader.risk.killswitch status
 | Phase | Goal | Status |
 |---|---|---|
 | 0 | Containment: secrets out of code, all rules disabled, honest docs, pinned dependencies | Done |
-| 1 | Data: market calendars, validation, Zerodha Kite data for NSE | Done (Kite awaiting a live check) |
+| 1 | Data: market calendars, validation, Zerodha Kite data for NSE | Done (Kite awaiting a live check: log in, then the two checks under Market data) |
 | 2 | Backtesting reliability: the harness in `trader/research/` | Done |
 | 3 | Evidence: pre-registered swing-trading hypotheses, tested on frozen data | Done: 0 of 3 passed |
 | 3b | Research round 2: the same rules on US stocks, US sector ETFs and Indian index ETFs | Done: 0 of 3 passed |

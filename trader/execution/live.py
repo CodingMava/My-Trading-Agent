@@ -2,6 +2,7 @@
 with real shares, for the strategies that have earned it. Off by default, and locked several ways.
 
     python -m trader.execution.live status     # the locks, live holdings and unsettled requests (no Kite calls)
+    python -m trader.execution.live check      # read-only: the account through Kite, and the fields relied on
     python -m trader.execution.live evening    # 18:30, after the daily paper run: orders for the next open
     python -m trader.execution.live morning    # 09:20: stops for new holdings, stale stops deleted, gap exits
     python -m trader.execution.live preclose   # 15:15: time exits
@@ -35,7 +36,7 @@ from trader.config import ROOT, Settings, load_settings
 from trader.data.kite import KiteAuthError, session_secrets
 from trader.execution import broker
 from trader.execution.eod import market_of
-from trader.execution.kite_orders import KiteOrders, from_session
+from trader.execution.kite_orders import KiteOrders, from_session, held_quantity
 from trader.execution.oms import OMS, LiveStore
 from trader.execution.store import PaperStore
 from trader.logging_setup import configure_logging, make_console_utf8, redact
@@ -49,6 +50,12 @@ from trader.strategies.catalog import CATALOG, StrategySpec
 log = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 ENTRY_PURPOSES = ("entry",)
+# What the order system reads from Kite, and the fields it relies on (checked by `live check`).
+RELIED_ON = {"holdings": ("tradingsymbol", "exchange", "quantity", "t1_quantity", "used_quantity"),
+             "net positions": ("tradingsymbol", "exchange", "product", "quantity"),
+             "orders": ("order_id", "status", "tag", "transaction_type", "order_type", "quantity",
+                        "filled_quantity", "average_price", "status_message"),
+             "GTTs": ("id", "status", "condition", "orders")}
 # When each job may send (IST). A job run late, say after the PC was asleep, must not do something else
 # than paper trading assumes: a time exit after the close, or an "after-market" order into the open market.
 WINDOWS = {"evening": (time(16, 0), time(23, 59)), "morning": (time(9, 15), time(15, 25)),
@@ -230,6 +237,34 @@ def track(paper: PaperStore, store: LiveStore) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["session", "symbol", "side", "live quantity", "live price", "paper price", "slippage"])
 
 
+def check(kite: KiteOrders, store: LiveStore | None = None, symbol: str = "NIFTYBEES") -> tuple[list[str], list[str]]:
+    """Read-only: the account as Kite reports it, and whether each answer has the fields the order system
+    relies on. It places, changes and deletes nothing. Returns (what it saw, problems)."""
+    seen, problems = [], []
+    equity = kite.margins().get("equity", {})
+    seen.append(f"Equity funds available: Rs {float(equity.get('net', 0)):,.2f}")
+    holdings, positions = kite.holdings(), kite.positions()
+    if not {"net", "day"} <= set(positions):
+        problems.append("positions: the answer lacks the 'net' and 'day' lists")
+    gtts = kite.gtts()
+    answers = {"holdings": holdings, "net positions": positions.get("net", []), "orders": kite.orders(), "GTTs": gtts}
+    for name, items in answers.items():
+        seen.append(f"{name}: {len(items)}")
+        problems += [f"{name}: {missing} without '{field}'" for field in RELIED_ON[name]
+                     if (missing := sum(1 for item in items if field not in item))]
+    legs = [g["orders"][0] for g in gtts if g.get("orders")]
+    if any("trigger_values" not in g.get("condition", {}) for g in gtts) or any("quantity" not in leg for leg in legs):
+        problems.append("GTTs: a trigger without its trigger values or its order's quantity")
+    for h in holdings:
+        exchange, symbol_held = h.get("exchange", "NSE"), h.get("tradingsymbol")
+        seen.append(f"  {exchange}:{symbol_held}: {h.get('quantity', 0)} settled + {h.get('t1_quantity', 0)} T+1 - "
+                    f"{h.get('used_quantity', 0)} sold today = {held_quantity(holdings, positions, symbol_held, exchange)} held")
+    seen.append(f"{symbol} last price: {kite.ltp([symbol]).get(symbol)}")
+    if store is not None:
+        problems += OMS(store, kite, lambda: datetime.now(IST)).reconcile()
+    return seen, problems
+
+
 def status_text(live: Live) -> str:
     """The locks, the live holdings and anything unsettled, from the records alone (no Kite calls)."""
     blocked = locks(live)
@@ -247,7 +282,7 @@ def status_text(live: Live) -> str:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Live trading through Zerodha Kite (locked until earned).")
-    parser.add_argument("job", choices=["status", "evening", "morning", "preclose", "track"])
+    parser.add_argument("job", choices=["status", "check", "evening", "morning", "preclose", "track"])
     args = parser.parse_args(argv)
     make_console_utf8()
     settings = load_settings()
@@ -260,6 +295,15 @@ def main(argv: list[str] | None = None) -> None:
                 connect=lambda: from_session(settings))
     if args.job == "status":
         print(status_text(live))
+    elif args.job == "check":
+        try:
+            seen, problems = check(live.connect(), live.store)
+        except KiteAuthError as exc:
+            raise SystemExit(f"Kite: {exc}") from None
+        print("\n".join(seen))
+        print("\n".join(f"PROBLEM: {p}" for p in problems) or "Every field the order system relies on is there; "
+              "the account holds every share the system believes it holds.")
+        raise SystemExit(1 if problems else 0)
     elif args.job == "track":
         print(track(live.paper, live.store).to_string(index=False))
     else:

@@ -13,7 +13,7 @@ from trader.core.models import Position
 from trader.data.kite import KiteAuthError
 from trader.execution import broker, live as live_jobs
 from trader.execution.kite_orders import KiteOrders
-from trader.execution.live import Live, locks, run, status_text, track
+from trader.execution.live import Live, check, locks, run, status_text, track
 from trader.execution.oms import LiveStore
 from trader.execution.store import PaperStore
 from trader.markets.calendar import load_calendars
@@ -113,7 +113,7 @@ def test_the_kill_switch_stops_entries_but_never_exits(tmp_path):
     live.kill_switch.engage("test")
     code, messages = job(live, clock, "evening", SIGNAL_DAY, 18, 30)
     assert "AAA.NS: entry not sent: the kill switch is engaged" in messages[0] and kite.orders == []
-    assert "Kill switch ENGAGED" in status_text(live)
+    assert "Kill switch ENGAGED" in status_text(live) and track(paper.store, live.store).empty  # nothing went live
     held = Position("T1", "BBB.NS", 100, 101.0, 95.95, date(2026, 8, 11))
     live.store.save_position(held)
     live.store.add_fill(date(2026, 8, 11), "Ebought", "T1", "BBB.NS", "buy", 100, 101.0)
@@ -191,6 +191,8 @@ def test_live_stops_and_time_exits_on_a_quiet_day(tmp_path):
     live.store.add_fill(today, "Eaaa", "T1", "AAA.NS", "buy", 10, 100.0)
     kite.positions["net"].append({"tradingsymbol": "AAA", "exchange": "NSE", "product": "CNC", "quantity": 10})
     assert job(live, clock, "preclose", today, 15, 15) == (0, [])  # day 1 of 5
+    for weekend_job, hour in (("morning", 9), ("preclose", 15)):  # Saturday: no session, nothing to do
+        assert job(live, clock, weekend_job, date(2026, 8, 15), hour, 20) == (0, [])
     kite.prices = {"AAA": 100.0}
     job(live, clock, "morning", today, 9, 20)
     gtt = next(iter(kite.gtts.values()))
@@ -269,3 +271,57 @@ def test_a_stop_whose_answer_was_lost_is_sent_again_only_if_kite_lacks_it(tmp_pa
     assert len(kite.gtts) == 1
     job(live, clock, "morning", today, 9, 25)
     assert sorted(g["condition"]["tradingsymbol"] for g in kite.gtts.values()) == ["AAA", "BBB"]  # one each
+
+
+def test_a_time_exit_without_a_stop_sells_straight_away(tmp_path):
+    paper, live, kite, clock = setup(tmp_path)
+    today = date(2026, 8, 11)
+    live.store.save_position(Position("T1", "AAA.NS", 10, 100.0, 95.0, today, max_hold_days=1))
+    live.store.add_fill(today, "Eaaa", "T1", "AAA.NS", "buy", 10, 100.0)
+    kite.positions["net"].append({"tradingsymbol": "AAA", "exchange": "NSE", "product": "CNC", "quantity": 10})
+    code, messages = job(live, clock, "preclose", today, 15, 15)  # the morning job never ran: no stop to delete
+    assert "AAA.NS: time exit, sell 10 (SENT)" in messages[0] and [c[0] for c in kite.calls].count("DELETE") == 0
+
+
+def test_the_read_only_check_holds_kites_answers_to_what_the_code_relies_on(tmp_path):
+    kite = FakeKite()
+    api = KiteOrders("key", "AT", http=kite, sleep=lambda s: None)
+    kite.holdings = [{"tradingsymbol": "INFY", "exchange": "NSE", "quantity": 10, "t1_quantity": 5, "used_quantity": 0}]
+    kite.prices = {"NIFTYBEES": 285.5}
+    api.place_order("amo", broker.entry_order("k", "INFY.NS", 5).params)
+    api.place_gtt(broker.stop_order(Position("T1", "INFY.NS", 5, 100.0, 95.0, date(2026, 8, 11))).params)
+    writes_before = [call for call in kite.calls if call[0] != "GET"]
+    seen, problems = check(api)
+    assert problems == [] and "Equity funds available: Rs 100,000.00" in seen
+    assert "  NSE:INFY: 10 settled + 5 T+1 - 0 sold today = 15 held" in seen and "NIFTYBEES last price: 285.5" in seen
+    assert [call for call in kite.calls if call[0] != "GET"] == writes_before  # it wrote nothing
+    del kite.holdings[0]["t1_quantity"]
+    kite.positions = {"net": []}
+    kite.gtts[next(iter(kite.gtts))]["condition"].pop("trigger_values")
+    store = LiveStore(tmp_path / "live.db")
+    store.save_position(Position("T1", "TCS.NS", 3, 50.0, 47.5, date(2026, 8, 11)))
+    store.add_fill(date(2026, 8, 11), "Etcs", "T1", "TCS.NS", "buy", 3, 50.0)
+    seen, problems = check(api, store)
+    assert problems == ["positions: the answer lacks the 'net' and 'day' lists", "holdings: 1 without 't1_quantity'",
+                        "GTTs: a trigger without its trigger values or its order's quantity",
+                        "TCS.NS: the system holds 3 shares but the account has 0"]
+
+
+def test_the_check_command(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(live_jobs, "ROOT", tmp_path)
+    monkeypatch.setattr(live_jobs, "configure_logging", lambda **kwargs: None)
+    monkeypatch.setattr(live_jobs, "notifier_from_settings", lambda settings: FakeNotifier())
+    settings = load_settings()
+    PaperStore(tmp_path / settings.paper_database, settings.paper_starting_capital).close()
+
+    def no_login(settings):
+        raise KiteAuthError("no valid Kite session today (run: python -m trader.data.kite login)")
+    monkeypatch.setattr(live_jobs, "from_session", no_login)
+    with pytest.raises(SystemExit, match="Kite: no valid Kite session today"):
+        live_jobs.main(["check"])
+    kite = FakeKite()
+    kite.prices = {"NIFTYBEES": 285.5}
+    monkeypatch.setattr(live_jobs, "from_session", lambda settings: KiteOrders("key", "AT", http=kite, sleep=lambda s: None))
+    with pytest.raises(SystemExit) as finished:
+        live_jobs.main(["check"])
+    assert finished.value.code == 0 and "Every field the order system relies on is there" in capsys.readouterr().out

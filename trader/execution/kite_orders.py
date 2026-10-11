@@ -55,14 +55,14 @@ class KiteOrders:
         self._timeout, self._sleep = timeout, sleep
 
     def _read(self, path: str, params: dict | None = None):
-        for attempt in range(3):
+        for attempt in range(3):  # pragma: no branch (the last attempt always returns)
             response = self._http.get(API_ROOT + path, params=params, headers=self._headers, timeout=self._timeout)
             if response.status_code not in RETRY_READS or attempt == 2:
                 return _data(response, write=False)
             self._sleep(1.0 + attempt)
 
     def _write(self, method: str, path: str, data: dict | None = None):
-        for attempt in range(3):
+        for attempt in range(3):  # pragma: no branch (the last attempt always returns)
             try:
                 response = self._http.request(method, API_ROOT + path, data=data, headers=self._headers,
                                               timeout=self._timeout)
@@ -99,6 +99,9 @@ class KiteOrders:
 
     def positions(self) -> dict:
         return dict(self._read("/portfolio/positions"))
+
+    def margins(self) -> dict:
+        return dict(self._read("/user/margins"))
 
     def ltp(self, tradingsymbols: list[str], exchange: str = "NSE") -> dict[str, float]:
         if not tradingsymbols:
