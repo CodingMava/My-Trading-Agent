@@ -82,7 +82,7 @@ ETFs in recent years. Eight hypotheses over three rounds, none passed: the syste
 | Path | What it is |
 |---|---|
 | `dashboard.py` | Ops console (Streamlit, read-only): health, the paper account, decisions, strategies, runs |
-| `scripts/register_tasks.ps1` | Creates the two Windows scheduled tasks: the daily run and the health check |
+| `scripts/register_tasks.ps1` | Creates the Windows scheduled tasks: the daily run, the health check, Telegram commands |
 | `config/settings.toml` | Non-secret settings (data source, Telegram, AI) |
 | `config/strategies.toml` | Strategy registry: each strategy's status |
 | `config/gate.toml` | The profitability gate: the evidence each status requires |
@@ -98,7 +98,7 @@ ETFs in recent years. Eight hypotheses over three rounds, none passed: the syste
 | `trader/strategies/` | Strategy rules (the Phase 3 swing hypotheses) and the catalog the paper trader runs |
 | `trader/execution/` | End-of-day paper trading and its SQLite store; paper evidence for the gate |
 | `trader/ops/` | Health checks (alerts on failure and on silence) and the console's read-only views |
-| `trader/notify/` | Telegram message formats and a sender that retries and never logs the token |
+| `trader/notify/` | Telegram message formats, a sender that retries and never logs the token, and the commands |
 | `trader/research/` | Backtesting harness: simulator, costs, metrics, validation; the research-round runners; the audit, with the original rules and indicator code kept so it can be reproduced |
 | `docs/research/` | Pre-registrations, evidence reports, and machine-readable verdicts (`evidence/`) |
 | `tests/` | Test suite (`pytest`) |
@@ -182,13 +182,19 @@ Only strategies whose status `PAPER` is backed by research evidence are traded. 
 
 ## Running unattended
 
-Two Windows scheduled tasks run the system. `scripts/register_tasks.ps1` creates both: review it, then run
-it once with `powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1`.
+Three Windows scheduled tasks run the system. `scripts/register_tasks.ps1` creates them: review it, then
+run it once with `powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1`.
 
 | Task | When | Runs |
 |---|---|---|
 | Daily run | 18:00 IST every day; if the PC was off then, as soon as it is back | `python -m trader.execution.eod` |
 | Health check | 21:00 IST every day | `python -m trader.ops.health --notify` |
+| Telegram commands | Always, from logon (no console window; restarted if it stops) | `python -m trader.notify.bot` |
+
+From your Telegram chat with the bot: `/status` (health, mode, equity, positions), `/positions`,
+`/trades` (the latest closed trades), and `/kill reason`, which stops all new trades at once while open
+positions still exit as planned. Only your chat (`TELEGRAM_CHAT_ID`) is answered. No command can release
+the kill switch, change a limit or place an order; releasing is only possible on the PC.
 
 What sends you a Telegram alert:
 

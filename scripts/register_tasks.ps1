@@ -1,4 +1,4 @@
-# Registers the two Windows scheduled tasks that run the trading agent unattended. Review it, then run it
+# Registers the three Windows scheduled tasks that run the trading agent unattended. Review it, then run it
 # once from the project folder in PowerShell:
 #   powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1
 # The times are this PC's local time, which must be India time (IST). The tasks run while you are logged
@@ -26,5 +26,16 @@ Register-ScheduledTask -TaskName "Trading agent - health check" -Force `
     -Description "Alerts on silence (python -m trader.ops.health --notify)." `
     -Action (New-ScheduledTaskAction -Execute $python -Argument "-m trader.ops.health --notify" -WorkingDirectory $root) `
     -Trigger (New-ScheduledTaskTrigger -Daily -At "21:00") -Settings $healthSettings | Out-Null
+
+# Always on, from logon: answers your Telegram commands (/status, /positions, /trades, /kill). It runs
+# without a console window and is restarted if it stops; it is also started right away.
+$pythonw = Join-Path $root "venv\Scripts\pythonw.exe"
+$botSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) `
+    -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1)
+Register-ScheduledTask -TaskName "Trading agent - Telegram commands" -Force `
+    -Description "Answers Telegram commands (python -m trader.notify.bot). No command can trade or release the kill switch." `
+    -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.notify.bot" -WorkingDirectory $root) `
+    -Trigger (New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME") -Settings $botSettings | Out-Null
+Start-ScheduledTask -TaskName "Trading agent - Telegram commands"
 
 Get-ScheduledTask -TaskName "Trading agent*" | Select-Object TaskName, State

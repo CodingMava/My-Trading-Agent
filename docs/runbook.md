@@ -10,6 +10,7 @@ interpreting under pressure.
 |---|---|---|
 | 18:00 IST daily (Task Scheduler, "Trading agent - daily run") | `python -m trader.execution.eod` processes every completed NSE session not yet processed, sends `[PAPER]` Telegram messages, records the run and backs up the records | `logs/trader.log` |
 | 21:00 IST daily ("Trading agent - health check") | `python -m trader.ops.health --notify` alerts you when anything below needs attention | `logs/health.log` |
+| Always, from logon ("Trading agent - Telegram commands") | `python -m trader.notify.bot` answers `/status`, `/positions`, `/trades` and `/kill reason` from your chat only | `logs/bot.log` |
 | Any time | `streamlit run dashboard.py` (read-only) or `python -m trader.ops.health` | |
 
 No real order is ever placed: the system paper trades, and today it is in NO TRADE because no strategy has
@@ -95,6 +96,7 @@ Kill switch log (date, why it engaged, what changed before it was released):
 
 ## Stopping everything
 
-- Block new trades now: `python -m trader.risk.killswitch engage "why"` (exits keep running).
-- Pause the schedule: disable both "Trading agent" tasks in Task Scheduler.
+- Block new trades now: send `/kill why` to the bot from your phone, or on the PC
+  `python -m trader.risk.killswitch engage "why"` (exits keep running either way).
+- Pause the schedule: disable the "Trading agent" tasks in Task Scheduler.
 - Remove the schedule (PowerShell): `Unregister-ScheduledTask -TaskName "Trading agent*" -Confirm:$false`
