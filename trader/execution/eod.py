@@ -10,6 +10,8 @@ For each session, in order, with the same fill rules as the backtester:
   4. exit signals at the close queue sells for the next open;
   5. entry signals from strategies whose evidence supports PAPER pass the risk engine, and approved ones
      queue buys for the next open.
+Every run also fetches and validates NIFTYBEES, the market check: the data path is exercised every day, so
+a data source that breaks halts the run and alerts long before a strategy depends on it.
 Alongside, every step for an NSE stock records the exact Zerodha Kite request that would carry it out with
 real shares (trader/execution/broker.py: Phase 8's dry run; nothing is sent).
 Each session is one database transaction. Telegram messages are queued inside it and sent only after it
@@ -43,6 +45,7 @@ from trader.logging_setup import configure_logging, redact
 from trader.markets.calendar import load_calendars
 from trader.notify import templates
 from trader.notify.telegram import notifier_from_settings
+from trader.ops.health import UNATTENDED_TARGET, clean_sessions
 from trader.portfolio.exposure import load_sectors, sector_of
 from trader.registry import StrategyRegistry
 from trader.research.costs import ZERODHA_DELIVERY
@@ -59,6 +62,7 @@ BUY_COST_HEADROOM = 1.005  # leave room for buy-side charges when sizing a fill 
 ADV_DAYS = 20
 MIN_DATA_COVERAGE = 0.8  # share of instruments that must have a session's bar before that session is processed
 ACTIVE_STATUSES = ("PAPER", "LIVE_SMALL", "LIVE")  # a strategy earning live money keeps paper trading too
+MARKET_CHECK = ("NIFTYBEES.NS",)  # fetched on every run, even when nothing trades
 
 
 @dataclass
@@ -80,7 +84,7 @@ class PaperTrader:
     def __init__(self, *, store: PaperStore, provider, calendar, registry: StrategyRegistry, risk: RiskEngine,
                  notifier, catalog: dict[str, StrategySpec] | None = None, universes: dict | None = None,
                  sectors: dict | None = None, decay: DecayThresholds | None = None, evidence_dir: Path = EVIDENCE_DIR,
-                 send_no_trade: bool = False, paper: bool = True, clock=None):
+                 send_no_trade: bool = False, paper: bool = True, clock=None, market_check: tuple[str, ...] = ()):
         self.store, self.provider, self.calendar = store, provider, calendar
         self.registry, self.risk, self.notifier = registry, risk, notifier
         self.catalog = CATALOG if catalog is None else catalog
@@ -88,6 +92,7 @@ class PaperTrader:
         self.sectors = load_sectors() if sectors is None else sectors
         self.decay = decay or DecayThresholds()
         self.evidence_dir, self.send_no_trade, self.paper = evidence_dir, send_no_trade, paper
+        self.market_check = tuple(market_check)
         self.clock = clock or (lambda: datetime.now(IST))
         self._rows: dict[str, dict[date, int]] = {}
         self._signals: dict[tuple[str, str], object] = {}
@@ -168,7 +173,9 @@ class PaperTrader:
             if not strategies:
                 summary.notes.append("no strategy is approved for paper trading: NO TRADE")
             held = set(self.store.positions()) | {o.symbol for o in self.store.pending_orders()}
-            symbols = sorted({s for spec in strategies for s in self.universes.get(spec.universe, [])} | held)
+            symbols = sorted({s for spec in strategies for s in self.universes.get(spec.universe, [])} | held
+                             | set(self.market_check))
+            self._record = clean_sessions(self.store, now)  # the unattended record before this run
             self._rows, self._signals = {}, {}
             for_exits, for_entries, problems = self.load_bars(symbols, sessions[0], now) if symbols else ({}, {}, {})
             for session in sessions:
@@ -364,10 +371,14 @@ class PaperTrader:
             messages.append(self._alert("Reconciliation failed", "; ".join(mismatches)))
 
         if final:
+            checked = [f"{symbol} closed at {templates.rupees(b['close'])}" if (b := bar(symbol)) is not None
+                       else f"{symbol}: no price today" for symbol in self.market_check]
+            record = self._record + len(summary.sessions) + 1
             messages.append(templates.daily_summary(
                 session=s.isoformat(), equity=equity, day_change=equity / day_start - 1 if day_start else 0.0,
                 cash=cash, positions=[(p.symbol, p.quantity, p.price) for p in positions.values()],
-                strategies=len({spec.id for spec in strategies} - set(store.suspended())), paper=self.paper))
+                strategies=len({spec.id for spec in strategies} - set(store.suspended())), paper=self.paper,
+                market=checked, record=f"{record} of {UNATTENDED_TARGET} clean sessions in a row before live trading"))
         for text in messages:
             store.queue_message(s, text)
 
@@ -503,7 +514,8 @@ def main(argv: list[str] | None = None) -> None:
             log.warning("Registry: %s", problem)
         return PaperTrader(store=store, provider=make_provider(settings), calendar=load_calendars()["NSE"],
                            registry=registry, risk=RiskEngine(load_limits(), KillSwitch()), notifier=notifier,
-                           decay=load_gate_config().decay, send_no_trade=settings.paper_send_no_trade)
+                           decay=load_gate_config().decay, send_no_trade=settings.paper_send_no_trade,
+                           market_check=MARKET_CHECK)
 
     try:
         code = daily(store, notifier, build, args.until, args.start, settings.heartbeat_url.reveal(), secrets,

@@ -203,7 +203,9 @@ every field the order system relies on is there. The session token is stored in 
 
 ## Paper trading
 
-Swing strategies are paper traded once a day, after the NSE close. No real order is ever placed.
+Swing strategies are paper traded once a day, after the NSE close. No real order is ever placed. Every
+run also fetches and validates NIFTYBEES (the market check), so the data path is tested daily even while
+nothing trades, and the Telegram summary shows its close and the unattended record (N of 60).
 
 ```bash
 python -m trader.execution.eod                       # process every completed session not yet done

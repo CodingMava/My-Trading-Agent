@@ -78,13 +78,15 @@ class FakeNotifier:
         return self.working
 
 
-def make_trader(tmp_path, frames=None, status="PAPER", limits=None, notifier=None, spec=SPEC, db="paper.db"):
+def make_trader(tmp_path, frames=None, status="PAPER", limits=None, notifier=None, spec=SPEC, db="paper.db",
+                market_check=(), universe=None):
     frames = frames or UNIVERSE
     return PaperTrader(store=PaperStore(tmp_path / db, 1_000_000), provider=FakeProvider(frames), calendar=NSE,
                        registry=StrategyRegistry([StrategyRecord("T1", "Test strategy", status)]),
                        risk=RiskEngine(limits or RiskLimits(), KillSwitch(tmp_path / "KILL_SWITCH")),
-                       notifier=notifier or FakeNotifier(), catalog={"T1": spec}, universes={"test": list(frames)},
-                       sectors={}, evidence_dir=tmp_path / "evidence", clock=lambda: CLOCK)
+                       notifier=notifier or FakeNotifier(), catalog={"T1": spec},
+                       universes={"test": list(frames) if universe is None else universe},
+                       sectors={}, evidence_dir=tmp_path / "evidence", clock=lambda: CLOCK, market_check=market_check)
 
 
 def test_a_full_paper_trade_cycle(tmp_path):
@@ -299,3 +301,28 @@ def test_paper_evidence_needs_time_and_trades(tmp_path):
     assert evidence.kind == "paper" and evidence.stats["trades"] == 3
     assert evidence.decision in ("PAPER", "RESEARCH")  # three trades in a week can't earn LIVE_SMALL
     assert paper_evidence(trader.store, "T1", date(2026, 8, 20), evidence_dir=tmp_path / "none") is None
+
+
+def test_the_market_check_runs_even_when_nothing_trades(tmp_path):
+    frames = {**UNIVERSE, "NIFTYBEES.NS": bars()}
+    trader = make_trader(tmp_path, frames=frames, status="RESEARCH", market_check=("NIFTYBEES.NS",))
+    summary = trader.run(until=date(2026, 8, 12), start=SIGNAL_DAY)
+    assert summary.sessions == [SIGNAL_DAY, date(2026, 8, 11), date(2026, 8, 12)] and not summary.halted
+    text = trader.notifier.sent[-1]
+    assert "Market check: NIFTYBEES.NS closed at ₹101.00" in text
+    assert "Unattended record: 3 of 60 clean sessions in a row before live trading" in text
+
+
+def test_a_market_check_without_data_halts_the_run(tmp_path):
+    trader = make_trader(tmp_path, status="RESEARCH", market_check=("NIFTYBEES.NS",))  # the provider can't serve it
+    summary = trader.run(until=date(2026, 8, 12), start=SIGNAL_DAY)
+    assert summary.sessions == [] and "no 2026-08-10 market data yet for 1 of 1 instruments (NIFTYBEES.NS)" in summary.halted
+    assert "Market data missing" in trader.notifier.sent[0]
+
+
+def test_the_market_check_reports_a_day_without_its_price(tmp_path):
+    quiet = bars().drop(pd.Timestamp("2026-08-11", tz=IST))  # a hole: later bars exist, so the day goes ahead
+    trader = make_trader(tmp_path, frames={**UNIVERSE, "NIFTYBEES.NS": quiet}, market_check=("NIFTYBEES.NS",),
+                         universe=list(UNIVERSE))
+    trader.run(until=date(2026, 8, 11), start=SIGNAL_DAY)
+    assert "Market check: NIFTYBEES.NS: no price today" in trader.notifier.sent[-1]

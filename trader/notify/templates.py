@@ -65,9 +65,10 @@ def live_update(*, title: str, lines: list[str]) -> str:
 
 
 def daily_summary(*, session: str, equity: float, day_change: float, cash: float, positions: list[tuple[str, int, float]],
-                  strategies: int, paper: bool = True) -> str:
+                  strategies: int, paper: bool = True, market: list[str] = (), record: str = "") -> str:
     held = "; ".join(f"{symbol} x{quantity} @ {rupees(price)}" for symbol, quantity, price in positions) or "none"
-    return _message(f"DAILY SUMMARY {session}", [
-        ("Equity", f"{rupees(equity)} ({day_change:+.2%} today)"), ("Cash", rupees(cash)),
-        ("Open positions", held), ("Strategies trading", str(strategies)),
-    ], paper, None if strategies else "NO TRADE: no strategy has the evidence to trade.")
+    rows = [("Equity", f"{rupees(equity)} ({day_change:+.2%} today)"), ("Cash", rupees(cash)),
+            ("Open positions", held), ("Strategies trading", str(strategies))]
+    rows += [("Market check", "; ".join(market))] if market else []
+    rows += [("Unattended record", record)] if record else []
+    return _message(f"DAILY SUMMARY {session}", rows, paper, None if strategies else "NO TRADE: no strategy has the evidence to trade.")
