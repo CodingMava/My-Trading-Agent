@@ -246,6 +246,7 @@ whenever it changes.
 | Daily run | 18:00 IST every day; if the PC was off then, as soon as it is back | `python -m trader.execution.eod` |
 | Health check | 21:00 IST every day | `python -m trader.ops.health --notify` |
 | Telegram commands | Always, from logon (no console window; restarted if it stops) | `python -m trader.notify.bot` |
+| News | Every 15 minutes, 07:00 to midnight | `python -m trader.research.news collect` |
 
 From your Telegram chat with the bot: `/status` (health, mode, equity, positions), `/positions`,
 `/trades` (the latest closed trades), `/kill reason`, which stops all new trades at once while open
@@ -299,6 +300,7 @@ python -m trader.research.round2                                  # re-run resea
 python -m trader.research.round3                                  # re-run research round 3
 python -m trader.research.round4                                  # re-run research round 4
 python -m trader.research.round5                                  # re-run research round 5
+python -m trader.research.news status                             # the news history: counts, events, gaps
 pytest                                                            # fast tests
 pytest -m slow                                                    # research regressions (need the frozen data in data/)
 ```
@@ -362,7 +364,7 @@ python -m trader.risk.killswitch status
 | 5-6 | Risk engine and portfolio limits | Done |
 | 7 | Paper trading (end-of-day, for swing strategies) | Done: no strategy is eligible yet. Its 60 unattended sessions start once the tasks are scheduled |
 | 8 | Broker integration: Zerodha Kite orders, still on paper capital | Done: the dry run, and the order management system (orders and GTT stops, never sent twice, rejects, partial fills, reconciliation with the account), tested against an in-memory Kite (Kite has no sandbox) |
-| 9 | AI research layer: news to structured tags, advisory only | Waits for a strategy it could measurably improve |
+| 9 | AI research layer: news to structured tags, advisory only | Built: NSE's announcements collected every 15 minutes into a history with every gap recorded, tagged by rules (optional AI tags, schema-checked, off until a new key); no trading code can read them. Kept only if a pre-registered research round shows the tags improve a strategy |
 | 10 | Observability: run records, alerts on failure and on silence, health checks, ops console | Done |
 | 11 | Controlled live trading | Built and locked: the live jobs (18:30, 09:20, 15:15) and their locks, live-against-paper tracking, the Level 6 evidence for `LIVE`, and Level 7's capital steps (at most double, 4 weeks apart, automatic step-down). Nothing is sent until a strategy earns `LIVE_SMALL` on paper-trading evidence and you turn it on |
 

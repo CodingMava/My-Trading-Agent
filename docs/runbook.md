@@ -38,7 +38,8 @@ Every alert is a `RISK ALERT` on Telegram with one of these titles.
 | [LIVE] Live morning / evening / preclose failed | A live job couldn't run: usually no Kite login today, or Kite unreachable. | Log in (`python -m trader.data.kite login`) and run the job by hand within its window, e.g. `python -m trader.execution.live morning`. |
 | Dry-run order invalid | Kite would refuse a request the dry run prepared: a price off NSE's tick, a bad quantity, a stop above the price. Nothing was sent. | A bug in the order path: look at it with `python -m trader.execution.broker` and fix it before any live trading. |
 
-The dashboard and `python -m trader.ops.health` also show warnings that don't page you: research evidence
+The dashboard and `python -m trader.ops.health` also show warnings that don't page you (a stalled news
+collection among them: see `logs/news.log`; NSE sometimes turns requests away for a while): research evidence
 about to expire, next year's market holidays missing (all of December), no Kite login, a stale backup,
 dry-run Kite requests that Kite would refuse. When trading live, it also alerts on a live request whose
 outcome is unknown and on a live holding without a stop at Kite (place one by hand), and warns about

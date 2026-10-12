@@ -83,6 +83,8 @@ class Settings:
     live_database: str = "state/live.db"
     live_max_orders_per_day: int = 10
     live_max_order_fraction: float = 0.25
+    news_enabled: bool = False  # collect NSE announcements for research (Phase 9)
+    news_database: str = "state/news.db"
     warnings: tuple[str, ...] = ()
 
     def secret_values(self) -> list[str]:
@@ -100,7 +102,7 @@ def load_settings(env: dict[str, str] | None = None, settings_file: Path = SETTI
     with open(settings_file, "rb") as fh:
         cfg = tomllib.load(fh)
     notifications, ai, data = cfg.get("notifications", {}), cfg.get("ai", {}), cfg.get("data", {})
-    paper, live = cfg.get("paper", {}), cfg.get("live", {})
+    paper, live, news = cfg.get("paper", {}), cfg.get("live", {}), cfg.get("news", {})
 
     token = Secret(env.get("TELEGRAM_BOT_TOKEN"))
     chat_id = (env.get("TELEGRAM_CHAT_ID") or "").strip()
@@ -150,5 +152,7 @@ def load_settings(env: dict[str, str] | None = None, settings_file: Path = SETTI
         live_database=str(live.get("database", "state/live.db")),
         live_max_orders_per_day=int(live.get("max_orders_per_day", 10)),
         live_max_order_fraction=float(live.get("max_order_fraction", 0.25)),
+        news_enabled=bool(news.get("enabled", False)),
+        news_database=str(news.get("database", "state/news.db")),
         warnings=tuple(warnings),
     )

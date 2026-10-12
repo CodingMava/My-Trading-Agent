@@ -217,6 +217,28 @@ def integrity_check(store: PaperStore | None, live_store: LiveStore | None, back
     return [Health("integrity", OK, ", ".join(found) + " intact")]
 
 
+NEWS_STALE = timedelta(hours=2)  # collection runs every 15 minutes from 07:00
+
+
+def news_check(settings, now: datetime) -> list[Health]:
+    """Phase 9: is the news history still being collected? (Research only: never an alert.)"""
+    path = ROOT / settings.news_database
+    if not settings.news_enabled or not path.exists():
+        return []
+    conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+    try:
+        last = conn.execute("SELECT MAX(at) FROM fetches WHERE error = ''").fetchone()[0]
+        count = conn.execute("SELECT COUNT(*) FROM announcements").fetchone()[0]
+        recent_gaps = conn.execute("SELECT COUNT(*) FROM fetches WHERE gap_to >= ?",
+                                   ((now - timedelta(days=7)).isoformat(),)).fetchone()[0]
+    finally:
+        conn.close()
+    if last is None or now - datetime.fromisoformat(last) > NEWS_STALE:
+        return [Health("news", WARN, f"no successful fetch since {_when(last) if last else 'it began'}: check "
+                       "logs/news.log (NSE may be turning the requests away)")]
+    return [Health("news", OK, f"{count} announcements, last fetched {_when(last)}; {recent_gaps} gap(s) in 7 days")]
+
+
 def backup_check(store: PaperStore | None, backup_dir: Path | None, today: date) -> list[Health]:
     """The daily run copies the records to <database folder>/backups after every run that didn't fail."""
     if store is None or backup_dir is None:
@@ -276,7 +298,7 @@ def health_checks(store: PaperStore | None, calendar: MarketCalendar, registry: 
     """Every check, worst first. `store` is None before the first daily run."""
     checks = [*run_checks(store, calendar, now), *safety_checks(store, kill_switch), unattended_record(store, now),
               dry_run_check(store, now.date()), *backup_check(store, backup_dir, now.date()),
-              *integrity_check(store, live_store, backup_dir),
+              *integrity_check(store, live_store, backup_dir), *news_check(settings, now),
               *strategy_checks(registry, now.date(), max_age_days, evidence_dir), calendar_checks(calendar, now.date()),
               data_checks(settings, now, session_file), *live_checks(settings, live_store, now, session_file)]
     order = (ALERT, WARN, INFO, OK)

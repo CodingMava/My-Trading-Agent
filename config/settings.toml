@@ -27,10 +27,15 @@ max_order_fraction = 0.25           # one entry's value at most this share of th
 telegram_enabled = true
 telegram_timeout_seconds = 10
 
+[news]
+# NSE's corporate announcements, collected for research every 15 minutes (python -m trader.research.news).
+# Research only: no trading code reads them.
+enabled = true
+database = "state/news.db"         # git-ignored
+
 [ai]
-# Reserved for the Phase 9 research layer (news to structured tags, advisory only); nothing uses it
-# yet. The audit found the old AI commentary added no measurable value. AI never approves, sizes or
-# places trades.
+# Optional AI tags for the collected news (python -m trader.research.news tag-ai): research only. Needs a
+# current GEMINI_API_KEY in .env (the old one leaked). AI never approves, sizes or places trades.
 enabled = false
 provider = "gemini"
 model = "gemini-2.5-flash"

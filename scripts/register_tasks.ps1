@@ -48,6 +48,18 @@ Register-ScheduledTask -TaskName "Trading agent - Telegram commands" -Force `
 Stop-ScheduledTask -TaskName "Trading agent - Telegram commands"
 Start-ScheduledTask -TaskName "Trading agent - Telegram commands"
 
+# Every 15 minutes from 07:00 to midnight: NSE's corporate announcements, collected for research (Phase 9).
+# A missed run only leaves a gap, which the next run records.
+$newsTrigger = New-ScheduledTaskTrigger -Daily -At "07:00"
+$newsTrigger.Repetition = (New-ScheduledTaskTrigger -Once -At "07:00" -RepetitionInterval (New-TimeSpan -Minutes 15) `
+    -RepetitionDuration (New-TimeSpan -Hours 17)).Repetition
+$newsSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5) `
+    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+Register-ScheduledTask -TaskName "Trading agent - news" -Force `
+    -Description "Collects NSE announcements for research (python -m trader.research.news collect). Never trades." `
+    -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.news collect" -WorkingDirectory $root) `
+    -Trigger $newsTrigger -Settings $newsSettings | Out-Null
+
 # Live trading through Zerodha Kite: 18:30 after the daily run (orders for the next open), 09:20 after the
 # open (stops), 15:15 before the close (time exits). The morning job may start late, since a stop placed late
 # beats none; the others don't, and each job refuses to send outside its own window anyway.

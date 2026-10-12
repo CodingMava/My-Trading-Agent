@@ -10,8 +10,10 @@ from trader.execution.oms import LiveStore
 from trader.execution.store import PaperStore
 from trader.gate import Evidence, save_evidence
 from trader.markets.calendar import load_calendars
+from trader.ops import health
 from trader.ops.health import ALERT, INFO, OK, WARN, backup_check, calendar_checks, data_checks, dry_run_check, \
-    health_checks, integrity_check, live_checks, run_checks, safety_checks, strategy_checks, unattended_record
+    health_checks, integrity_check, live_checks, news_check, run_checks, safety_checks, strategy_checks, \
+    unattended_record
 from trader.registry import StrategyRecord, StrategyRegistry
 from trader.risk.killswitch import KillSwitch
 
@@ -160,3 +162,19 @@ def test_damaged_records_or_backups_are_caught(tmp_path):
         damaged.write(b"not a database file at all")
     check = integrity_check(store, live, tmp_path / "backups")[0]
     assert check.level == ALERT and "backup paper-2026-08-17.db (file is not a database)" in check.detail
+
+
+
+def test_news_collection_that_stalls_is_a_warning(tmp_path, monkeypatch):
+    from trader.research.news import NewsStore
+    monkeypatch.setattr(health, "ROOT", tmp_path)
+    settings = replace(load_settings(env={}), news_enabled=True)
+    assert news_check(settings, EVENING) == []  # not started
+    store = NewsStore(tmp_path / settings.news_database)
+    store.record_fetch("announcements", EVENING - timedelta(minutes=20), [], 0, None)
+    store.record_fetch("announcements", EVENING - timedelta(minutes=5), [], 0, None, "ConnectionError")
+    check = news_check(settings, EVENING)[0]
+    assert check.level == OK and check.detail.startswith("0 announcements, last fetched 18 Aug 20:40 IST")
+    assert news_check(settings, EVENING + timedelta(hours=3))[0].level == WARN
+    assert news_check(replace(settings, news_enabled=False), EVENING) == []
+    store.close()
