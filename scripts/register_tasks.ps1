@@ -36,14 +36,16 @@ Register-ScheduledTask -TaskName "Trading agent - health check" -Force `
     -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.ops.health --notify" -WorkingDirectory $root) `
     -Trigger (New-ScheduledTaskTrigger -Daily -At "21:00") -Settings $healthSettings | Out-Null
 
-# Always on, from logon: answers your Telegram commands (/status, /positions, /trades, /kill). It runs
-# without a console window and is restarted if it stops; it is also started right away.
+# Always on, from logon: answers your Telegram commands (/status, /positions, /trades, /kill, /login). It
+# runs without a console window and is restarted if it stops. It is (re)started right away, so a running
+# bot picks up the current code.
 $botSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName "Trading agent - Telegram commands" -Force `
     -Description "Answers Telegram commands (python -m trader.notify.bot). No command can trade or release the kill switch." `
     -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.notify.bot" -WorkingDirectory $root) `
     -Trigger (New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME") -Settings $botSettings | Out-Null
+Stop-ScheduledTask -TaskName "Trading agent - Telegram commands"
 Start-ScheduledTask -TaskName "Trading agent - Telegram commands"
 
 # Live trading through Zerodha Kite: 18:30 after the daily run (orders for the next open), 09:20 after the
