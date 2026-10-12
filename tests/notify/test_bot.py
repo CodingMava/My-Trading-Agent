@@ -1,11 +1,16 @@
 import logging
-from datetime import date
+from dataclasses import replace
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import requests
 
+from trader.config import load_settings
 from trader.core.models import Position
+from trader.data.kite import KiteSession, load_session, save_session
 from trader.execution.store import PaperStore
-from trader.notify.bot import HELP, CommandBot, Context, reply_to
+from trader.markets.calendar import load_calendars
+from trader.notify.bot import HELP, CommandBot, Context, kite_login, login_reminder, reply_to
 from trader.ops.health import ALERT, OK, Health
 from trader.registry import StrategyRecord, StrategyRegistry
 from trader.risk.killswitch import KillSwitch
@@ -105,3 +110,72 @@ def test_a_failed_lookup_gets_an_answer_instead_of_silence(tmp_path):
     bot = CommandBot("t", CHAT, inbox, busy, http=FakeTelegram({"ok": True, "result": [message(7, 4242, "/status")]}),
                      sleep=lambda s: None)
     assert bot.poll_once() == 1 and "Couldn't read the records just now (OSError)" in inbox.sent[0]
+
+
+MONDAY_MORNING = datetime(2026, 10, 12, 8, 45, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+
+class KiteSessionEndpoint:
+    """Kite's token exchange, answering with `payload` (or failing to answer)."""
+
+    def __init__(self, payload=None, status=200, error=None):
+        self.payload, self.status, self.error, self.calls = payload, status, error, []
+
+    def post(self, url, headers=None, timeout=None, data=None):
+        self.calls.append(data)
+        if self.error:
+            raise self.error
+        return type("Response", (), {"status_code": self.status, "json": lambda response: self.payload})()
+
+
+def test_logging_in_to_kite_from_the_phone(tmp_path):
+    settings, session_file = load_settings(env={"KITE_API_KEY": "key", "KITE_API_SECRET": "sec"}), tmp_path / "s.json"
+    link = kite_login(settings, "", session_file, now=MONDAY_MORNING)
+    assert "Not logged in today." in link and "https://kite.zerodha.com/connect/login?v=3&amp;api_key=key" in link
+    kite = KiteSessionEndpoint({"status": "success", "data": {"access_token": "AT-SECRET", "user_id": "AB1234"}})
+    redirect = "https://127.0.0.1/?action=login&type=login&status=success&request_token=req1"
+    reply = kite_login(settings, redirect, session_file, http=kite, now=MONDAY_MORNING)
+    assert reply == "Logged in to Kite as AB1234 until 13 Oct 06:00 IST." and kite.calls[0]["request_token"] == "req1"
+    assert load_session(session_file, MONDAY_MORNING).access_token == "AT-SECRET"  # kept on the PC, never sent back
+    assert "Logged in until 13 Oct 06:00 IST." in kite_login(settings, "", session_file, now=MONDAY_MORNING)
+    expired = KiteSessionEndpoint({"status": "error", "error_type": "TokenException",
+                                   "message": "Token is invalid or has expired."}, 403)
+    assert kite_login(settings, "req2", session_file, http=expired).startswith("Login failed: Token is invalid")
+    offline = KiteSessionEndpoint(error=requests.ConnectionError("https://api.kite.trade/session/token req3"))
+    assert kite_login(settings, "req3", session_file, http=offline) == (
+        "Login failed: couldn't reach Kite (ConnectionError). Try again.")
+    garbled = kite_login(settings, "not a token", session_file)
+    assert garbled.startswith("Login failed: ") and "look like a request_token" in garbled
+    assert "Kite isn't set up" in kite_login(load_settings(env={}), "", session_file)
+    assert "/login" in HELP
+
+
+def test_login_is_answered_even_when_the_records_cant_be_read(tmp_path):
+    inbox = Inbox()
+
+    def unreadable():
+        raise RuntimeError("database is locked")
+    telegram = FakeTelegram({"ok": True, "result": [message(1, CHAT, "/login https://x/?status=success&request_token=t")]})
+    bot = CommandBot("TOKEN", CHAT, inbox, unreadable, http=telegram, login=lambda argument: f"login with {argument}")
+    assert bot.poll_once() == 1 and inbox.sent == ["login with https://x/?status=success&request_token=t"]
+
+
+def test_a_live_trading_morning_without_a_login_gets_one_reminder(tmp_path):
+    nse, session_file = load_calendars()["NSE"], tmp_path / "s.json"
+    off = load_settings(env={})
+    on = replace(off, live_enabled=True)
+    assert "Kite login needed" in login_reminder(on, nse, MONDAY_MORNING, session_file)
+    assert login_reminder(off, nse, MONDAY_MORNING, session_file) is None  # live trading off: no login needed
+    for when in (MONDAY_MORNING.replace(hour=8, minute=0), MONDAY_MORNING.replace(hour=9, minute=30),
+                 MONDAY_MORNING.replace(day=11)):  # too early, too late, a Sunday
+        assert login_reminder(on, nse, when, session_file) is None
+    save_session(KiteSession("key", "AT", "U", MONDAY_MORNING), session_file)
+    assert login_reminder(on, nse, MONDAY_MORNING, session_file) is None  # already logged in
+    inbox = Inbox()
+    bot = CommandBot("TOKEN", CHAT, inbox, lambda: None, reminder=lambda: "log in")
+    for day in (date(2026, 10, 12), date(2026, 10, 12), date(2026, 10, 13)):
+        bot.remind(day)
+    assert inbox.sent == ["log in", "log in"]  # at most once a day
+    quiet = CommandBot("TOKEN", CHAT, inbox, lambda: None, reminder=lambda: None)
+    quiet.remind(date(2026, 10, 14))
+    assert len(inbox.sent) == 2

@@ -122,7 +122,9 @@ is built and locked. Before it sends anything for real:
   shows the account as Kite reports it and confirms every field the order system relies on is there. It
   is read-only. Run it once before going live, and again whenever Kite changes its API.
 - **A Kite login every trading day before 09:15:** sessions expire at 06:00 IST, and the live jobs run at
-  09:20, 15:15 and 18:30. The health check warns when there's no login.
+  09:20, 15:15 and 18:30. Send `/login` to the bot from your phone (or run `python -m trader.data.kite
+  login` on the PC). While live trading is on, the bot reminds you at 08:30 on a trading day without a
+  login, and the health check warns.
 - **Turn it on, deliberately:** in `config/settings.toml` set `[live] enabled = true` and `capital` (the
   rupees the live strategies may use; start small). Then register the live jobs:
   `powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1 -Live`.

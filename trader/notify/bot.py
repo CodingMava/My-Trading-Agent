@@ -1,24 +1,31 @@
-"""Telegram commands: check on the system from your phone, or stop new trades. Nothing here can trade.
+"""Telegram commands: check on the system from your phone, stop new trades, or log in to Kite for the day.
+Nothing here can trade.
 
     python -m trader.notify.bot        # runs until stopped; scripts/register_tasks.ps1 starts it at logon
 
 Only messages from the chat in TELEGRAM_CHAT_ID are answered; every other chat is ignored. No command can
-release the kill switch, change a limit or place an order: commands never bypass the risk controls.
+release the kill switch, change a limit or place an order: commands never bypass the risk controls. /login
+makes today's Kite session here on the PC from the page Kite returns to after you log in: the API secret
+and the session's access token never pass through Telegram, and the request token you send is single-use.
+While live trading is on, a trading morning without a login gets a reminder at 08:30.
 """
 from __future__ import annotations
 
 import json
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, time as clock_time
+from pathlib import Path
 from html import escape
 from zoneinfo import ZoneInfo
 
 import requests
 
 from trader.config import ROOT, load_settings
-from trader.data.kite import session_secrets
+from trader.data.kite import (LOGIN_URL, SESSION_FILE, KiteError, create_session, load_session, request_token_from,
+                              save_session, session_secrets)
 from trader.execution.store import PaperStore
 from trader.gate import load_gate_config
 from trader.logging_setup import configure_logging
@@ -35,11 +42,13 @@ IST = ZoneInfo("Asia/Kolkata")
 POLL_SECONDS = 50  # Telegram holds each request open this long while there is nothing new
 RETRY_SECONDS = 30  # wait after a failed poll (no internet, Telegram down)
 MAX_REASON = 200
+REMIND_FROM, REMIND_UNTIL = clock_time(8, 30), clock_time(9, 15)  # the live jobs start at 09:20
 HELP = ("<b>Commands</b>\n\n"
         "/status: health, mode, equity and positions\n"
         "/positions: open positions\n"
         "/trades: the latest closed trades\n"
-        "/kill reason: stop all new trades (open positions still exit as planned)\n\n"
+        "/kill reason: stop all new trades (open positions still exit as planned)\n"
+        "/login: log in to Kite for today (live trading needs it before 09:15)\n\n"
         "Releasing the kill switch, changing a limit or trading is only possible on the PC.")
 
 
@@ -134,16 +143,53 @@ def reply_to(text: str, ctx: Context) -> str:
     return HELP
 
 
+def kite_login(settings, argument: str, session_file: Path = SESSION_FILE, http=requests,
+               now: datetime | None = None) -> str:
+    """/login alone: the link to log in at. /login <address>: the session, made here on the PC from the page
+    Kite returned to (or just its request_token)."""
+    key, secret = settings.kite_api_key.reveal(), settings.kite_api_secret.reveal()
+    if not (key and secret):
+        return "Kite isn't set up: add KITE_API_KEY and KITE_API_SECRET to .env on the PC."
+    if not argument.strip():
+        session = load_session(session_file, now)
+        state = (f"Logged in until {session.expires_at:%d %b %H:%M} IST." if session else "Not logged in today.")
+        return escape(f"{state}\n\n1. Log in to Kite: {LOGIN_URL.format(api_key=key)}\n2. Kite then opens your app's "
+                      "redirect page (it may not load on a phone; that's fine). Copy the page's full address "
+                      "and send it here as: /login <address>")
+    try:
+        session = create_session(key, secret, request_token_from(argument), http=http, now=now)
+    except (ValueError, KiteError) as exc:
+        return f"Login failed: {escape(str(exc))}"
+    except requests.RequestException as exc:  # its text could hold the request: name the type only
+        return f"Login failed: couldn't reach Kite ({type(exc).__name__}). Try again."
+    save_session(session, session_file)
+    return escape(f"Logged in to Kite as {session.user_id} until {session.expires_at:%d %b %H:%M} IST.")
+
+
+def login_reminder(settings, calendar, now: datetime, session_file: Path = SESSION_FILE) -> str | None:
+    """While live trading is on: a trading morning between 08:30 and 09:15 without today's Kite login."""
+    if (not settings.live_enabled or not calendar.is_trading_day(now.date())
+            or not REMIND_FROM <= now.time() < REMIND_UNTIL or load_session(session_file, now) is not None):
+        return None
+    return ("<b>Kite login needed</b>\n\nLive trading is on, and today's jobs (09:20, 15:15, 18:30) need a Kite "
+            "login. Send /login.")
+
+
 class CommandBot:
     """Long-polls Telegram for messages and answers the commands from the configured chat."""
 
-    def __init__(self, token: str, chat_id: str, notifier, context, http=requests, sleep=time.sleep):
+    def __init__(self, token: str, chat_id: str, notifier, context, http=requests, sleep=time.sleep,
+                 login: Callable[[str], str] | None = None, reminder: Callable[[], str | None] | None = None):
         self._token, self.chat_id = token, str(chat_id)
         self._url = f"https://api.telegram.org/bot{token}/getUpdates"  # contains the token: never log it
         self.notifier, self.context, self.http, self.sleep = notifier, context, http, sleep
-        self.offset = None
+        self.login, self.reminder = login, reminder
+        self.offset, self.reminded = None, None
 
     def answer(self, text: str) -> str:
+        command, _, argument = text.strip().partition(" ")
+        if command.split("@")[0].lower() == "/login" and self.login is not None:
+            return self.login(argument.strip())  # needs no records, and its address is never logged
         try:
             ctx = self.context()
         except Exception as exc:  # e.g. the database is busy: say so rather than stay silent
@@ -184,10 +230,17 @@ class CommandBot:
                 answered += 1
         return answered
 
+    def remind(self, today: date) -> None:
+        """Send the reminder, if there is one, at most once a day."""
+        if self.reminder is not None and self.reminded != today and (text := self.reminder()):
+            self.notifier.send(text)
+            self.reminded = today
+
     def run(self) -> None:
         log.info("Answering Telegram commands")
         while True:
             try:
+                self.remind(datetime.now(IST).date())
                 self.poll_once()
             except Exception:  # an unattended listener must outlive any one bad update (logged with secrets masked)
                 log.exception("Unexpected error while answering Telegram commands")
@@ -200,8 +253,11 @@ def main() -> None:
     if not settings.telegram_enabled:  # a clean exit, so the scheduled task doesn't restart it every minute
         log.warning("Telegram is off (TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID not set in .env): no commands to answer")
         return
+    calendar = load_calendars()["NSE"]
     bot = CommandBot(settings.telegram_bot_token.reveal(), settings.telegram_chat_id,
-                     notifier_from_settings(settings), lambda: load_context(settings, KillSwitch()))
+                     notifier_from_settings(settings), lambda: load_context(settings, KillSwitch()),
+                     login=lambda argument: kite_login(settings, argument),
+                     reminder=lambda: login_reminder(settings, calendar, datetime.now(IST)))
     bot.run()
 
 

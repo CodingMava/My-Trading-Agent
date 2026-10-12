@@ -245,9 +245,12 @@ whenever it changes.
 | Telegram commands | Always, from logon (no console window; restarted if it stops) | `python -m trader.notify.bot` |
 
 From your Telegram chat with the bot: `/status` (health, mode, equity, positions), `/positions`,
-`/trades` (the latest closed trades), and `/kill reason`, which stops all new trades at once while open
-positions still exit as planned. Only your chat (`TELEGRAM_CHAT_ID`) is answered. No command can release
-the kill switch, change a limit or place an order; releasing is only possible on the PC.
+`/trades` (the latest closed trades), `/kill reason`, which stops all new trades at once while open
+positions still exit as planned, and `/login`, Kite's daily login from your phone: it sends the link,
+you log in and send back the address Kite returns to, and the PC makes the session (the API secret and
+the access token never pass through Telegram). Only your chat (`TELEGRAM_CHAT_ID`) is answered. No
+command can release the kill switch, change a limit or place an order; releasing is only possible on
+the PC.
 
 What sends you a Telegram alert:
 
