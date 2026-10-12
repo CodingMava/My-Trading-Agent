@@ -203,6 +203,7 @@ def test_live_stops_and_time_exits_on_a_quiet_day(tmp_path):
 
 def test_the_command_needs_paper_records(tmp_path, monkeypatch):
     monkeypatch.setattr(live_jobs, "ROOT", tmp_path)
+    monkeypatch.setattr(live_jobs, "configure_logging", lambda **kwargs: None)  # not into the real logs/
     with pytest.raises(SystemExit, match="No paper records yet"):
         live_jobs.main(["status"])
 

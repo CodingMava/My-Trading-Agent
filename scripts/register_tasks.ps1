@@ -13,8 +13,10 @@ param([switch]$Live)
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
-$python = Join-Path $root "venv\Scripts\python.exe"
-if (-not (Test-Path $python)) { throw "No virtual environment at ${python}: create it first (see README.md)." }
+# Every task runs pythonw.exe, so no console window opens: a window that pops up when the PC wakes can be
+# closed by accident, or catch a Ctrl+C typed into it, and that kills the run. The output goes to logs/.
+$pythonw = Join-Path $root "venv\Scripts\pythonw.exe"
+if (-not (Test-Path $pythonw)) { throw "No virtual environment at ${pythonw}: create it first (see README.md)." }
 
 # 18:00 every day, once the session's data has settled; a day without a new session does nothing.
 # If the PC was off or asleep at 18:00, the run starts as soon as it is back and catches up.
@@ -22,7 +24,7 @@ $runSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstanc
     -ExecutionTimeLimit (New-TimeSpan -Hours 2) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName "Trading agent - daily run" -Force `
     -Description "End-of-day paper trading (python -m trader.execution.eod). Never places a real order." `
-    -Action (New-ScheduledTaskAction -Execute $python -Argument "-m trader.execution.eod" -WorkingDirectory $root) `
+    -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.execution.eod" -WorkingDirectory $root) `
     -Trigger (New-ScheduledTaskTrigger -Daily -At "18:00") -Settings $runSettings | Out-Null
 
 # 21:00 every day: a Telegram alert if the run didn't happen, failed or halted. It deliberately doesn't
@@ -31,12 +33,11 @@ $healthSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -Exe
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName "Trading agent - health check" -Force `
     -Description "Alerts on silence (python -m trader.ops.health --notify)." `
-    -Action (New-ScheduledTaskAction -Execute $python -Argument "-m trader.ops.health --notify" -WorkingDirectory $root) `
+    -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.ops.health --notify" -WorkingDirectory $root) `
     -Trigger (New-ScheduledTaskTrigger -Daily -At "21:00") -Settings $healthSettings | Out-Null
 
 # Always on, from logon: answers your Telegram commands (/status, /positions, /trades, /kill). It runs
 # without a console window and is restarted if it stops; it is also started right away.
-$pythonw = Join-Path $root "venv\Scripts\pythonw.exe"
 $botSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit ([TimeSpan]::Zero) `
     -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName "Trading agent - Telegram commands" -Force `
@@ -59,7 +60,7 @@ if ($Live) {
             -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable:$job.Late
         Register-ScheduledTask -TaskName "Trading agent - live $($job.Name)" -Force `
             -Description "Live trading through Zerodha Kite (python -m trader.execution.live $($job.Name)). Sends nothing while locked." `
-            -Action (New-ScheduledTaskAction -Execute $python -Argument "-m trader.execution.live $($job.Name)" -WorkingDirectory $root) `
+            -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.execution.live $($job.Name)" -WorkingDirectory $root) `
             -Trigger $job.Trigger -Settings $jobSettings | Out-Null
     }
 }

@@ -44,7 +44,7 @@ def make_console_utf8() -> None:
 
 def configure_logging(secrets: Iterable[str] = (), level: int = logging.INFO, log_dir: Path = LOG_DIR,
                       filename: str = "trader.log") -> None:
-    """Send logs to stdout and to a rotating UTF-8 file, with every secret replaced by '***'."""
+    """Send logs to stdout (when there is one) and to a rotating UTF-8 file, with every secret replaced by '***'."""
     make_console_utf8()
     log_dir.mkdir(parents=True, exist_ok=True)
     formatter = RedactingFormatter(LOG_FORMAT, list(secrets))
@@ -52,9 +52,10 @@ def configure_logging(secrets: Iterable[str] = (), level: int = logging.INFO, lo
     for handler in [h for h in root.handlers if getattr(h, "_trader_handler", False)]:
         root.removeHandler(handler)
         handler.close()
-    console = logging.StreamHandler(sys.stdout)
-    logfile = RotatingFileHandler(log_dir / filename, maxBytes=5_000_000, backupCount=5, encoding="utf-8")
-    for handler in (console, logfile):
+    handlers = [RotatingFileHandler(log_dir / filename, maxBytes=5_000_000, backupCount=5, encoding="utf-8")]
+    if sys.stdout is not None:  # pythonw (the scheduled tasks) has no console: the file only
+        handlers.append(logging.StreamHandler(sys.stdout))
+    for handler in handlers:
         handler.setFormatter(formatter)
         handler._trader_handler = True
         root.addHandler(handler)
