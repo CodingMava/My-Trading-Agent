@@ -45,8 +45,9 @@ class RiskDecision:
 
 
 class RiskEngine:
-    def __init__(self, limits: RiskLimits, kill_switch: KillSwitch):
-        self.limits, self.kill_switch = limits, kill_switch
+    def __init__(self, limits: RiskLimits, kill_switch: KillSwitch, account: str = ""):
+        # `account` names the account in the kill switch's reason: one switch blocks every account (US)
+        self.limits, self.kill_switch, self.account = limits, kill_switch, account
 
     def account_checks(self, state: PortfolioState) -> list[RiskCheck]:
         """May the account take on any new risk? Engages the kill switch on a drawdown breach."""
@@ -54,7 +55,8 @@ class RiskEngine:
         peak = max(state.peak_equity, equity)
         drawdown = equity / peak - 1 if peak > 0 else 0.0
         if drawdown <= -limits.max_drawdown:
-            self.kill_switch.engage(f"drawdown {drawdown:.1%} breached the {pct(limits.max_drawdown)} limit")
+            self.kill_switch.engage(f"{self.account + ' account ' if self.account else ''}drawdown {drawdown:.1%} "
+                                    f"breached the {pct(limits.max_drawdown)} limit")
         today = equity / state.day_start_equity - 1 if state.day_start_equity > 0 else 0.0
         engaged = self.kill_switch.engaged
         return [

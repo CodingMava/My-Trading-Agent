@@ -13,3 +13,7 @@ max_drawdown = 0.10           # from peak equity: the kill switch engages and on
 max_stop_distance = 0.15      # a stop further away than this is treated as a mistake
 min_notional = 25000          # in rupees; smaller positions pay too much in fixed charges (Rs 15.34 DP fee per sale)
 max_liquidity_share = 0.01    # a position at most 1% of the stock's average daily traded value
+
+[limits.US]
+# US stocks and ETFs (paper traded; you place real US trades by hand): commission-free, so a smaller floor.
+min_notional = 250           # in dollars

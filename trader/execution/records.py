@@ -105,11 +105,12 @@ def totals(trips: pd.DataFrame) -> pd.DataFrame:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Trade records for tax and reporting.")
-    parser.add_argument("account", choices=["live", "paper"])
+    parser.add_argument("account", choices=["live", "paper", "paper-us"])
     parser.add_argument("year", type=int, help="India's financial year starting in April of this year; the US calendar year")
     args = parser.parse_args(argv)
     settings = load_settings()
-    database = ROOT / (settings.live_database if args.account == "live" else settings.paper_database)
+    database = ROOT / {"live": settings.live_database, "paper": settings.paper_database,
+                       "paper-us": settings.paper_us_database}[args.account]
     if not database.exists():
         raise SystemExit(f"No {args.account} records yet.")
     trips = (from_fills(LiveStore(database).table("live_fills")) if args.account == "live"

@@ -66,7 +66,7 @@ def test_a_backup_is_a_complete_consistent_copy(tmp_path):
     store.set_cash(100_000 - 1_001)
     store.save_position(Position("T1", "AAA", 10, 100.0, 95.0, DAY, entry_fees=1.0))
     path = store.backup(tmp_path / "backups", date(2026, 10, 12))
-    assert path.name == "paper-2026-10-12.db" and [p.name for p in path.parent.iterdir()] == [path.name]
+    assert path.name == "p-2026-10-12.db" and [p.name for p in path.parent.iterdir()] == [path.name]  # named after it
     copy = PaperStore(path, 1)
     assert copy.cash == 100_000 - 1_001 and len(copy.table("fills")) == 1 and copy.reconcile() == []
     copy.close()

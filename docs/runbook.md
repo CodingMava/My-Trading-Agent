@@ -8,9 +8,10 @@ interpreting under pressure.
 
 | When | What | Where to look |
 |---|---|---|
-| 18:00 IST daily (Task Scheduler, "Trading agent - daily run") | `python -m trader.execution.eod` processes every completed NSE session not yet processed, sends `[PAPER]` Telegram messages, records the run and backs up the records | `logs/trader.log` |
+| 18:00 IST daily (Task Scheduler, "Trading agent - daily run") | `python -m trader.execution.eod` processes every completed NSE session not yet processed, then the US paper account's (the US session that closed early that morning), sends `[PAPER]` Telegram messages, records the runs and backs up the records | `logs/trader.log` |
 | 21:00 IST daily ("Trading agent - health check") | `python -m trader.ops.health --notify` alerts you when anything below needs attention | `logs/health.log` |
-| Always, from logon ("Trading agent - Telegram commands") | `python -m trader.notify.bot` answers `/status`, `/positions`, `/trades` and `/kill reason` from your chat only | `logs/bot.log` |
+| Always, from logon ("Trading agent - Telegram commands") | `python -m trader.notify.bot` answers `/status`, `/positions`, `/trades` (both accounts), `/kill reason`, `/kitecheck` and `/login` from your chat only | `logs/bot.log` |
+| Every 15 minutes, 07:00 to midnight ("Trading agent - news") | `python -m trader.research.news collect` stores NSE's announcements for research; no trading code reads them | `logs/news.log` |
 | Any time | `streamlit run dashboard.py` (read-only) or `python -m trader.ops.health` | |
 
 No real order is ever placed: the system paper trades, and today it is in NO TRADE because no strategy has
@@ -19,14 +20,16 @@ without them every alert only reaches the log files. Check with `python -m trade
 
 ## When an alert arrives
 
-Every alert is a `RISK ALERT` on Telegram with one of these titles.
+Every alert is a `RISK ALERT` on Telegram with one of these titles. Alerts about the US paper account
+start with US (`US daily run failed`, `US market data missing`, ...): the same meaning and the same
+action, for `state/paper-us.db` (its market check is SPY).
 
 | Alert | What it means | What to do |
 |---|---|---|
 | Daily run failed | The run crashed or couldn't start: no internet, the data provider down, a config error, no Kite login. Nothing half-done was recorded. | Read the end of `logs/trader.log`, fix the cause, then run `python -m trader.execution.eod` by hand. It catches up every missed session. |
 | Market data missing | More than 20% of the instruments (counting the market check, NIFTYBEES, fetched on every run even when nothing trades) had no price yet for a session, so the run stopped before that session rather than record a day it couldn't see. | Usually the provider is late: do nothing, the next run retries. If that day was a market holiday missing from `config/market_calendars.toml`, add it. |
 | Health check | Something the run can't report itself: the 18:00 run didn't happen or didn't finish, the last run failed or stopped early, the kill switch is on, messages are stuck, or the records don't reconcile. The alert lists which. | For a missed run: was the PC off, asleep or logged out? Check Task Scheduler for "Trading agent - daily run" (if its Conditions tab says "Start the task only if the computer is on AC power", or its last result is 0xC000013A, meaning its console window was closed, run `scripts\register_tasks.ps1` again: the tasks then run without a window and on battery), then run it by hand. For anything else, see its row here. |
-| Kill switch | The account fell 10% from its peak, or reconciliation failed. No new trades until a person releases it; exits keep running. | Find out why first. Release only once the cause is understood and written down (see the loss plan): `python -m trader.risk.killswitch release`. |
+| Kill switch | An account fell 10% from its peak, or its records failed reconciliation (for the US account the reason starts with "US account"). One switch covers both accounts: no new trades in either until a person releases it; exits keep running. | Find out why first. Release only once the cause is understood and written down (see the loss plan): `python -m trader.risk.killswitch release`. |
 | Health check: integrity | SQLite found the paper records, the live records or the newest backup damaged (the folder is synced by OneDrive, which occasionally interferes with open database files). | Disable "Trading agent - daily run" in Task Scheduler and restore the newest intact backup (Backups and restoring below). A damaged backup on its own: delete it; the next run makes a fresh one. |
 | Reconciliation failed | Cash or holdings no longer match the recorded fills: a bug or a damaged database. The kill switch engages automatically. | Don't release the kill switch. Compare the records with the latest backup and restore it if they are damaged (see Backups). Treat it as a bug to fix before anything trades again. |
 | Daily loss limit | Today's loss reached 2% of equity, so no new entries today. | Nothing: it resets with the next session. |
@@ -44,6 +47,19 @@ about to expire, next year's market holidays missing (all of December), no Kite 
 dry-run Kite requests that Kite would refuse. When trading live, it also alerts on a live request whose
 outcome is unknown and on a live holding without a stop at Kite (place one by hand), and warns about
 refused or long-unanswered live orders.
+
+## The US paper account, by hand
+
+Nothing sends a US order. When a US strategy trades (none does today), its Telegram messages are your
+instructions, in dollars:
+
+- **BUY SIGNAL** at 18:00 IST: buy at the next US open (19:00 IST, or 20:00 in the northern winter),
+  then place the stop order the message gives (a percentage below your fill).
+- **SELL SIGNAL, next open**: an exit rule fired. Sell at the next US open and cancel the stop order.
+- **SELL SIGNAL, next close**: the position's time limit ends at the next US close. Sell then (a
+  market-on-close order) and cancel the stop order.
+- **BUY/SELL EXECUTED** report the paper account's fills; yours will differ a little. The paper account
+  is what the profitability gate scores (`python -m trader.execution.report --market US`).
 
 ## The plan for losses, decided in advance
 
@@ -82,12 +98,14 @@ Kill switch log (date, why it engaged, what changed before it was released):
 ## Backups and restoring
 
 - After every run that didn't fail, the records are copied to `state/backups/paper-<date>.db`, one per
-  day. The project folder is inside OneDrive, so the copies also leave this PC.
+  day (the US account's to `paper-us-<date>.db`). The project folder is inside OneDrive, so the copies
+  also leave this PC.
 - The fills, closed trades, decisions and session records can't be edited or deleted: the database
   refuses. A backup is the way back from damage, not editing the database.
 - To restore: disable "Trading agent - daily run" in Task Scheduler, copy the chosen backup over
-  `state/paper.db`, check it with `python -m trader.ops.health`, then enable the task again (or run
-  `python -m trader.execution.eod` by hand to catch up).
+  `state/paper.db` (or a `paper-us-` one over `state/paper-us.db`), check it with
+  `python -m trader.ops.health`, then enable the task again (or run `python -m trader.execution.eod` by
+  hand to catch up).
 - Backups are small; delete old ones by hand whenever you like.
 
 ## Routine maintenance
@@ -98,6 +116,7 @@ Kill switch log (date, why it engaged, what changed before it was released):
   Chart tab: going live needs 20+ paper trades you have reviewed and agree with.
 - **December:** add NSE's next-year holidays to `config/market_calendars.toml` when NSE publishes them,
   and NSE's Muhurat session when it is announced. Without the next year, nothing trades from 1 January.
+  NYSE's holidays are in through 2028.
 - **January 2027:** look at the near-misses H11 and H12 on the months since their data ended (README,
   "Research status"). It is a check, not a reason to trade them.
 - **Yearly:** research evidence expires after 365 days; the health check warns 30 days before.

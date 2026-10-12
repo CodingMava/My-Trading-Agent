@@ -124,13 +124,15 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--reviewed", type=int, default=0, metavar="N",
                         help="how many of the paper trades you have reviewed and agree with")
     parser.add_argument("--live", action="store_true", help="score small-capital live trading (Level 6) instead")
+    parser.add_argument("--market", choices=["NSE", "US"], default="NSE", help="which paper account (default NSE)")
     parser.add_argument("--kill-switch-tested", action="store_true",
                         help="you engaged the kill switch while live and saw entries stop and exits go on")
     parser.add_argument("--no-overrides", action="store_true",
                         help="you never overrode the system while live (no manual trades in its stocks)")
     args = parser.parse_args(argv)
     settings = load_settings()
-    store = PaperStore(ROOT / settings.paper_database, settings.paper_starting_capital)
+    store = (PaperStore(ROOT / settings.paper_us_database, settings.paper_us_starting_capital) if args.market == "US"
+             else PaperStore(ROOT / settings.paper_database, settings.paper_starting_capital))
     if args.live:
         live_db = ROOT / settings.live_database
         live = LiveStore(live_db) if live_db.exists() else None

@@ -102,6 +102,8 @@ def test_backups_must_exist_and_be_recent(tmp_path):
     store, backups = store_with(tmp_path), tmp_path / "backups"
     assert backup_check(None, backups, EVENING.date()) == []  # nothing to back up before the first run
     assert backup_check(store, backups, EVENING.date())[0].level == WARN
+    PaperStore(tmp_path / "p-us.db", 1).backup(backups, date(2026, 8, 18))  # another store's: not this one's
+    assert backup_check(store, backups, EVENING.date())[0].level == WARN
     store.backup(backups, date(2026, 8, 17))
     assert backup_check(store, backups, EVENING.date())[0].level == OK
     assert backup_check(store, backups, date(2026, 8, 25))[0].level == WARN  # a week without a backup
@@ -156,12 +158,12 @@ def test_damaged_records_or_backups_are_caught(tmp_path):
     store, live = store_with(tmp_path, [date(2026, 8, 17)]), LiveStore(tmp_path / "live.db")
     backup = store.backup(tmp_path / "backups", date(2026, 8, 17))
     check = integrity_check(store, live, tmp_path / "backups")[0]
-    assert check.level == OK and check.detail == "paper records, live records, backup paper-2026-08-17.db intact"
+    assert check.level == OK and check.detail == "paper records, live records, backup p-2026-08-17.db intact"
     assert integrity_check(store, None, None)[0].detail == "paper records intact"
     with open(backup, "r+b") as damaged:  # overwrite the file's header
         damaged.write(b"not a database file at all")
     check = integrity_check(store, live, tmp_path / "backups")[0]
-    assert check.level == ALERT and "backup paper-2026-08-17.db (file is not a database)" in check.detail
+    assert check.level == ALERT and "backup p-2026-08-17.db (file is not a database)" in check.detail
 
 
 
@@ -178,3 +180,30 @@ def test_news_collection_that_stalls_is_a_warning(tmp_path, monkeypatch):
     assert news_check(settings, EVENING + timedelta(hours=3))[0].level == WARN
     assert news_check(replace(settings, news_enabled=False), EVENING) == []
     store.close()
+
+
+
+def test_the_us_account_has_its_own_checks(tmp_path):
+    from trader.ops.health import us_checks
+    assert us_checks(None, EVENING, tmp_path) == []
+    store = PaperStore(tmp_path / "paper-us.db", 10_000)
+    store.record_session(date(2026, 8, 17), 10_000, 10_000)  # Monday's US session, processed on Tuesday evening IST
+    run_id = store.start_run(EVENING - timedelta(hours=3))
+    store.finish_run(run_id, "ok", EVENING - timedelta(hours=3), 1)
+    checks = {c.name: c.level for c in us_checks(store, EVENING, tmp_path / "backups")}
+    assert checks == {"US daily run": OK, "US last run": OK, "US reconciliation": OK, "US notifications": OK,
+                      "US backup": WARN, "US integrity": OK}
+
+
+
+def test_a_us_session_is_due_from_the_evening_run_after_it_closes(tmp_path):
+    nyse = load_calendars()["NYSE"]
+    store = store_with(tmp_path, [date(2026, 8, 17)], [("ok", 1, EVENING - timedelta(hours=3))])  # Monday's
+    wednesday = EVENING + timedelta(days=1)  # Tuesday's US session closed at 01:30 IST that morning
+    assert levels(run_checks(store, nyse, wednesday - timedelta(hours=11)))["daily run"] == OK  # 10:00: not due
+    checks = run_checks(store, nyse, wednesday)  # 21:00: the 18:00 run should have processed it
+    assert levels(checks)["daily run"] == ALERT and "2026-08-18 should be done" in checks[0].detail
+    winter = datetime(2026, 12, 2, 19, 30, tzinfo=IST)  # Tuesday's session closed at 02:30 IST; the run is due by 20:00
+    december = store_with(tmp_path / "b", [date(2026, 11, 30)], [("ok", 1, winter - timedelta(days=1))])
+    assert levels(run_checks(december, nyse, winter))["daily run"] == OK
+    assert levels(run_checks(december, nyse, winter + timedelta(hours=1)))["daily run"] == ALERT

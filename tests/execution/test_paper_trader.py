@@ -2,6 +2,8 @@
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -79,14 +81,15 @@ class FakeNotifier:
 
 
 def make_trader(tmp_path, frames=None, status="PAPER", limits=None, notifier=None, spec=SPEC, db="paper.db",
-                market_check=(), universe=None):
+                market_check=(), universe=None, calendar=NSE, **market):
     frames = frames or UNIVERSE
-    return PaperTrader(store=PaperStore(tmp_path / db, 1_000_000), provider=FakeProvider(frames), calendar=NSE,
+    return PaperTrader(store=PaperStore(tmp_path / db, 1_000_000), provider=FakeProvider(frames), calendar=calendar,
                        registry=StrategyRegistry([StrategyRecord("T1", "Test strategy", status)]),
                        risk=RiskEngine(limits or RiskLimits(), KillSwitch(tmp_path / "KILL_SWITCH")),
                        notifier=notifier or FakeNotifier(), catalog={"T1": spec},
                        universes={"test": list(frames) if universe is None else universe},
-                       sectors={}, evidence_dir=tmp_path / "evidence", clock=lambda: CLOCK, market_check=market_check)
+                       sectors={}, evidence_dir=tmp_path / "evidence", clock=lambda: CLOCK, market_check=market_check,
+                       **market)
 
 
 def test_a_full_paper_trade_cycle(tmp_path):
@@ -112,7 +115,12 @@ def test_a_full_paper_trade_cycle(tmp_path):
     titles = [text.split("\n")[0] for text in sent]
     assert titles.count("<b>[PAPER] BUY SIGNAL</b>") == 3 and titles.count("<b>[PAPER] BUY EXECUTED</b>") == 3
     assert titles.count("<b>[PAPER] SELL EXECUTED</b>") == 3 and titles[-1].startswith("<b>[PAPER] DAILY SUMMARY 2026-08-18")
-    assert summary.messages_sent == len(sent) == 10
+    signals = [text for text in sent if text.startswith("<b>[PAPER] SELL SIGNAL")]  # BBB's exit rule; CCC's time limit
+    assert len(signals) == 2 and "Stock: BBB.NS" in signals[0] and "Exit: next open" in signals[0]
+    assert "T1 exit rule met at the 2026-08-14 close" in signals[0] and "Execution" not in signals[0]
+    assert "Stock: CCC.NS" in signals[1] and "Exit: next close (last close ₹101.00)" in signals[1]
+    assert "its 5-session time limit ends at the next close" in signals[1]
+    assert summary.messages_sent == len(sent) == 12
 
 
 def test_rerunning_a_processed_session_changes_nothing(tmp_path):
@@ -254,9 +262,9 @@ def test_nothing_trades_without_a_paper_status(tmp_path):
 def test_unsent_messages_are_retried_on_the_next_run(tmp_path):
     trader = make_trader(tmp_path, notifier=FakeNotifier(working=False))
     assert trader.run(until=date(2026, 8, 18), start=SIGNAL_DAY).messages_sent == 0
-    assert len(trader.store.unsent_messages()) == 10
+    assert len(trader.store.unsent_messages()) == 12
     trader.notifier.working = True
-    assert trader.run(until=date(2026, 8, 18)).messages_sent == 10 and trader.store.unsent_messages() == []
+    assert trader.run(until=date(2026, 8, 18)).messages_sent == 12 and trader.store.unsent_messages() == []
 
 
 def test_paper_results_match_the_backtester_exactly(tmp_path):
@@ -337,3 +345,43 @@ def test_the_report_command_scores_paper_and_live(tmp_path, monkeypatch, capsys)
     assert "No closed paper trades yet." in capsys.readouterr().out
     report.main(["--live"])
     assert "No live fills yet." in capsys.readouterr().out
+
+
+
+NYSE = load_calendars()["NYSE"]
+
+
+def us_bars(entries=()):
+    """Daily bars on NYSE days in New York time: 100, then 101 from 11 Aug."""
+    days = NYSE.trading_days(date(2026, 8, 3), date(2026, 8, 31))
+    rows = [{"open": p, "high": p, "low": p, "close": p, "volume": 1_000_000, "entry": d in entries, "exit": False}
+            for d in days for p in [100.0 if d < date(2026, 8, 11) else 101.0]]
+    return pd.DataFrame(rows, index=pd.DatetimeIndex([pd.Timestamp(d) for d in days]).tz_localize("America/New_York"))
+
+
+def test_the_us_account_trades_us_stocks_on_the_nyse_calendar_in_dollars(tmp_path):
+    from trader.research.costs import US_COMMISSION_FREE
+    trader = make_trader(tmp_path, frames={"AAA": us_bars(entries={SIGNAL_DAY})}, calendar=NYSE,
+                         spec=replace(SPEC, costs=US_COMMISSION_FREE), limits=RiskLimits(min_notional=250),
+                         market="US", currency="$", quiet_when_idle=True)
+    trader.run(until=date(2026, 8, 18), start=SIGNAL_DAY)
+    assert len(trader.store.trades()) == 1 and trader.store.trades()["reason"].item() == "Time Exit"
+    sent = trader.notifier.sent
+    assert "Execution: by hand: buy at the next US open, then place the stop order" in sent[0]
+    assert "last close $100.00" in sent[0]
+    heads_up = next(text for text in sent if "SELL SIGNAL" in text)  # the time limit, the evening before
+    assert "Execution: by hand: sell at the next US close, and cancel its stop order" in heads_up
+    assert any(text.startswith("<b>[PAPER] US DAILY SUMMARY") for text in sent) and not any("₹" in t for t in sent)
+    assert trader.store.table("dry_run_orders").empty  # no Kite request: US trades are placed by hand
+    assert make_trader(tmp_path / "nse", frames={"AAA": us_bars(entries={SIGNAL_DAY})}).active_strategies() == []
+
+
+def test_the_us_account_stays_quiet_while_it_has_nothing_to_trade(tmp_path):
+    trader = make_trader(tmp_path, frames={"SPY": us_bars()}, status="RESEARCH", calendar=NYSE, market="US",
+                         currency="$", quiet_when_idle=True, market_check=("SPY",))
+    summary = trader.run(until=date(2026, 8, 12), start=SIGNAL_DAY)
+    assert len(summary.sessions) == 3 and trader.notifier.sent == []  # recorded and checked, but no message
+    late = make_trader(tmp_path / "late", frames={}, status="RESEARCH", calendar=NYSE, market="US",
+                       currency="$", quiet_when_idle=True, market_check=("SPY",))  # no SPY bar yet
+    assert late.run(until=date(2026, 8, 12), start=SIGNAL_DAY).halted
+    assert late.notifier.sent[0].startswith("<b>[PAPER] RISK ALERT: US market data missing</b>")  # still alerts

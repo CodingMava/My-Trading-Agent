@@ -207,3 +207,27 @@ def test_the_kite_check_from_the_phone_sends_counts_and_a_verdict_only(monkeypat
     offline = kite_check_text(settings, fails(requests.ConnectionError("https://api.kite.trade/portfolio/holdings")))
     assert offline == "Kite check failed: couldn't reach Kite (ConnectionError)."
     assert "/kitecheck" in HELP
+
+
+
+def test_status_shows_the_us_account_when_there_is_one(tmp_path):
+    ctx = context(tmp_path)
+    ctx.us_store = PaperStore(tmp_path / "us.db", 10_000)
+    assert "US paper: equity $10,000.00 (+0.00%), 0 open position(s), last session -" in reply_to("/status", ctx)
+
+
+
+def test_positions_and_trades_include_the_us_account(tmp_path):
+    ctx = context(tmp_path)
+    ctx.us_store = PaperStore(tmp_path / "us.db", 10_000)
+    assert reply_to("/positions", ctx) == "No open positions." and reply_to("/trades", ctx) == "No closed trades yet."
+    ctx.us_store.save_position(Position("U1", "XLK", 10, 200.0, 190.0, date(2026, 8, 11), last_price=210.0, bars_held=2))
+    ctx.us_store.add_trade("U1", "XLE", 5, date(2026, 8, 1), 90.0, date(2026, 8, 5), 85.0, "Stop Loss", 0.0, -25.0,
+                           -0.0556, -1.0)
+    positions, trades = reply_to("/positions", ctx), reply_to("/trades", ctx)
+    assert positions.startswith("<b>US Open positions</b>")  # India's account has none: only the US section
+    assert "XLK x10: entry $200.00, last $210.00, stop $190.00, P&amp;L +$100.00, held 2 day(s)" in positions
+    assert trades == "<b>US Latest 1 closed trades</b>\n\n2026-08-05 XLE (U1): Stop Loss, -$25.00 (-5.56%)"
+    ctx.store.save_position(Position("H1", "AAA.NS", 10, 100.0, 95.0, date(2026, 8, 11), last_price=90.0))
+    both = reply_to("/positions", ctx)
+    assert both.index("<b>Open positions</b>") < both.index("AAA.NS") < both.index("<b>US Open positions</b>")

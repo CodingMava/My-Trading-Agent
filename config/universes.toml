@@ -13,3 +13,6 @@ nifty50 = [
 
 # A NIFTY 50 ETF: equity ETFs pay STT of 0.001% on sells only.
 nifty_etf = ["NIFTYBEES.NS"]
+
+# The 11 SPDR sector ETFs, as in research rounds 2, 3 and 5. US trades are placed by hand.
+us_sector_etfs = ["XLB", "XLC", "XLE", "XLF", "XLI", "XLK", "XLP", "XLRE", "XLU", "XLV", "XLY"]

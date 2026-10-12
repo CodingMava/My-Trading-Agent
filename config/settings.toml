@@ -11,6 +11,12 @@ starting_capital = 1000000          # rupees
 database = "state/paper.db"         # git-ignored
 send_no_trade_messages = false      # Telegram a NO TRADE message for every refused signal (they're always logged)
 
+[paper_us]
+# US stocks and ETFs, paper traded on the NYSE calendar by the same 18:00 run (the previous US session).
+# Their signals come by Telegram for you to place by hand before the next US open (19:00 or 20:00 IST).
+starting_capital = 10000           # dollars
+database = "state/paper-us.db"     # git-ignored
+
 [live]
 # Real orders through Zerodha Kite (Phase 11; python -m trader.execution.live). They go out only for
 # strategies whose status is LIVE_SMALL or LIVE on paper-trading evidence, and only once this is on.

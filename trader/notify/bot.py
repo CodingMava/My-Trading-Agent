@@ -33,9 +33,9 @@ from trader.gate import load_gate_config
 from trader.logging_setup import configure_logging
 from trader.markets.calendar import load_calendars
 from trader.notify.telegram import notifier_from_settings
-from trader.notify.templates import rupees
+from trader.notify.templates import money, rupees
 from trader.ops import console
-from trader.ops.health import ACTIVE, ALERT, WARN, Health, health_checks, open_live_store
+from trader.ops.health import ACTIVE, ALERT, WARN, Health, health_checks, open_live_store, open_us_store
 from trader.registry import StrategyRegistry
 from trader.risk.killswitch import KillSwitch
 
@@ -62,16 +62,18 @@ class Context:
     registry: StrategyRegistry
     kill_switch: KillSwitch
     checks: list[Health]
+    us_store: PaperStore | None = None
 
 
 def load_context(settings, kill_switch: KillSwitch) -> Context:
     database = ROOT / settings.paper_database
     store = PaperStore(database, settings.paper_starting_capital) if database.exists() else None
     registry = StrategyRegistry.load()
+    us_store = open_us_store(settings)
     checks = health_checks(store, load_calendars()["NSE"], registry, kill_switch, settings, datetime.now(IST),
                            load_gate_config().max_evidence_age_days, backup_dir=database.parent / "backups",
-                           live_store=open_live_store(settings))
-    return Context(store, registry, kill_switch, checks)
+                           live_store=open_live_store(settings), us_store=us_store)
+    return Context(store, registry, kill_switch, checks, us_store)
 
 
 def status_text(ctx: Context) -> str:
@@ -86,6 +88,10 @@ def status_text(ctx: Context) -> str:
         lines.append(f"Equity: {rupees(numbers['equity'])} ({numbers['return']:+.2%} since the start), "
                      f"cash {rupees(numbers['cash'])}, {numbers['positions']} open position(s), "
                      f"last session {numbers['last_session'] or '-'}")
+    if ctx.us_store is not None:
+        us = console.account(ctx.us_store)
+        lines.append(f"US paper: equity ${us['equity']:,.2f} ({us['return']:+.2%}), {us['positions']} open "
+                     f"position(s), last session {us['last_session'] or '-'}")
     alerts = [c for c in ctx.checks if c.level == ALERT]
     warnings = [c for c in ctx.checks if c.level == WARN]
     lines.append("")
@@ -98,30 +104,38 @@ def status_text(ctx: Context) -> str:
     return "\n".join(lines[:1] + [escape(line) for line in lines[1:]])
 
 
-def signed(value: float) -> str:
-    return f"{'-' if value < 0 else '+'}{rupees(abs(value))}"
+def signed(value: float, currency: str = "₹") -> str:
+    return f"{'-' if value < 0 else '+'}{money(abs(value), currency)}"
+
+
+def _accounts(ctx: Context) -> list[tuple[str, PaperStore, str]]:
+    """The paper accounts that have records: India's in rupees, then the US one in dollars."""
+    return [(title, store, currency) for title, store, currency in (("", ctx.store, "₹"), ("US ", ctx.us_store, "$"))
+            if store is not None]
 
 
 def positions_text(ctx: Context) -> str:
-    if ctx.store is None or not ctx.store.positions():
-        return "No open positions."
-    lines = ["<b>Open positions</b>", ""]
-    for row in console.positions_table(ctx.store).to_dict("records"):
-        lines.append(escape(f"{row['Stock']} x{row['Quantity']}: entry {rupees(row['Entry'])}, last "
-                            f"{rupees(row['Last'])}, stop {rupees(row['Stop'])}, P&L {signed(row['P&L'])}, "
-                            f"held {row['Days held']} day(s)"))
-    return "\n".join(lines)
+    sections = []
+    for title, store, currency in _accounts(ctx):
+        if store.positions():
+            sections.append([f"<b>{title}Open positions</b>", ""] + [
+                escape(f"{row['Stock']} x{row['Quantity']}: entry {money(row['Entry'], currency)}, last "
+                       f"{money(row['Last'], currency)}, stop {money(row['Stop'], currency)}, "
+                       f"P&L {signed(row['P&L'], currency)}, held {row['Days held']} day(s)")
+                for row in console.positions_table(store).to_dict("records")])
+    return "\n\n".join("\n".join(section) for section in sections) or "No open positions."
 
 
 def trades_text(ctx: Context, count: int = 10) -> str:
-    trades = ctx.store.trades() if ctx.store is not None else None
-    if trades is None or trades.empty:
-        return "No closed trades yet."
-    lines = [f"<b>Latest {min(count, len(trades))} closed trades</b>", ""]
-    for t in console.newest_first(trades, count).to_dict("records"):
-        lines.append(escape(f"{t['exit_session']} {t['symbol']} ({t['strategy_id']}): {t['reason']}, "
-                            f"{signed(t['net_pnl'])} ({t['net_return']:+.2%})"))
-    return "\n".join(lines)
+    sections = []
+    for title, store, currency in _accounts(ctx):
+        trades = console.newest_first(store.trades(), count)
+        if len(trades):
+            sections.append([f"<b>{title}Latest {len(trades)} closed trades</b>", ""] + [
+                escape(f"{t['exit_session']} {t['symbol']} ({t['strategy_id']}): {t['reason']}, "
+                       f"{signed(t['net_pnl'], currency)} ({t['net_return']:+.2%})")
+                for t in trades.to_dict("records")])
+    return "\n\n".join("\n".join(section) for section in sections) or "No closed trades yet."
 
 
 def kill(ctx: Context, reason: str) -> str:
@@ -220,8 +234,9 @@ class CommandBot:
         try:
             return reply_to(text, ctx)
         finally:
-            if ctx.store is not None:
-                ctx.store.close()
+            for store in (ctx.store, ctx.us_store):
+                if store is not None:
+                    store.close()
 
     def poll_once(self) -> int:
         """One long poll: answer every command from the configured chat and return how many. Network

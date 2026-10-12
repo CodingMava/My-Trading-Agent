@@ -9,9 +9,10 @@ when the run didn't happen at all, which the run itself can never report.
 from __future__ import annotations
 
 import argparse
+import re
 import sqlite3
-from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from dataclasses import dataclass, replace
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -31,7 +32,8 @@ from trader.risk.killswitch import KillSwitch
 
 IST = ZoneInfo("Asia/Kolkata")
 OK, INFO, WARN, ALERT = "ok", "info", "warn", "alert"
-RUN_DEADLINE = timedelta(hours=4)  # once a session's data has settled, the daily run should be done within this
+RUN_AT = time(18, 0)  # IST: when the daily run starts (scripts/register_tasks.ps1)
+RUN_DEADLINE = timedelta(hours=2)  # ... and it should be done by this long after that
 RUN_TIMEOUT = timedelta(hours=2)  # a run still marked running after this long died without finishing
 EVIDENCE_NOTICE = timedelta(days=30)
 BACKUP_MAX_AGE = timedelta(days=3)
@@ -56,10 +58,21 @@ def _died(run, now: datetime) -> bool:
     return run.status == "running" and now - datetime.fromisoformat(run.started_at) >= RUN_TIMEOUT
 
 
+def expected_session(calendar: MarketCalendar, now: datetime) -> date:
+    """The latest session the daily run should have processed by `now`. The run starts at 18:00 IST and takes
+    the market's latest settled session: for NSE that day's, for the US the one that closed early that
+    morning, India time (01:30 IST, or 02:30 in the northern winter)."""
+    due = (now - RUN_DEADLINE).astimezone(IST)
+    started = datetime.combine(due.date(), RUN_AT, IST)
+    if started > due:
+        started -= timedelta(days=1)
+    return calendar.last_completed_session(started - DAILY_SETTLE)
+
+
 def run_checks(store: PaperStore | None, calendar: MarketCalendar, now: datetime) -> list[Health]:
     """Did the daily run process the latest session it should have, and did the last run finish cleanly?"""
     try:
-        expected = calendar.last_completed_session(now - DAILY_SETTLE - RUN_DEADLINE)
+        expected = expected_session(calendar, now)
     except CalendarCoverageError as exc:
         return [Health("daily run", ALERT, f"can't tell which session to expect: {exc}")]
     runs = store.runs(limit=1) if store is not None else []
@@ -86,19 +99,20 @@ def run_checks(store: PaperStore | None, calendar: MarketCalendar, now: datetime
     return checks
 
 
+def records_checks(store: PaperStore) -> list[Health]:
+    """Cash and holdings must match the fills, and every Telegram message must have gone out."""
+    problems, unsent = store.reconcile(), store.unsent_messages()
+    return [Health("reconciliation", ALERT if problems else OK, "; ".join(problems) or "cash and holdings match the fills"),
+            Health("notifications", ALERT if unsent else OK,
+                   f"{len(unsent)} Telegram message(s) undelivered; the next run retries them" if unsent
+                   else "all delivered")]
+
+
 def safety_checks(store: PaperStore | None, kill_switch: KillSwitch) -> list[Health]:
     checks = [Health("kill switch", ALERT, f"engaged ({kill_switch.reason}). Once the cause is fixed, release it "
                                            "by hand: python -m trader.risk.killswitch release")
               if kill_switch.engaged else Health("kill switch", OK, "off")]
-    if store is not None:
-        problems = store.reconcile()
-        checks.append(Health("reconciliation", ALERT if problems else OK,
-                             "; ".join(problems) or "cash and holdings match the fills"))
-        unsent = store.unsent_messages()
-        checks.append(Health("notifications", ALERT if unsent else OK,
-                             f"{len(unsent)} Telegram message(s) undelivered; the next run retries them" if unsent
-                             else "all delivered"))
-    return checks
+    return checks + (records_checks(store) if store is not None else [])
 
 
 def clean_sessions(store: PaperStore, now: datetime) -> int:
@@ -141,6 +155,21 @@ def dry_run_check(store: PaperStore | None, today: date) -> Health:
                       "order path before any live trading")
     return Health("dry-run orders", OK, f"{len(rows)} Kite request(s) prepared, none sent; Kite would accept all "
                   "from the last 30 days")
+
+
+def open_us_store(settings) -> PaperStore | None:
+    """The US paper account's records, if a daily run has made them."""
+    path = ROOT / settings.paper_us_database
+    return PaperStore(path, settings.paper_us_starting_capital) if path.exists() else None
+
+
+def us_checks(store: PaperStore | None, now: datetime, backup_dir: Path | None) -> list[Health]:
+    """The US paper account's run, records and backups, on the NYSE calendar (names start with US)."""
+    if store is None:
+        return []
+    checks = [*run_checks(store, load_calendars()["NYSE"], now), *records_checks(store),
+              *backup_check(store, backup_dir, now.date()), *integrity_check(store, None, backup_dir)]
+    return [replace(check, name=f"US {check.name}") for check in checks]
 
 
 def open_live_store(settings) -> LiveStore | None:
@@ -199,6 +228,14 @@ def _quick_check_file(path: Path) -> str:
         conn.close()
 
 
+def store_backups(store: PaperStore, backup_dir: Path | None) -> list[Path]:
+    """One store's daily backups, oldest first: <its name>-<day>.db (paper-us-... is not paper's)."""
+    if backup_dir is None:
+        return []
+    pattern = re.compile(rf"{re.escape(store.path.stem)}-\d{{4}}-\d{{2}}-\d{{2}}")
+    return sorted(p for p in Path(backup_dir).glob(f"{store.path.stem}-*.db") if pattern.fullmatch(p.stem))
+
+
 def integrity_check(store: PaperStore | None, live_store: LiveStore | None, backup_dir: Path | None) -> list[Health]:
     """SQLite's own check that the records and the newest backup are intact. The folder they live in is synced
     by OneDrive; damage caught the same day can be undone from a backup taken before it."""
@@ -207,7 +244,7 @@ def integrity_check(store: PaperStore | None, live_store: LiveStore | None, back
     found = {"paper records": _quick_check(store.conn)}
     if live_store is not None:
         found["live records"] = _quick_check(live_store.conn)
-    copies = sorted(Path(backup_dir).glob("paper-*.db")) if backup_dir is not None else []
+    copies = store_backups(store, backup_dir)
     if copies:
         found[f"backup {copies[-1].name}"] = _quick_check_file(copies[-1])
     damaged = [f"{name} ({result})" for name, result in found.items() if result != "ok"]
@@ -243,10 +280,10 @@ def backup_check(store: PaperStore | None, backup_dir: Path | None, today: date)
     """The daily run copies the records to <database folder>/backups after every run that didn't fail."""
     if store is None or backup_dir is None:
         return []
-    copies = sorted(Path(backup_dir).glob("paper-*.db"))
+    copies = store_backups(store, backup_dir)
     if not copies:
         return [Health("backup", WARN, f"no backup in {backup_dir} yet; the next daily run makes one")]
-    latest = date.fromisoformat(copies[-1].stem.removeprefix("paper-"))
+    latest = date.fromisoformat(copies[-1].stem[-10:])
     if today - latest > BACKUP_MAX_AGE:
         return [Health("backup", WARN, f"the newest backup is from {latest}: check the daily run's log")]
     count = f"{len(copies)} daily cop{'y' if len(copies) == 1 else 'ies'}"
@@ -294,11 +331,13 @@ def data_checks(settings, now: datetime, session_file: Path = SESSION_FILE) -> H
 def health_checks(store: PaperStore | None, calendar: MarketCalendar, registry: StrategyRegistry,
                   kill_switch: KillSwitch, settings, now: datetime, max_age_days: int = 365,
                   evidence_dir: Path = EVIDENCE_DIR, session_file: Path = SESSION_FILE,
-                  backup_dir: Path | None = None, live_store: LiveStore | None = None) -> list[Health]:
+                  backup_dir: Path | None = None, live_store: LiveStore | None = None,
+                  us_store: PaperStore | None = None) -> list[Health]:
     """Every check, worst first. `store` is None before the first daily run."""
     checks = [*run_checks(store, calendar, now), *safety_checks(store, kill_switch), unattended_record(store, now),
               dry_run_check(store, now.date()), *backup_check(store, backup_dir, now.date()),
               *integrity_check(store, live_store, backup_dir), *news_check(settings, now),
+              *us_checks(us_store, now, backup_dir),
               *strategy_checks(registry, now.date(), max_age_days, evidence_dir), calendar_checks(calendar, now.date()),
               data_checks(settings, now, session_file), *live_checks(settings, live_store, now, session_file)]
     order = (ALERT, WARN, INFO, OK)
@@ -317,7 +356,7 @@ def main(argv: list[str] | None = None) -> None:
     now = datetime.now(IST)
     checks = health_checks(store, load_calendars()["NSE"], StrategyRegistry.load(), KillSwitch(), settings, now,
                            load_gate_config().max_evidence_age_days, backup_dir=database.parent / "backups",
-                           live_store=open_live_store(settings))
+                           live_store=open_live_store(settings), us_store=open_us_store(settings))
     print(f"Health at {now:%Y-%m-%d %H:%M} IST")
     width = max(len(c.name) for c in checks)
     for check in checks:

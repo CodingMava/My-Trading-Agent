@@ -32,6 +32,9 @@ class RiskLimits:
             raise ValueError("risk_per_trade above 2% of equity is not allowed")
 
 
-def load_limits(path: Path = RISK_FILE) -> RiskLimits:
+def load_limits(path: Path = RISK_FILE, market: str = "NSE") -> RiskLimits:
+    """[limits], with a market's own [limits.<market>] values over them (an amount in its currency, say)."""
     with open(path, "rb") as fh:
-        return RiskLimits(**tomllib.load(fh).get("limits", {}))
+        raw = tomllib.load(fh).get("limits", {})
+    base = {key: value for key, value in raw.items() if not isinstance(value, dict)}
+    return RiskLimits(**{**base, **raw.get(market, {})})

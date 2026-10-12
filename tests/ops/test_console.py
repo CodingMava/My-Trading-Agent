@@ -29,3 +29,16 @@ def test_the_dashboard_renders_without_errors():
     app = AppTest.from_file(str(ROOT / "dashboard.py"), default_timeout=60).run()
     assert not app.exception
     assert app.title[0].value == "Trading agent"
+
+
+
+def test_the_dashboard_shows_the_us_account_once_it_has_records(tmp_path, monkeypatch):
+    from trader.ops import health
+    us = PaperStore(tmp_path / "paper-us.db", 10_000)
+    us.save_position(Position("U1", "XLK", 10, 200.0, 190.0, date(2026, 8, 11), last_price=210.0))
+    us.close()  # the app runs in its own thread, so it opens its own connection
+    monkeypatch.setattr(health, "open_us_store", lambda settings: PaperStore(us.path, 10_000))
+    app = AppTest.from_file(str(ROOT / "dashboard.py"), default_timeout=60).run()
+    assert not app.exception
+    headings = [h.value for h in app.subheader]
+    assert "US paper account (traded by hand)" in headings and "US closed trades" in headings

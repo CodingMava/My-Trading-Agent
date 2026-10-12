@@ -116,3 +116,50 @@ def test_paper_evidence_carries_the_systems_record_and_the_review(tmp_path):
     failed = {c["number"] for c in evidence.checks if not c["passed"]}
     assert {1, 2, 6} <= failed and 7 not in failed and 8 not in failed  # 25 reviewed >= 20
     assert evidence.decision in ("PAPER", "RESEARCH")
+
+
+
+def test_the_daily_run_does_india_then_the_us_and_pings_only_when_both_were_clean(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    import pytest
+
+    from trader.config import Secret, load_settings
+    from trader.execution import eod
+    settings = replace(load_settings(env={}), heartbeat_url=Secret("https://hc.example/ping"))
+    calls, pings, results = [], [], [0, 0]
+
+    def fake_daily(store, notifier, build, until, start, heartbeat, secrets, backup_dir, label):
+        trader = build()
+        calls.append((store.path.name, trader.market, trader.calendar.name, trader.currency,
+                      type(trader.provider).__name__, trader.market_check, until, start, heartbeat, label,
+                      trader.risk.account, trader.risk.limits.min_notional))
+        return results[len(calls) - 1]
+    monkeypatch.setattr(eod, "ROOT", tmp_path)
+    monkeypatch.setattr(eod, "load_settings", lambda: settings)
+    monkeypatch.setattr(eod, "configure_logging", lambda **kwargs: None)
+    monkeypatch.setattr(eod, "notifier_from_settings", lambda s: FakeNotifier())
+    monkeypatch.setattr(eod, "daily", fake_daily)
+    monkeypatch.setattr(eod, "ping_heartbeat", lambda url: pings.append(url))
+    with pytest.raises(SystemExit) as done:
+        eod.main(["--start", "2026-10-01"])
+    assert done.value.code == 0 and pings == ["https://hc.example/ping"]
+    assert calls == [("paper.db", "NSE", "NSE", "₹", "YahooProvider", ("NIFTYBEES.NS",), None, date(2026, 10, 1), "",
+                      "", "", 25_000),
+                     ("paper-us.db", "US", "NYSE", "$", "YahooProvider", ("SPY",), None, None, "", "US", "US", 250)]
+    calls.clear()
+    results[:] = [0, 2]  # the US run halted
+    with pytest.raises(SystemExit) as done:
+        eod.main([])
+    assert done.value.code == 2 and len(pings) == 1  # no heartbeat unless every market's run was clean
+
+
+
+def test_the_us_accounts_alerts_say_so(tmp_path):
+    store, notifier = PaperStore(tmp_path / "paper-us.db", 10_000), FakeNotifier()
+
+    def build():
+        raise RuntimeError("Yahoo is down")
+
+    assert daily(store, notifier, build, clock=lambda: CLOCK, label="US") == 1
+    assert notifier.sent[0].startswith("<b>[PAPER] RISK ALERT: US daily run failed</b>")

@@ -1,8 +1,9 @@
 # My Trading Agent
 
-A research-first trading system for Indian equities (NSE). Once a day it paper trades the strategies
-that have earned it through the profitability gate and reports on Telegram; it **never places real
-orders**. US stocks are researched with the same tools and traded manually.
+A research-first trading system for Indian equities (NSE), with a US paper account alongside. Once a
+day it paper trades the strategies that have earned it through the profitability gate and reports on
+Telegram; it **never places real orders**. US stocks are researched with the same tools, and their
+signals come to you to place by hand.
 
 > **Current mode: NO TRADE.** Nothing tested so far makes money after costs in a way that beats chance:
 > not the original nine intraday rules (audit, 2026-10-08), and not the fourteen pre-registered swing
@@ -126,13 +127,13 @@ needs years of new data before a pre-registered round could confirm it.
 | Path | What it is |
 |---|---|
 | `dashboard.py` | Ops console (Streamlit, read-only): health, the paper account, decisions, strategies, runs |
-| `scripts/register_tasks.ps1` | Creates the Windows scheduled tasks: the daily run, the health check, Telegram commands |
-| `config/settings.toml` | Non-secret settings (data source, Telegram, AI) |
+| `scripts/register_tasks.ps1` | Creates the Windows scheduled tasks: the daily run, the health check, Telegram commands, news |
+| `config/settings.toml` | Non-secret settings (data source, Telegram, AI, the paper and live accounts) |
 | `config/strategies.toml` | Strategy registry: each strategy's status |
 | `config/gate.toml` | The profitability gate: the evidence each status requires |
 | `config/risk.toml`, `config/sectors.toml` | Hard risk limits; each stock's sector |
 | `config/market_calendars.toml` | NSE and NYSE holidays and session hours (update every December) |
-| `config/universes.toml` | The stock lists strategies trade (NIFTY 50, the NIFTY ETF) |
+| `config/universes.toml` | The stock lists strategies trade (NIFTY 50, the NIFTY ETF, the 11 US sector SPDRs) |
 | `trader/` | Config, logging and registry code |
 | `trader/markets/` | Exchange calendars |
 | `trader/core/` | Shared domain objects (trade intents, positions, portfolio state) |
@@ -162,7 +163,7 @@ Then fill in your credentials in `.env`. It is git-ignored; never commit it.
 ## Usage
 
 ```bash
-python -m trader.execution.eod            # the daily run: paper trading after the NSE close
+python -m trader.execution.eod            # the daily run: India's paper account, then the US one
 python -m trader.ops.health               # is it running, and is it safe? (exit code 1 if not)
 streamlit run dashboard.py                # ops console, read-only
 python -m trader.risk.killswitch status   # the kill switch
@@ -211,10 +212,12 @@ nothing trades, and the Telegram summary shows its close and the unattended reco
 python -m trader.execution.eod                       # process every completed session not yet done
 python -m trader.execution.eod --start 2026-10-01    # first run only: replay from this session
 python -m trader.execution.report                    # score each strategy's paper trades against the gate
+python -m trader.execution.report --market US        # the same for the US paper account
 python -m trader.execution.report --live             # small live capital against the gate (Level 6)
 python -m trader.execution.broker                    # the Kite requests the dry run prepared (never sent)
 python -m trader.execution.live status               # live trading: its locks, live holdings, open requests
 python -m trader.execution.records live 2026         # tax records: India's FY 2026-27 and the US's 2026 (CSV)
+python -m trader.execution.records paper-us 2026     # the US paper account's round trips in 2026
 ```
 
 Each run uses the same fill rules as the backtester: orders decided at a close fill at the next open,
@@ -224,18 +227,43 @@ the kill switch blocks new entries but never stops an open position from exiting
 database transaction in `state/paper.db` (git-ignored), so a crash or a second run can't duplicate
 anything, and a missed day is caught up on the next run.
 
-Telegram gets `[PAPER]` BUY SIGNAL, BUY EXECUTED, SELL EXECUTED and RISK ALERT messages and a daily
-summary; with no approved strategy the summary says NO TRADE. A message that can't be sent is retried on
-the next run. A strategy whose paper results drift from its research (`[decay]` in `config/gate.toml`) is
-suspended automatically.
+Telegram gets `[PAPER]` BUY SIGNAL, BUY EXECUTED, SELL SIGNAL, SELL EXECUTED and RISK ALERT messages
+and a daily summary; with no approved strategy the summary says NO TRADE. A SELL SIGNAL comes when an
+exit rule fires (sell at the next open) and on the evening before a time exit (sell at the next
+close). A message that can't be sent is retried on the next run. A strategy whose paper results drift
+from its research (`[decay]` in `config/gate.toml`) is suspended automatically.
 
 Only strategies whose status `PAPER` is backed by research evidence are traded. **Today there are none**
 (none of the fourteen swing hypotheses passed), so every run records NO TRADE. To run it every day, see
 [Running unattended](#running-unattended).
 
+### The US paper account
+
+The same 18:00 run then paper trades a second account: US stocks and ETFs, $10,000 (`[paper_us]` in
+`config/settings.toml`, records in `state/paper-us.db`), on the NYSE calendar, with Yahoo data and SPY
+as its market check. At 18:00 IST it takes the US session that closed early that morning (01:30 IST,
+or 02:30 in the northern winter). A strategy trades in the account its stocks belong to, so one whose
+universe is US stocks (such as `us_sector_etfs`) trades here. **None does today**: the account records
+each session and checks SPY without sending anything. It stays quiet while it has nothing to trade,
+and speaks up only when something is wrong.
+
+Once a US strategy earns `PAPER`, you follow it by hand at your US broker. Nothing sends a US order.
+
+- **BUY SIGNAL** (18:00 IST): buy at the next US open (19:00 IST, or 20:00 in the northern winter),
+  then place the stop order it gives.
+- **SELL SIGNAL**: when an exit rule fires, sell at the next US open. When a position's time limit
+  ends, the signal comes the evening before: sell at that session's close. Either way, cancel the stop.
+- Its messages are in dollars, and its daily summary and alerts say US.
+
+The same risk limits apply, as fractions of the US account's own equity, except the smallest position:
+$250 (`[limits.US]` in `config/risk.toml`). One kill switch covers both accounts: a 10% drawdown in
+either stops new entries in both, and its reason says which account. Telegram's `/status`,
+`/positions` and `/trades`, the dashboard and the health checks (`US daily run`, `US backup`, ...)
+cover the US account too, and the heartbeat is pinged only when both accounts' runs were clean.
+
 ## Running unattended
 
-Three Windows scheduled tasks run the system. `scripts/register_tasks.ps1` creates them: review it, then
+Four Windows scheduled tasks run the system. `scripts/register_tasks.ps1` creates them: review it, then
 run it once with `powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1`. They run on
 battery too (by Windows' default a laptop that isn't plugged in would skip them), and without a console
 window, so nothing pops up to be closed by accident; their output is in `logs/`. Run the script again
@@ -243,17 +271,17 @@ whenever it changes.
 
 | Task | When | Runs |
 |---|---|---|
-| Daily run | 18:00 IST every day; if the PC was off then, as soon as it is back | `python -m trader.execution.eod` |
+| Daily run | 18:00 IST every day; if the PC was off then, as soon as it is back | `python -m trader.execution.eod` (India's account, then the US one) |
 | Health check | 21:00 IST every day | `python -m trader.ops.health --notify` |
 | Telegram commands | Always, from logon (no console window; restarted if it stops) | `python -m trader.notify.bot` |
 | News | Every 15 minutes, 07:00 to midnight | `python -m trader.research.news collect` |
 
 From your Telegram chat with the bot: `/status` (health, mode, equity, positions), `/positions`,
-`/trades` (the latest closed trades), `/kill reason`, which stops all new trades at once while open
-positions still exit as planned, `/kitecheck` (the read-only Kite check: counts and a verdict, no money
-figures), and `/login`, Kite's daily login from your phone: it sends the link,
-you log in and send back the address Kite returns to, and the PC makes the session (the API secret and
-the access token never pass through Telegram). Only your chat (`TELEGRAM_CHAT_ID`) is answered. No
+`/trades` (the latest closed trades; both accounts), `/kill reason`, which stops all new trades at
+once while open positions still exit as planned, `/kitecheck` (the read-only Kite check: counts and a
+verdict, no money figures), and `/login`, Kite's daily login from your phone: it sends the link, you
+log in and send back the address Kite returns to, and the PC makes the session (the API secret and the
+access token never pass through Telegram). Only your chat (`TELEGRAM_CHAT_ID`) is answered. No
 command can release the kill switch, change a limit or place an order; releasing is only possible on
 the PC.
 
@@ -273,10 +301,11 @@ What sends you a Telegram alert:
 The health check also counts clean sessions in a row since the last failure. Paper-trading evidence
 (the audit's Level 5) needs 60 before any real order.
 
-After every run that didn't fail, the records are copied to `state/backups/paper-<date>.db` (inside
-OneDrive here, so the copies leave the PC), and the record of what happened (fills, closed trades,
-decisions, session snapshots) can't be edited or deleted: the database refuses. **What each alert means,
-what to do about it, and the plan for losses decided in advance are in [docs/runbook.md](docs/runbook.md).**
+After every run that didn't fail, the records are copied to `state/backups/paper-<date>.db` (the US
+account's to `paper-us-<date>.db`; inside OneDrive here, so the copies leave the PC), and the record of
+what happened (fills, closed trades, decisions, session snapshots) can't be edited or deleted: the
+database refuses. **What each alert means, what to do about it, and the plan for losses decided in
+advance are in [docs/runbook.md](docs/runbook.md).**
 
 ## Market calendars
 
@@ -340,7 +369,8 @@ python -m trader.risk.killswitch status
 ```
 - AI never creates, sizes or approves trades.
 - Secrets live only in `.env`. A test fails the build if a credential appears in the repository.
-- US trades are placed by hand. Each paper step for an NSE stock records the exact Zerodha Kite request
+- US trades are placed by hand: the US paper account's signals tell you what to place, and nothing
+  sends a US order. Each paper step for an NSE stock records the exact Zerodha Kite request
   that would carry it out (a dry run: `python -m trader.execution.broker`, or the dashboard's Decisions
   tab). Live trading (`python -m trader.execution.live`) is built and locked: it sends those orders only
   for a strategy at `LIVE_SMALL` or `LIVE` on paper-trading evidence, after you turn it on, within limits
@@ -362,7 +392,7 @@ python -m trader.risk.killswitch status
 | 3e | Research round 5: four monthly effects at once | Done: 0 of 4 passed |
 | 4 | Profitability gate enforced from evidence reports | Done |
 | 5-6 | Risk engine and portfolio limits | Done |
-| 7 | Paper trading (end-of-day, for swing strategies) | Done: no strategy is eligible yet. Its 60 unattended sessions start once the tasks are scheduled |
+| 7 | Paper trading (end-of-day, for swing strategies) | Done: India's account and, since 2026-10-12, a US one whose signals you place by hand. No strategy is eligible yet; the 60 unattended sessions are being counted (the health check shows how many) |
 | 8 | Broker integration: Zerodha Kite orders, still on paper capital | Done: the dry run, and the order management system (orders and GTT stops, never sent twice, rejects, partial fills, reconciliation with the account), tested against an in-memory Kite (Kite has no sandbox) |
 | 9 | AI research layer: news to structured tags, advisory only | Built: NSE's announcements collected every 15 minutes into a history with every gap recorded, tagged by rules (optional AI tags, schema-checked, off until a new key); no trading code can read them. Kept only if a pre-registered research round shows the tags improve a strategy |
 | 10 | Observability: run records, alerts on failure and on silence, health checks, ops console | Done |

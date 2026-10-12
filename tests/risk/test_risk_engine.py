@@ -64,6 +64,9 @@ def test_account_level_brakes(tmp_path):
     decision = risk.evaluate(intent(), account(peak=1_200_000))  # 16.7% below the peak
     assert "drawdown" in failed(decision) and risk.kill_switch.engaged and "drawdown" in risk.kill_switch.reason
     assert not risk.evaluate(intent(), account()).approved  # stays blocked until a person releases it
+    us = RiskEngine(LIMITS, KillSwitch(tmp_path / "US_KILL_SWITCH"), account="US")
+    us.evaluate(intent(), account(peak=1_200_000))
+    assert "US account drawdown -16.7% breached" in us.kill_switch.reason  # one switch: it says which account
 
 
 def test_per_trade_limits(tmp_path):
@@ -166,3 +169,13 @@ def test_engaging_again_keeps_the_original_reason(tmp_path):
     switch.engage("drawdown 10.4% breached the 10% limit")
     switch.engage("engaged by hand")  # e.g. a later alert or a person, while it is already engaged
     assert "drawdown 10.4%" in switch.reason and "by hand" not in switch.reason
+
+
+
+def test_a_market_can_override_a_limit(tmp_path):
+    from trader.risk.limits import load_limits
+    path = tmp_path / "risk.toml"
+    path.write_text("[limits]\nmin_notional = 25000\nmax_positions = 5\n\n[limits.US]\nmin_notional = 250\n",
+                    encoding="utf-8")
+    assert (load_limits(path).min_notional, load_limits(path, market="US").min_notional) == (25000, 250)
+    assert load_limits(path, market="US").max_positions == 5  # everything else is shared

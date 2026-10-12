@@ -233,8 +233,9 @@ class PaperStore:
         return {r["strategy_id"]: r["reason"] for r in self.conn.execute("SELECT * FROM suspended")}
 
     def backup(self, directory: Path | str, day: date) -> Path:
-        """A consistent copy of the whole database as <directory>/paper-<day>.db."""
-        return backup_copy(self.conn, Path(directory) / f"paper-{day.isoformat()}.db")
+        """A consistent copy of the whole database as <directory>/<its name>-<day>.db (paper-2026-10-12.db,
+        paper-us-2026-10-12.db)."""
+        return backup_copy(self.conn, Path(directory) / f"{self.path.stem}-{day.isoformat()}.db")
 
     # runs: one row per unattended run, for monitoring
     def start_run(self, started_at: datetime) -> int:

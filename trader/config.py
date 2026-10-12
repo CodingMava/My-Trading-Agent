@@ -77,6 +77,8 @@ class Settings:
     paper_starting_capital: float = 1_000_000.0
     paper_database: str = "state/paper.db"
     paper_send_no_trade: bool = False
+    paper_us_starting_capital: float = 10_000.0  # dollars
+    paper_us_database: str = "state/paper-us.db"
     heartbeat_url: Secret = Secret("")  # pinged after each successful daily run; empty = off
     live_enabled: bool = False  # real orders (Phase 11): also needs a strategy with live evidence
     live_capital: float = 0.0
@@ -103,6 +105,7 @@ def load_settings(env: dict[str, str] | None = None, settings_file: Path = SETTI
         cfg = tomllib.load(fh)
     notifications, ai, data = cfg.get("notifications", {}), cfg.get("ai", {}), cfg.get("data", {})
     paper, live, news = cfg.get("paper", {}), cfg.get("live", {}), cfg.get("news", {})
+    paper_us = cfg.get("paper_us", {})
 
     token = Secret(env.get("TELEGRAM_BOT_TOKEN"))
     chat_id = (env.get("TELEGRAM_CHAT_ID") or "").strip()
@@ -146,6 +149,8 @@ def load_settings(env: dict[str, str] | None = None, settings_file: Path = SETTI
         paper_starting_capital=float(paper.get("starting_capital", 1_000_000)),
         paper_database=str(paper.get("database", "state/paper.db")),
         paper_send_no_trade=bool(paper.get("send_no_trade_messages", False)),
+        paper_us_starting_capital=float(paper_us.get("starting_capital", 10_000)),
+        paper_us_database=str(paper_us.get("database", "state/paper-us.db")),
         heartbeat_url=Secret(env.get("HEARTBEAT_URL")),
         live_enabled=bool(live.get("enabled", False)),
         live_capital=float(live.get("capital", 0)),

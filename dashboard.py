@@ -17,7 +17,7 @@ from trader.features.indicators import sma
 from trader.gate import load_gate_config
 from trader.markets.calendar import load_calendars
 from trader.ops import console
-from trader.ops.health import ACTIVE, ALERT, WARN, health_checks, open_live_store
+from trader.ops.health import ACTIVE, ALERT, WARN, health_checks, open_live_store, open_us_store
 from trader.registry import StrategyRegistry
 from trader.risk.killswitch import KillSwitch
 from trader.strategies.catalog import load_universes
@@ -30,10 +30,10 @@ database = ROOT / settings.paper_database
 store = PaperStore(database, settings.paper_starting_capital) if database.exists() else None
 registry = StrategyRegistry.load()
 now = datetime.now(IST)
-live_store = open_live_store(settings)
+live_store, us_store = open_live_store(settings), open_us_store(settings)
 checks = health_checks(store, load_calendars()["NSE"], registry, KillSwitch(), settings, now,
                        load_gate_config().max_evidence_age_days, backup_dir=database.parent / "backups",
-                       live_store=live_store)
+                       live_store=live_store, us_store=us_store)
 active = [r.id for r in registry.records() if r.status in ACTIVE]
 
 st.title("Trading agent")
@@ -69,6 +69,16 @@ with account_tab:
         st.dataframe(console.positions_table(store), hide_index=True)
         st.subheader("Closed trades")
         st.dataframe(console.newest_first(store.trades()), hide_index=True)
+    if us_store is not None:
+        us = console.account(us_store)
+        st.subheader("US paper account (traded by hand)")
+        first, second, third = st.columns(3)
+        first.metric("Equity", f"${us['equity']:,.0f}", f"{us['return']:+.2%} since the start")
+        second.metric("Open positions", us["positions"])
+        third.metric("Last session", str(us["last_session"] or "-"))
+        st.dataframe(console.positions_table(us_store), hide_index=True)
+        st.subheader("US closed trades")
+        st.dataframe(console.newest_first(us_store.trades()), hide_index=True)
 
 with decisions_tab:
     if store is None:

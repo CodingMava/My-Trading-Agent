@@ -66,7 +66,7 @@ def test_a_gap_below_the_stops_limit_turns_its_triggered_sell_into_a_market_orde
 
 
 def test_us_stocks_get_no_kite_request(tmp_path):
-    trader = make_trader(tmp_path, frames={"AAA": UNIVERSE["AAA.NS"]})  # US trades are placed by hand
+    trader = make_trader(tmp_path, frames={"AAA": UNIVERSE["AAA.NS"]}, market="US", currency="$")  # placed by hand
     trader.run(until=date(2026, 8, 18), start=SIGNAL_DAY)
     assert len(trader.store.trades()) == 1 and trader.store.table("dry_run_orders").empty
 

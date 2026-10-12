@@ -1,19 +1,24 @@
 """End-of-day paper trading for swing strategies. No real orders are ever placed.
 
-    python -m trader.execution.eod                        # every completed NSE session not yet processed
-    python -m trader.execution.eod --start 2026-10-01     # first run only: replay from this session
+    python -m trader.execution.eod                        # every completed session not yet processed
+    python -m trader.execution.eod --start 2026-10-01     # first run only: replay India's from this session
 
 For each session, in order, with the same fill rules as the backtester:
   1. orders decided at the previous close fill at this session's open (sells first, then buys);
   2. stops are checked against the day's range, then time exits happen at the close;
   3. what remains is valued at the close and the session is recorded;
-  4. exit signals at the close queue sells for the next open;
+  4. exit signals at the close queue sells for the next open (a SELL SIGNAL message, as is the evening
+     before a time exit);
   5. entry signals from strategies whose evidence supports PAPER pass the risk engine, and approved ones
      queue buys for the next open.
 Every run also fetches and validates NIFTYBEES, the market check: the data path is exercised every day, so
 a data source that breaks halts the run and alerts long before a strategy depends on it.
 Alongside, every step for an NSE stock records the exact Zerodha Kite request that would carry it out with
 real shares (trader/execution/broker.py: Phase 8's dry run; nothing is sent).
+There are two accounts, one after the other: India's (state/paper.db, NSE calendar, rupees) and the US
+one (state/paper-us.db, NYSE calendar, dollars, Yahoo data, SPY as its market check). The 18:00 IST run
+takes the US session that closed early that morning; its signals are for you to place by hand before
+the next US open, and it sends nothing while it has nothing to trade.
 Each session is one database transaction. Telegram messages are queued inside it and sent only after it
 commits; anything unsent is retried on the next run. If a session's market data is broadly missing, the
 run stops before that session and alerts, rather than recording a day it couldn't see. Every run is
@@ -36,7 +41,7 @@ import requests
 from trader.config import ROOT, load_settings
 from trader.core.models import PortfolioState, Position, TradeIntent
 from trader.data.kite import session_secrets
-from trader.data.providers import fetch_many, make_provider
+from trader.data.providers import YahooProvider, fetch_many, make_provider
 from trader.data.validate import COLUMNS, DAILY_SETTLE, drop_incomplete_bars, placeholder_bars, validate_bars
 from trader.execution import broker
 from trader.execution.store import PaperStore
@@ -63,6 +68,7 @@ ADV_DAYS = 20
 MIN_DATA_COVERAGE = 0.8  # share of instruments that must have a session's bar before that session is processed
 ACTIVE_STATUSES = ("PAPER", "LIVE_SMALL", "LIVE")  # a strategy earning live money keeps paper trading too
 MARKET_CHECK = ("NIFTYBEES.NS",)  # fetched on every run, even when nothing trades
+US_MARKET_CHECK = ("SPY",)
 
 
 @dataclass
@@ -76,6 +82,11 @@ class RunSummary:
     halted: str = ""  # why the run stopped before the latest session, if it did
 
 
+def labelled(label: str, title: str) -> str:
+    """'Daily run failed' for India's account, 'US daily run failed' for the US one (one chat, two accounts)."""
+    return f"{label} {title[:1].lower()}{title[1:]}" if label else title
+
+
 def market_of(symbol: str) -> str:
     return "NSE" if symbol.endswith(".NS") else "BSE" if symbol.endswith(".BO") else "US"
 
@@ -84,7 +95,8 @@ class PaperTrader:
     def __init__(self, *, store: PaperStore, provider, calendar, registry: StrategyRegistry, risk: RiskEngine,
                  notifier, catalog: dict[str, StrategySpec] | None = None, universes: dict | None = None,
                  sectors: dict | None = None, decay: DecayThresholds | None = None, evidence_dir: Path = EVIDENCE_DIR,
-                 send_no_trade: bool = False, paper: bool = True, clock=None, market_check: tuple[str, ...] = ()):
+                 send_no_trade: bool = False, paper: bool = True, clock=None, market_check: tuple[str, ...] = (),
+                 market: str = "NSE", currency: str = "₹", quiet_when_idle: bool = False):
         self.store, self.provider, self.calendar = store, provider, calendar
         self.registry, self.risk, self.notifier = registry, risk, notifier
         self.catalog = CATALOG if catalog is None else catalog
@@ -93,6 +105,9 @@ class PaperTrader:
         self.decay = decay or DecayThresholds()
         self.evidence_dir, self.send_no_trade, self.paper = evidence_dir, send_no_trade, paper
         self.market_check = tuple(market_check)
+        # NSE (Indian stocks) or US (traded by hand from the signals); quiet: no daily summary while idle
+        self.market, self.currency, self.quiet_when_idle = market, currency, quiet_when_idle
+        self.label = "US" if market == "US" else ""  # in its messages' titles
         self.clock = clock or (lambda: datetime.now(IST))
         self._rows: dict[str, dict[date, int]] = {}
         self._signals: dict[tuple[str, str], object] = {}
@@ -104,7 +119,12 @@ class PaperTrader:
         suspended = self.store.suspended()
         return [spec for spec in self.catalog.values()
                 if (record := self.registry.get_by_id(spec.id)) is not None and record.status in ACTIVE_STATUSES
-                and spec.id not in suspended]
+                and spec.id not in suspended and self._market_of(spec) == self.market]
+
+    def _market_of(self, spec: StrategySpec) -> str:
+        """The engine a strategy belongs to, from its stocks: US, or NSE for Indian ones."""
+        symbols = self.universes.get(spec.universe) or [""]
+        return "US" if market_of(symbols[0]) == "US" else "NSE"
 
     def sessions_to_process(self, until: date, start: date | None) -> list[date]:
         last = self.store.last_session()
@@ -254,7 +274,7 @@ class PaperTrader:
             summary.fills += 1
             messages.append(templates.buy_executed(symbol=order.symbol, price=price, quantity=quantity,
                                                    stop=position.stop_price, strategy=self._name(order.strategy_id),
-                                                   exit_note=spec.exit_note, paper=self.paper))
+                                                   exit_note=spec.exit_note, paper=self.paper, currency=self.currency))
 
         # 3. Stops against the day's range, then time exits at the close; value the rest at the close.
         for symbol in sorted(positions):
@@ -286,6 +306,14 @@ class PaperTrader:
                     self._dry_run(s, broker.exit_order(key, symbol, position.quantity), messages)
                     summary.orders += 1
                     store.add_decision(s, position.strategy_id, symbol, "EXIT_SIGNAL", "exit rule met: sell at the next open")
+                    messages.append(self._sell_signal(position, "open", f"{position.strategy_id} exit rule met at "
+                                                                         f"the {s} close"))
+        # ... and a position whose time limit ends at the next close (the US account's are sold by hand).
+        selling = {order.symbol for order in store.pending_orders("sell")}
+        for symbol, position in sorted(positions.items()):
+            if symbol not in selling and position.max_hold_days and position.bars_held == position.max_hold_days - 1:
+                messages.append(self._sell_signal(position, "close", f"its {position.max_hold_days}-session time "
+                                                                      "limit ends at the next close"))
 
         # 5. Record the session.
         equity = cash + sum(p.market_value for p in positions.values())
@@ -349,7 +377,7 @@ class PaperTrader:
                     stop_distance=intent.stop_distance, quantity=decision.quantity, strategy=self._name(spec.id),
                     exit_note=spec.exit_note, win_rate=stats.get("holdout_win_rate"),
                     expectancy=stats.get("holdout_mean_net"), reason=f"{spec.id} entry rule met at the {s} close",
-                    paper=self.paper))
+                    paper=self.paper, currency=self.currency))
         if self.risk.kill_switch.engaged and not was_engaged:
             messages.append(self._alert("Kill switch", self.risk.kill_switch.reason))
 
@@ -367,18 +395,21 @@ class PaperTrader:
         # 8. Rebuild cash and holdings from the fills; any mismatch stops new trading.
         mismatches = store.reconcile()
         if mismatches:
-            self.risk.kill_switch.engage("reconciliation failed: " + mismatches[0])
+            self.risk.kill_switch.engage(f"{self.label + ' account ' if self.label else ''}reconciliation failed: "
+                                         + mismatches[0])
             messages.append(self._alert("Reconciliation failed", "; ".join(mismatches)))
 
-        if final:
-            checked = [f"{symbol} closed at {templates.rupees(b['close'])}" if (b := bar(symbol)) is not None
+        if final and not (self.quiet_when_idle and not strategies and not positions):
+            checked = [f"{symbol} closed at {templates.money(b['close'], self.currency)}" if (b := bar(symbol)) is not None
                        else f"{symbol}: no price today" for symbol in self.market_check]
             record = self._record + len(summary.sessions) + 1
             messages.append(templates.daily_summary(
                 session=s.isoformat(), equity=equity, day_change=equity / day_start - 1 if day_start else 0.0,
                 cash=cash, positions=[(p.symbol, p.quantity, p.price) for p in positions.values()],
                 strategies=len({spec.id for spec in strategies} - set(store.suspended())), paper=self.paper,
-                market=checked, record=f"{record} of {UNATTENDED_TARGET} clean sessions in a row before live trading"))
+                market=checked, currency=self.currency, label=self.label,
+                record=(f"{record} of {UNATTENDED_TARGET} clean sessions in a row before live trading"
+                        if self.market == "NSE" else "")))
         for text in messages:
             store.queue_message(s, text)
 
@@ -406,8 +437,15 @@ class PaperTrader:
         elif price < broker.stop_limit(position.stop_price):  # opened below the GTT's limit: that sell can't fill
             self._dry_run(s, broker.gap_exit(position), messages)
         messages.append(templates.sell_executed(symbol=position.symbol, price=price, quantity=position.quantity,
-                                                pnl=pnl, net_return=pnl / entry_notional, reason=reason, paper=self.paper))
+                                                pnl=pnl, net_return=pnl / entry_notional, reason=reason, paper=self.paper,
+                                                currency=self.currency))
         return cash + notional - fees
+
+    def _sell_signal(self, position: Position, at: str, reason: str) -> str:
+        return templates.sell_signal(symbol=position.symbol, market=market_of(position.symbol),
+                                     quantity=position.quantity, last_close=position.price, at=at, reason=reason,
+                                     strategy=self._name(position.strategy_id), paper=self.paper,
+                                     currency=self.currency)
 
     def _dry_run(self, s: date, request: broker.KiteRequest, messages: list) -> None:
         """Record the Kite request a live system would send for this step (never sent). US stocks are traded
@@ -426,7 +464,7 @@ class PaperTrader:
         return record.name if record else strategy_id
 
     def _alert(self, title: str, detail: str) -> str:
-        return templates.risk_alert(title=title, detail=detail, paper=self.paper)
+        return templates.risk_alert(title=labelled(self.label, title), detail=detail, paper=self.paper)
 
     def flush_outbox(self) -> int:
         """Send queued messages in order; stop at the first failure and retry on the next run."""
@@ -454,12 +492,14 @@ def ping_heartbeat(url: str, http=requests) -> bool:
 
 
 def daily(store: PaperStore, notifier, build, until: date | None = None, start: date | None = None,
-          heartbeat: str = "", secrets=(), http=requests, clock=None, backup_dir: Path | None = None) -> int:
+          heartbeat: str = "", secrets=(), http=requests, clock=None, backup_dir: Path | None = None,
+          label: str = "") -> int:
     """One unattended run, recorded in the store's runs table. `build()` makes the PaperTrader, so setup
     failures (a broken config, no Kite login) count as failed runs too. A failure sends an alert with
     every secret masked; a halt for missing data has queued its own alert. After a run that didn't fail,
     the records are backed up to `backup_dir` (one copy per day), and only a clean run pings the
-    heartbeat. Returns the process exit code: 0 ok, 1 failed, 2 halted."""
+    heartbeat. `label` names the account in alerts and the log (US). Returns the process exit code: 0 ok,
+    1 failed, 2 halted."""
     clock = clock or (lambda: datetime.now(IST))
     run_id = store.start_run(clock())
     try:
@@ -467,9 +507,9 @@ def daily(store: PaperStore, notifier, build, until: date | None = None, start: 
         summary = trader.run(until, start)
     except Exception as exc:  # every failure is recorded and reported, never swallowed
         detail = redact(f"{type(exc).__name__}: {exc}", secrets)[:500]
-        log.error("Daily run failed: %s", detail, exc_info=True)
+        log.error("%s: %s", labelled(label, "Daily run failed"), detail, exc_info=True)
         store.finish_run(run_id, "failed", clock(), 0, detail)
-        notifier.send(templates.risk_alert(title="Daily run failed", detail=f"{detail}. Nothing after the last "
+        notifier.send(templates.risk_alert(title=labelled(label, "Daily run failed"), detail=f"{detail}. Nothing after the last "
                                            "processed session was recorded; fix the cause and run it again."))
         return 1
     status = "halted" if summary.halted else "ok"
@@ -477,10 +517,10 @@ def daily(store: PaperStore, notifier, build, until: date | None = None, start: 
     for note in summary.notes:
         log.info(note)
     if summary.halted:
-        log.warning("Stopped early: %s", summary.halted)
+        log.warning("%s: %s", labelled(label, "Stopped early"), summary.halted)
     history = store.equity_history()
-    log.info("Paper trading: %d session(s) processed (%s), %d order(s), %d fill(s), %d closed trade(s), "
-             "%d message(s) sent; equity %s", len(summary.sessions),
+    log.info("%s: %d session(s) processed (%s), %d order(s), %d fill(s), %d closed trade(s), "
+             "%d message(s) sent; equity %s", labelled(label, "Paper trading"), len(summary.sessions),
              ", ".join(map(str, summary.sessions)) or "none", summary.orders, summary.fills, summary.trades,
              summary.messages_sent, f"{history.iloc[-1]:,.2f}" if len(history) else "n/a")
     if backup_dir is not None:
@@ -495,8 +535,9 @@ def daily(store: PaperStore, notifier, build, until: date | None = None, start: 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="End-of-day paper trading. Never places a real order.")
-    parser.add_argument("--until", type=date.fromisoformat, help="last session to process (default: latest completed)")
-    parser.add_argument("--start", type=date.fromisoformat, help="first run only: replay from this session")
+    parser.add_argument("--until", type=date.fromisoformat,
+                        help="India's last session to process (default: latest completed)")
+    parser.add_argument("--start", type=date.fromisoformat, help="India's first run only: replay from this session")
     args = parser.parse_args(argv)
 
     settings = load_settings()
@@ -504,26 +545,35 @@ def main(argv: list[str] | None = None) -> None:
     configure_logging(secrets=secrets)
     for warning in settings.warnings:
         log.warning(warning)
-    database = ROOT / settings.paper_database
-    store = PaperStore(database, settings.paper_starting_capital)
+    database, us_database = ROOT / settings.paper_database, ROOT / settings.paper_us_database
     notifier = notifier_from_settings(settings)
 
-    def build() -> PaperTrader:
+    def build(store: PaperStore, market: str) -> PaperTrader:
         registry = StrategyRegistry.load()
         for problem in registry.problems:
             log.warning("Registry: %s", problem)
-        return PaperTrader(store=store, provider=make_provider(settings), calendar=load_calendars()["NSE"],
-                           registry=registry, risk=RiskEngine(load_limits(), KillSwitch()), notifier=notifier,
+        us = market == "US"  # Kite has no US data: the US engine always uses Yahoo
+        return PaperTrader(store=store, provider=YahooProvider() if us else make_provider(settings),
+                           calendar=load_calendars()["NYSE" if us else "NSE"], registry=registry,
+                           risk=RiskEngine(load_limits(market=market), KillSwitch(), account="US" if us else ""),
+                           notifier=notifier,
                            decay=load_gate_config().decay, send_no_trade=settings.paper_send_no_trade,
-                           market_check=MARKET_CHECK)
+                           market_check=US_MARKET_CHECK if us else MARKET_CHECK, market=market,
+                           currency="$" if us else "₹", quiet_when_idle=us)
 
-    try:
-        code = daily(store, notifier, build, args.until, args.start, settings.heartbeat_url.reveal(), secrets,
-                     backup_dir=database.parent / "backups")
-    except Exception:  # the run record itself failed (e.g. a locked database): log it, with secrets masked
-        log.exception("The daily run could not be recorded")
-        code = 1
-    raise SystemExit(code)
+    codes = []
+    for market, path, capital, until, start in (("NSE", database, settings.paper_starting_capital, args.until, args.start),
+                                                ("US", us_database, settings.paper_us_starting_capital, None, None)):
+        try:
+            store = PaperStore(path, capital)
+            codes.append(daily(store, notifier, lambda store=store, market=market: build(store, market), until, start,
+                               "", secrets, backup_dir=path.parent / "backups", label="US" if market == "US" else ""))
+        except Exception:  # the run record itself failed (e.g. a locked database): log it, with secrets masked
+            log.exception("The %s daily run could not be recorded", market)
+            codes.append(1)
+    if settings.heartbeat_url and codes == [0, 0]:  # the heartbeat says every market's run was clean
+        ping_heartbeat(settings.heartbeat_url.reveal())
+    raise SystemExit(max(codes))
 
 
 if __name__ == "__main__":
