@@ -139,6 +139,25 @@ to send outside its window (so a late start can't send a time exit after the clo
 job checks that the account holds every share the system believes it holds; if not, the kill switch
 engages and nothing is sent. A request whose answer was lost is looked up at Kite, never sent twice.
 
+## Growing the live capital
+
+Small live capital first (the audit's Level 6), for at least three months. Then
+`python -m trader.execution.report --live` scores it: live fills and results tracking paper's (95% of the
+paper orders filled live, expectancy per trade within 0.5% of paper's), slippage within 1.5x the cost
+model's, no live request refused or left unresolved, and two things only you can confirm: that you
+engaged the kill switch while live and saw entries stop and exits go on, and that you rode out a losing
+week (1%+ of the capital) without overriding the system. If all of that holds, run it again with
+`--kill-switch-tested --no-overrides --write`; the evidence then supports `LIVE` in
+`config/strategies.toml`. Live drifting from paper sends the strategy back to `PAPER`.
+
+Only then can the capital grow (Level 7), and only in steps the live jobs record: raise `[live] capital`
+in `config/settings.toml`, and the next evening job takes it if every live strategy is at `LIVE`, the
+new figure is at most double the current step, and the step is at least 4 weeks old. Otherwise it keeps
+trading the current step and says why. Downward is automatic: a step that loses more than 10% from its
+peak reverts to the previous one by itself (the audit's rule uses the backtested maximum drawdown, which
+the evidence doesn't record). After a revert, set `[live] capital` to the step it reverted to, which
+acknowledges it; raise it again only later, in steps. The limits are in `config/gate.toml` `[live]`.
+
 ## Stopping everything
 
 - Block new trades now: send `/kill why` to the bot from your phone, or on the PC

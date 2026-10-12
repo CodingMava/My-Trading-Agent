@@ -27,6 +27,22 @@ min_reviewed_trades = 20     # paper trades a person has reviewed and agreed wit
 # The paper expectancy must also sit inside the research holdout's 95% confidence interval, no duplicate
 # order may have been attempted, and the records must reconcile.
 
+[live]
+# Small live capital before LIVE (the audit's Level 6): python -m trader.execution.report --live.
+min_weeks = 13               # at least three months
+min_round_trips = 10
+min_fill_rate = 0.95         # of the paper orders since live trading began, the share that filled live too
+max_tracking_gap = 0.005     # live expectancy per trade within this of paper's, either way
+max_cost_ratio = 1.5         # live slippage against paper at most this multiple of the model's
+bad_week = 0.01              # a losing week of at least this share of the live capital must have been survived
+# Also: no live request refused or left unresolved, and a person confirms the kill switch was tested live
+# and that they never overrode the system (--kill-switch-tested --no-overrides).
+# Scaling the capital (Level 7), enforced by the live jobs:
+max_step_increase = 2.0      # each increase of [live] capital at most doubles the current step
+min_step_weeks = 4           # weeks between increases
+max_step_drawdown = 0.10     # a step losing more than this from its peak reverts to the previous size; the
+                             # audit's rule uses the backtested maximum, which the evidence doesn't record
+
 [evidence]
 max_age_days = 365           # older evidence no longer supports PAPER or LIVE statuses
 

@@ -326,3 +326,14 @@ def test_the_market_check_reports_a_day_without_its_price(tmp_path):
                          universe=list(UNIVERSE))
     trader.run(until=date(2026, 8, 11), start=SIGNAL_DAY)
     assert "Market check: NIFTYBEES.NS: no price today" in trader.notifier.sent[-1]
+
+
+
+def test_the_report_command_scores_paper_and_live(tmp_path, monkeypatch, capsys):
+    from trader.execution import report
+    monkeypatch.setattr(report, "ROOT", tmp_path)
+    make_trader(tmp_path / "state").store.close()  # no trades yet
+    report.main([])
+    assert "No closed paper trades yet." in capsys.readouterr().out
+    report.main(["--live"])
+    assert "No live fills yet." in capsys.readouterr().out

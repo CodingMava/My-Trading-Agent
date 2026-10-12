@@ -6,8 +6,8 @@ import pandas as pd
 import pytest
 
 from trader.gate import (EVIDENCE_DIR, Check, Evidence, GateConfig, ResearchThresholds, decay_check, decide, decide_paper,
-                         load_evidence, load_gate_config, paper_checks, research_checks, save_evidence,
-                         supported_status)
+                         decide_small_live, load_evidence, load_gate_config, paper_checks, research_checks,
+                         save_evidence, small_live_checks, supported_status)
 from trader.registry import StrategyRegistry
 
 HOLDOUT = date(2022, 1, 1)
@@ -164,3 +164,24 @@ def test_every_committed_evidence_file_stores_booleans():
     for path in sorted(EVIDENCE_DIR.glob("*.json")):
         checks = json.loads(path.read_text(encoding="utf-8"))["checks"]
         assert all(isinstance(c["passed"], bool) for c in checks), path.name
+
+
+
+def test_level_6_small_live_capital_must_track_paper_and_survive_a_bad_week():
+    live_net, paper_net = pd.Series([0.01, -0.004] * 10), pd.Series([0.011, -0.005] * 10)  # 20 trips, +0.30% vs +0.30%
+    passing = dict(weeks=14, fill_rate=0.97, slippage=0.0005, modelled_slippage=0.0005, interventions=0,
+                   worst_week=-0.015, kill_switch_tested=True, no_overrides=True)
+    failing = lambda checks: {c.number for c in checks if not c.passed}  # noqa: E731
+    checks = small_live_checks(live_net, paper_net, **passing)
+    assert failing(checks) == set() and decide_small_live(checks) == "LIVE"
+    early = small_live_checks(live_net[:4], paper_net[:4], **{**passing, "weeks": 5, "worst_week": -0.002,
+                                                             "kill_switch_tested": False})
+    assert failing(early) == {1, 2, 6, 7} and decide_small_live(early) == "LIVE_SMALL"  # not yet
+    fixable = small_live_checks(live_net, paper_net, **{**passing, "interventions": 2, "no_overrides": False})
+    assert failing(fixable) == {5, 7} and decide_small_live(fixable) == "LIVE_SMALL"
+    adrift = small_live_checks(live_net - 0.01, paper_net, **passing)  # live loses what paper makes
+    assert failing(adrift) == {3} and decide_small_live(adrift) == "PAPER"
+    dear = small_live_checks(live_net, paper_net, **{**passing, "slippage": 0.002})
+    assert failing(dear) == {4} and decide_small_live(dear) == "PAPER"
+    missed = small_live_checks(live_net, paper_net, **{**passing, "fill_rate": 0.8})
+    assert failing(missed) == {3}

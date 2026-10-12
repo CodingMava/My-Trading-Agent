@@ -211,6 +211,7 @@ nothing trades, and the Telegram summary shows its close and the unattended reco
 python -m trader.execution.eod                       # process every completed session not yet done
 python -m trader.execution.eod --start 2026-10-01    # first run only: replay from this session
 python -m trader.execution.report                    # score each strategy's paper trades against the gate
+python -m trader.execution.report --live             # small live capital against the gate (Level 6)
 python -m trader.execution.broker                    # the Kite requests the dry run prepared (never sent)
 python -m trader.execution.live status               # live trading: its locks, live holdings, open requests
 python -m trader.execution.records live 2026         # tax records: India's FY 2026-27 and the US's 2026 (CSV)
@@ -363,7 +364,7 @@ python -m trader.risk.killswitch status
 | 8 | Broker integration: Zerodha Kite orders, still on paper capital | Done: the dry run, and the order management system (orders and GTT stops, never sent twice, rejects, partial fills, reconciliation with the account), tested against an in-memory Kite (Kite has no sandbox) |
 | 9 | AI research layer: news to structured tags, advisory only | Waits for a strategy it could measurably improve |
 | 10 | Observability: run records, alerts on failure and on silence, health checks, ops console | Done |
-| 11 | Controlled live trading | Built and locked: the live jobs (18:30, 09:20, 15:15), their locks, and live-against-paper tracking. Nothing is sent until a strategy earns `LIVE_SMALL` on paper-trading evidence and you turn it on |
+| 11 | Controlled live trading | Built and locked: the live jobs (18:30, 09:20, 15:15) and their locks, live-against-paper tracking, the Level 6 evidence for `LIVE`, and Level 7's capital steps (at most double, 4 weeks apart, automatic step-down). Nothing is sent until a strategy earns `LIVE_SMALL` on paper-trading evidence and you turn it on |
 
 ## Data
 

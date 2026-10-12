@@ -55,6 +55,20 @@ class PaperThresholds:
 
 
 @dataclass(frozen=True)
+class LiveThresholds:
+    """The audit's Level 6 (small live capital, before LIVE) and Level 7 (scaling the capital)."""
+    min_weeks: int = 13
+    min_round_trips: int = 10
+    min_fill_rate: float = 0.95  # of the paper orders, the share that filled live too
+    max_tracking_gap: float = 0.005  # live expectancy per trade within this of paper's, either way
+    max_cost_ratio: float = 1.5  # live slippage against paper at most this times the model's
+    bad_week: float = 0.01  # a losing week of at least this share of the live capital
+    max_step_increase: float = 2.0  # each capital step at most doubles the last
+    min_step_weeks: int = 4  # between capital increases
+    max_step_drawdown: float = 0.10  # a step losing more than this from its peak reverts to the previous size
+
+
+@dataclass(frozen=True)
 class DecayThresholds:
     window: int = 50
     max_win_rate_drop: float = 0.15
@@ -67,13 +81,15 @@ class GateConfig:
     paper: PaperThresholds = PaperThresholds()
     decay: DecayThresholds = DecayThresholds()
     max_evidence_age_days: int = 365
+    live: LiveThresholds = LiveThresholds()
 
 
 def load_gate_config(path: Path = GATE_FILE) -> GateConfig:
     with open(path, "rb") as fh:
         raw = tomllib.load(fh)
     return GateConfig(ResearchThresholds(**raw.get("research", {})), PaperThresholds(**raw.get("paper", {})),
-                      DecayThresholds(**raw.get("decay", {})), int(raw.get("evidence", {}).get("max_age_days", 365)))
+                      DecayThresholds(**raw.get("decay", {})), int(raw.get("evidence", {}).get("max_age_days", 365)),
+                      LiveThresholds(**raw.get("live", {})))
 
 
 @dataclass(frozen=True)
@@ -197,6 +213,50 @@ def decide_paper(checks: list[Check]) -> str:
     of line with the research -> RESEARCH."""
     failed = {c.number for c in checks if not c.passed}
     return "LIVE_SMALL" if not failed else ("PAPER" if failed <= NOT_YET else "RESEARCH")
+
+
+def small_live_checks(live_net: pd.Series, paper_net: pd.Series, weeks: float, fill_rate: float, slippage: float,
+                      modelled_slippage: float, interventions: int, worst_week: float, kill_switch_tested: bool,
+                      no_overrides: bool, t: LiveThresholds = LiveThresholds()) -> list[Check]:
+    """Score small-capital live trading (the audit's Level 6): live results against paper's over the same
+    period, live fills against the paper fills they mirror, and the record of the system and of the person.
+    `slippage` is the live fills' mean difference from paper's, per side (positive is worse); `worst_week` the
+    worst week's result as a share of the live capital."""
+    n = len(live_net)
+    live_mean = float(live_net.mean()) if n else math.nan
+    paper_mean = float(paper_net.mean()) if len(paper_net) else math.nan
+    return [
+        Check(1, f"At least {t.min_weeks} weeks of live trading", f"{weeks:.1f} weeks", weeks >= t.min_weeks),
+        Check(2, f"At least {t.min_round_trips} live round trips", f"{n}", n >= t.min_round_trips),
+        Check(3, f"Live tracks paper: {t.min_fill_rate:.0%}+ of paper orders filled live, and live expectancy within "
+                 f"{100 * t.max_tracking_gap:.2f}% of paper's",
+              f"{fill_rate:.0%} filled; {100 * live_mean:+.3f}% vs {100 * paper_mean:+.3f}%",
+              bool(fill_rate >= t.min_fill_rate and abs(live_mean - paper_mean) <= t.max_tracking_gap)),
+        Check(4, f"Realised costs match the model: slippage against paper at most {t.max_cost_ratio}x the model's",
+              f"{100 * slippage:+.3f}% vs {100 * modelled_slippage:.3f}% per side",
+              bool(slippage <= t.max_cost_ratio * modelled_slippage)),
+        Check(5, "No manual intervention needed: no live request refused or left unresolved", f"{interventions}",
+              interventions == 0),
+        Check(6, "The kill switch was tested under real conditions (a person confirms it)",
+              "confirmed" if kill_switch_tested else "not confirmed", kill_switch_tested),
+        Check(7, f"Survived a bad week (a loss of {t.bad_week:.0%}+ of the capital) without overriding the system",
+              f"worst week {100 * worst_week:+.2f}%; " + ("no overrides (confirmed)" if no_overrides else "overrides not ruled out"),
+              bool(worst_week <= -t.bad_week and no_overrides)),
+    ]
+
+
+# Live checks that say "not yet" (time, trades, a system defect to fix, the person's confirmations, a bad week
+# still to come): failing only these keeps a strategy at LIVE_SMALL.
+LIVE_NOT_YET = {1, 2, 5, 6, 7}
+
+
+def decide_small_live(checks: list[Check]) -> str:
+    """All pass -> LIVE (its capital may now grow in steps); only "not yet" checks failing -> LIVE_SMALL; live
+    out of line with paper, or costing more than modelled -> back to PAPER."""
+    failed = {c.number for c in checks if not c.passed}
+    if 2 in failed:  # too few round trips to judge tracking or costs yet
+        failed -= {3, 4}
+    return "LIVE" if not failed else ("LIVE_SMALL" if failed <= LIVE_NOT_YET else "PAPER")
 
 
 @dataclass(frozen=True)

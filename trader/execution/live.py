@@ -20,6 +20,12 @@ Exits and stops go out even with the kill switch engaged: it blocks new trades, 
 
 A live entry is its paper order scaled by live capital / paper capital, so it risks the same share of the
 account. An exit sells what the account holds for that strategy, never more.
+
+The live capital grows in recorded steps (the audit's Level 7). [live] capital is what you ask for; an
+increase takes effect only when every live strategy has passed Level 6 (status LIVE), it at most doubles the
+current step, and the step is at least min_step_weeks old (config/gate.toml [live]). A step that loses more
+than max_step_drawdown from its peak reverts to the previous one by itself; downward moves are automatic,
+upward ones deliberate.
 """
 from __future__ import annotations
 
@@ -38,7 +44,9 @@ from trader.execution import broker
 from trader.execution.eod import market_of
 from trader.execution.kite_orders import KiteOrders, from_session, held_quantity
 from trader.execution.oms import OMS, LiveStore
+from trader.execution.records import from_fills
 from trader.execution.store import PaperStore
+from trader.gate import LiveThresholds, load_gate_config
 from trader.logging_setup import configure_logging, make_console_utf8, redact
 from trader.markets.calendar import MarketCalendar, load_calendars
 from trader.notify import templates
@@ -74,6 +82,7 @@ class Live:
     connect: Callable[[], KiteOrders]  # called only once every lock is open, so a locked job never touches Kite
     catalog: dict[str, StrategySpec] = field(default_factory=lambda: CATALOG)
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(IST))
+    steps: LiveThresholds = field(default_factory=LiveThresholds)
 
 
 def live_strategies(live: Live) -> set[str]:
@@ -129,15 +138,57 @@ def run(job: str, live: Live, backup_dir=None) -> int:
     return 0
 
 
+def step_drawdown(store: LiveStore, since: date, capital: float) -> float:
+    """How far the live account's closed trades since `since` fell from their best, as a share of `capital`."""
+    trips = from_fills(store.table("live_fills"))
+    gains = trips.loc[[day >= since for day in trips["sell_date"]], "gain"].cumsum()
+    if gains.empty or capital <= 0:
+        return 0.0
+    return float((gains.cummax().clip(lower=0) - gains).max() / capital)
+
+
+def capital_for_today(live: Live, today: date) -> tuple[float, list[str]]:
+    """Level 7: the capital the live jobs may use today, and what changed. Every step is recorded."""
+    steps, wanted, t = live.store.capital_steps(), live.settings.live_capital, live.steps
+    if not steps:
+        live.store.add_capital_step(today, wanted, "first step")
+        return wanted, [f"Live capital: Rs {wanted:,.0f} (the first step)."]
+    current, since = steps[-1]["capital"], date.fromisoformat(steps[-1]["session"])
+    if (drawdown := step_drawdown(live.store, since, current)) > t.max_step_drawdown:
+        previous = steps[-2]["capital"] if len(steps) > 1 else 0.0
+        live.store.add_capital_step(today, previous, f"reverted: the step lost {drawdown:.1%} from its peak")
+        return previous, [f"Live capital reverted to Rs {previous:,.0f}: the Rs {current:,.0f} step lost "
+                          f"{drawdown:.1%} from its peak (limit {t.max_step_drawdown:.0%})."]
+    if wanted < current:  # downward is always allowed
+        live.store.add_capital_step(today, wanted, "lowered")
+        return wanted, [f"Live capital lowered to Rs {wanted:,.0f}."]
+    if wanted == current:
+        if steps[-1]["reason"].startswith("reverted"):  # asking for the step it reverted to acknowledges the revert
+            live.store.add_capital_step(today, current, "revert acknowledged")
+            return current, [f"Live capital stays at Rs {current:,.0f}: the revert is acknowledged."]
+        return current, []
+    weeks = (today - since).days / 7
+    unproven = sorted(i for i in live_strategies(live) if live.registry.get_by_id(i).status != "LIVE")
+    refused = ("after a revert, lower [live] capital to the current step first, then raise it again"
+               if steps[-1]["reason"].startswith("reverted") else
+               f"{', '.join(unproven)} must first pass Level 6 (status LIVE)" if unproven else
+               f"more than {t.max_step_increase:g}x the current step" if wanted > t.max_step_increase * current else
+               f"{weeks:.0f} of {t.min_step_weeks} weeks since the last step" if weeks < t.min_step_weeks else "")
+    if refused:
+        return current, [f"Live capital stays at Rs {current:,.0f}, not Rs {wanted:,.0f}: {refused}."]
+    live.store.add_capital_step(today, wanted, "raised")
+    return wanted, [f"Live capital raised to Rs {wanted:,.0f}."]
+
+
 def evening(live: Live, oms: OMS, today: date) -> list[str]:
     """After the daily paper run: tomorrow's entries and exits, as after-market orders for the open."""
     if not live.calendar.is_trading_day(today):
         return []
     if live.paper.last_session() != today:
         return [f"The paper run hasn't processed {today} yet, so nothing was sent for tomorrow's open."]
-    news, allowed, held = [], live_strategies(live), live.store.positions()
+    capital, news = capital_for_today(live, today)
+    allowed, held, paper_capital = live_strategies(live), live.store.positions(), live.paper.starting_capital
     entries = sum(1 for row in live.store.orders() if row["session"] == today.isoformat() and row["purpose"] in ENTRY_PURPOSES)
-    capital, paper_capital = live.settings.live_capital, live.paper.starting_capital
     for order in live.paper.pending_orders():
         if order.created_session != today or order.strategy_id not in allowed or market_of(order.symbol) != "NSE":
             continue
@@ -231,10 +282,11 @@ def track(paper: PaperStore, store: LiveStore) -> pd.DataFrame:
             continue
         live, paper_price = fills.loc[tag], paper_fills["price"].get(order.id)
         sign = 1 if order.side == "buy" else -1
-        rows.append({"session": live["session"], "symbol": order.symbol, "side": order.side,
+        rows.append({"session": live["session"], "strategy": order.strategy_id, "symbol": order.symbol, "side": order.side,
                      "live quantity": int(live["quantity"]), "live price": float(live["price"]), "paper price": paper_price,
                      "slippage": sign * (float(live["price"]) / paper_price - 1) if paper_price else None})
-    return pd.DataFrame(rows, columns=["session", "symbol", "side", "live quantity", "live price", "paper price", "slippage"])
+    return pd.DataFrame(rows, columns=["session", "strategy", "symbol", "side", "live quantity", "live price",
+                                       "paper price", "slippage"])
 
 
 def check(kite: KiteOrders, store: LiveStore | None = None, symbol: str = "NIFTYBEES",
@@ -297,7 +349,7 @@ def main(argv: list[str] | None = None) -> None:
     store = LiveStore(live_db if live_db.exists() or args.job in JOBS else ":memory:")
     live = Live(settings, PaperStore(paper_db, settings.paper_starting_capital), store,
                 StrategyRegistry.load(), KillSwitch(), load_calendars()["NSE"], notifier_from_settings(settings),
-                connect=lambda: from_session(settings))
+                connect=lambda: from_session(settings), steps=load_gate_config().live)
     if args.job == "status":
         print(status_text(live))
     elif args.job == "check":

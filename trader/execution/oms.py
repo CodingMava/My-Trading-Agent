@@ -37,6 +37,10 @@ CREATE TABLE IF NOT EXISTS live_fills (id INTEGER PRIMARY KEY, session TEXT NOT 
     quantity INTEGER NOT NULL CHECK (quantity > 0), price REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS live_positions (symbol TEXT PRIMARY KEY, strategy_id TEXT NOT NULL, quantity INTEGER NOT NULL,
     entry_session TEXT NOT NULL, entry_price REAL NOT NULL, stop_price REAL NOT NULL, max_hold_days INTEGER);
+CREATE TABLE IF NOT EXISTS capital_steps (id INTEGER PRIMARY KEY, session TEXT NOT NULL, capital REAL NOT NULL,
+    reason TEXT NOT NULL);
+CREATE TRIGGER IF NOT EXISTS steps_no_update BEFORE UPDATE ON capital_steps BEGIN SELECT RAISE(ABORT, 'capital steps are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS steps_no_delete BEFORE DELETE ON capital_steps BEGIN SELECT RAISE(ABORT, 'capital steps are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON broker_events BEGIN SELECT RAISE(ABORT, 'broker events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON broker_events BEGIN SELECT RAISE(ABORT, 'broker events are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS live_fills_no_update BEFORE UPDATE ON live_fills BEGIN SELECT RAISE(ABORT, 'live fills are append-only'); END;
@@ -109,6 +113,13 @@ class LiveStore:
                           "VALUES (?, ?, ?, ?, ?, ?, ?)", (session.isoformat(), tag, strategy_id, symbol, side,
                                                            quantity, price))
 
+    def add_capital_step(self, session: date, capital: float, reason: str) -> None:
+        self.conn.execute("INSERT INTO capital_steps (session, capital, reason) VALUES (?, ?, ?)",
+                          (session.isoformat(), capital, reason))
+
+    def capital_steps(self) -> list[sqlite3.Row]:
+        return self.conn.execute("SELECT * FROM capital_steps ORDER BY id").fetchall()
+
     def positions(self) -> dict[str, Position]:
         rows = self.conn.execute("SELECT * FROM live_positions ORDER BY symbol").fetchall()
         return {r["symbol"]: Position(r["strategy_id"], r["symbol"], r["quantity"], r["entry_price"], r["stop_price"],
@@ -124,7 +135,7 @@ class LiveStore:
         self.conn.execute("DELETE FROM live_positions WHERE symbol = ?", (symbol,))
 
     def table(self, name: str) -> pd.DataFrame:
-        if name not in {"broker_orders", "broker_events", "live_fills", "live_positions"}:
+        if name not in {"broker_orders", "broker_events", "live_fills", "live_positions", "capital_steps"}:
             raise ValueError(name)
         return pd.read_sql_query(f"SELECT * FROM {name} ORDER BY rowid", self.conn)
 

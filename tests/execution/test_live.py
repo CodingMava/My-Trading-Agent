@@ -13,7 +13,7 @@ from trader.core.models import Position
 from trader.data.kite import KiteAuthError
 from trader.execution import broker, live as live_jobs
 from trader.execution.kite_orders import KiteOrders
-from trader.execution.live import Live, check, locks, run, status_text, track
+from trader.execution.live import Live, capital_for_today, check, locks, run, status_text, step_drawdown, track
 from trader.execution.oms import LiveStore
 from trader.execution.store import PaperStore
 from trader.markets.calendar import load_calendars
@@ -216,7 +216,8 @@ def test_the_evening_job_sends_only_todays_orders_of_live_strategies(tmp_path):
     store.add_order("T2:BBB.NS:2026-08-10:buy", "T2", "BBB.NS", "buy", 1000, SIGNAL_DAY, 100.0, 0.05)  # not live
     store.add_order("T1:AAPL:2026-08-10:buy", "T1", "AAPL", "buy", 10, SIGNAL_DAY, 100.0, 0.05)  # US: by hand
     store.add_order("T1:CCC.NS:2026-08-10:sell", "T1", "CCC.NS", "sell", 1000, SIGNAL_DAY, 100.0, 0.0)  # none held live
-    assert job(live, clock, "evening", SIGNAL_DAY, 18, 30) == (0, []) and kite.orders == []
+    code, messages = job(live, clock, "evening", SIGNAL_DAY, 18, 30)
+    assert code == 0 and messages[0].endswith("Live capital: Rs 100,000 (the first step).") and kite.orders == []
 
 
 def test_a_time_exit_waits_while_its_stop_cant_be_deleted(tmp_path):
@@ -329,3 +330,87 @@ def test_the_check_command(tmp_path, monkeypatch, capsys):
     with pytest.raises(SystemExit) as finished:
         live_jobs.main(["check"])
     assert finished.value.code == 0 and "Every field the order system relies on is there" in capsys.readouterr().out
+
+
+
+def test_live_capital_grows_only_in_deliberate_steps(tmp_path):
+    paper, live, kite, clock = setup(tmp_path, capital=50_000)  # T1 at LIVE_SMALL
+    first = date(2026, 8, 10)
+    assert capital_for_today(live, first) == (50_000, ["Live capital: Rs 50,000 (the first step)."])
+    assert capital_for_today(live, first) == (50_000, [])
+    live.settings = replace(live.settings, live_capital=100_000)
+    capital, news = capital_for_today(live, date(2026, 9, 30))
+    assert capital == 50_000 and "T1 must first pass Level 6 (status LIVE)" in news[0]
+    live.registry = StrategyRegistry([StrategyRecord("T1", "Test strategy", "LIVE")])
+    live.settings = replace(live.settings, live_capital=150_000)
+    assert "more than 2x the current step" in capital_for_today(live, date(2026, 9, 30))[1][0]
+    live.settings = replace(live.settings, live_capital=100_000)
+    assert "1 of 4 weeks since the last step" in capital_for_today(live, date(2026, 8, 17))[1][0]
+    assert capital_for_today(live, date(2026, 9, 30)) == (100_000, ["Live capital raised to Rs 100,000."])
+    live.settings = replace(live.settings, live_capital=60_000)
+    assert capital_for_today(live, date(2026, 10, 1)) == (60_000, ["Live capital lowered to Rs 60,000."])
+    assert [row["reason"] for row in live.store.capital_steps()] == ["first step", "raised", "lowered"]
+
+
+def test_a_losing_step_reverts_by_itself_and_raising_again_is_deliberate(tmp_path):
+    paper, live, kite, clock = setup(tmp_path, status="LIVE", capital=10_000)
+    capital_for_today(live, date(2026, 8, 3))
+    live.settings = replace(live.settings, live_capital=20_000)
+    assert capital_for_today(live, date(2026, 9, 7))[0] == 20_000
+    live.store.add_fill(date(2026, 9, 8), "E1", "T1", "INFY.NS", "buy", 100, 100.0)
+    live.store.add_fill(date(2026, 9, 9), "X1", "T1", "INFY.NS", "sell", 100, 75.0)  # about 12.7% of the step
+    capital, news = capital_for_today(live, date(2026, 9, 10))
+    assert capital == 10_000 and news[0].startswith("Live capital reverted to Rs 10,000: the Rs 20,000 step lost 12.")
+    later = date(2026, 11, 2)
+    assert "after a revert, lower [live] capital" in capital_for_today(live, later)[1][0]  # still asking for 20,000
+    live.settings = replace(live.settings, live_capital=10_000)
+    assert capital_for_today(live, later) == (10_000, ["Live capital stays at Rs 10,000: the revert is acknowledged."])
+    live.settings = replace(live.settings, live_capital=20_000)
+    assert capital_for_today(live, date(2026, 12, 7)) == (20_000, ["Live capital raised to Rs 20,000."])
+
+
+def test_a_first_step_that_loses_too_much_stops_new_live_entries(tmp_path):
+    paper, live, kite, clock = setup(tmp_path, capital=10_000)
+    capital_for_today(live, date(2026, 8, 3))
+    assert step_drawdown(live.store, date(2026, 8, 3), 10_000) == 0.0  # no trades yet
+    live.store.add_fill(date(2026, 8, 4), "E1", "T1", "INFY.NS", "buy", 100, 100.0)
+    live.store.add_fill(date(2026, 8, 5), "X1", "T1", "INFY.NS", "sell", 100, 85.0)
+    assert step_drawdown(live.store, date(2026, 8, 3), 0) == 0.0
+    capital, news = capital_for_today(live, date(2026, 8, 6))
+    assert capital == 0.0 and news[0].startswith("Live capital reverted to Rs 0")
+
+
+
+def a_live_week(tmp_path):
+    """The week of test_a_week_of_live_trading_mirrors_paper, without its checks."""
+    paper, live, kite, clock = setup(tmp_path)
+    paper.run(until=SIGNAL_DAY, start=SIGNAL_DAY)
+    job(live, clock, "evening", SIGNAL_DAY, 18, 30)
+    kite.new_day()
+    for order in list(kite.orders):
+        kite.fill(order, 101.0)
+    kite.prices = {"AAA": 101.0, "BBB": 101.0, "CCC": 101.0}
+    job(live, clock, "morning", date(2026, 8, 11), 9, 20)
+    paper.run(until=date(2026, 8, 14))
+    kite.fill(kite.trigger(next(g for g in kite.gtts.values() if g["condition"]["tradingsymbol"] == "AAA")["id"]), 95.95)
+    job(live, clock, "evening", date(2026, 8, 14), 18, 30)
+    kite.new_day()
+    kite.fill(kite.by_tag(broker.exit_order("T1:BBB.NS:2026-08-14:sell", "BBB.NS", 100).tag), 104.0)
+    job(live, clock, "morning", date(2026, 8, 17), 9, 20)
+    job(live, clock, "preclose", date(2026, 8, 17), 15, 15)
+    kite.fill(kite.by_tag(broker.time_exit(Position("T1", "CCC.NS", 100, 101.0, 95.95, date(2026, 8, 11))).tag), 102.0)
+    paper.run(until=date(2026, 8, 17))
+    job(live, clock, "evening", date(2026, 8, 17), 18, 30)
+    return paper, live
+
+
+def test_level_6_evidence_from_a_live_week(tmp_path):
+    from trader.execution.report import live_evidence
+    paper, live = a_live_week(tmp_path)
+    evidence = live_evidence(paper.store, live.store, "T1", date(2026, 8, 18), 100_000)
+    stats = evidence.stats
+    assert (stats["round_trips"], stats["fill_rate"], stats["slippage"], stats["interventions"]) == (3, 1.0, 0.0, 0)
+    assert stats["worst_week"] == pytest.approx(-0.00548, abs=1e-5)  # AAA's stop (Rs 505 and charges): not yet bad
+    failed = {c["number"] for c in evidence.checks if not c["passed"]}
+    assert failed == {1, 2, 6, 7} and evidence.decision == "LIVE_SMALL"  # too early to say more, and nothing wrong
+    assert evidence.kind == "live" and live_evidence(paper.store, live.store, "T9", date(2026, 8, 18), 100_000) is None
