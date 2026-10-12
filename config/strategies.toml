@@ -138,3 +138,37 @@ evidence = "960 trades 2000-2026, +0.858%/trade net, but three random sectors a 
 name = "Swing: momentum, top 3 of 15 country ETFs monthly"
 status = "REJECTED"
 evidence = "924 trades 2001-2026, +0.803%/trade net, but three random countries a month did nearly as well (+0.80% vs +0.91% gross, p=0.18): market drift, not momentum."
+
+# Research round 6 (docs/research/round6-preregistration.md): six strategies from Ernest Chan's Algorithmic
+# Trading (2013), judged on 2013-07-01 to 2026-10-08, after the book appeared, in
+# docs/research/round6-results.md. Reproduce: python -m trader.research.round6
+
+[C1]
+name = "Intraday: buy-on-gap, NIFTY 50 stocks"
+status = "REJECTED"
+evidence = "111 trades 2015-2026, 54.1% winners, +0.154%/trade net (t=0.73), PF 1.19; beat random days before correction (p=0.015) but not after it (Holm p=0.087), and lost money in 2024 and 2025."
+
+[C2]
+name = "Intraday: buy-on-gap, 82 S&P 100 stocks"
+status = "REJECTED"
+evidence = "355 trades 2015-2026, 51.0% winners, +0.007%/trade net (t=0.06), PF 1.01: flat, profitable in the first half and losing in the second, no better than random days (p=0.17)."
+
+[C3]
+name = "Intraday: opening-gap momentum, NIFTY 50 index"
+status = "REJECTED"
+evidence = "1,055 trades 2013-2026, 40.9% winners, -0.159%/trade net (t=-6.41): loses before costs too (-0.040% gross); NIFTY's gaps faded during the day instead of continuing."
+
+[C4]
+name = "Intraday: opening-gap momentum, SPY"
+status = "REJECTED"
+evidence = "1,066 trades 2013-2026, 47.9% winners, -0.056%/trade net (t=-2.34): loses before costs too (-0.013% gross), the short side most."
+
+[C5]
+name = "Monthly: time-series momentum, NIFTY 50 or cash"
+status = "REJECTED"
+evidence = "127 invested months 2013-2026, 55.1% winners, +0.505%/month net (t=1.30); invested months earned less than random months (p=0.86). CAGR 5.2% against 10.9% bought and held, with no smaller drawdown."
+
+[C6]
+name = "Monthly: time-series momentum, SPY or T-bills"
+status = "REJECTED"
+evidence = "141 invested months 2013-2026, 70.2% winners, +0.997%/month net (t=3.01), PF 1.94, but no better than random months (p=0.70): market drift. CAGR 10.6% against 14.0% bought and held, at the same drawdown."

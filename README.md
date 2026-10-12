@@ -6,9 +6,10 @@ Telegram; it **never places real orders**. US stocks are researched with the sam
 signals come to you to place by hand.
 
 > **Current mode: NO TRADE.** Nothing tested so far makes money after costs in a way that beats chance:
-> not the original nine intraday rules (audit, 2026-10-08), and not the fourteen pre-registered swing
-> hypotheses of five research rounds. The daily paper-trading run records NO TRADE until a strategy
-> passes the profitability gate. Research is paused ([why](#research-status-paused-2026-10-11)).
+> not the original nine intraday rules (audit, 2026-10-08), and not the twenty pre-registered hypotheses
+> of six research rounds. The daily paper-trading run records NO TRADE until a strategy passes the
+> profitability gate. New rounds on the same data are paused, and the two strongest near-misses are
+> being judged on new sessions instead ([why](#research-status-a-forward-test-instead-of-more-rounds-2026-10-13)).
 
 ## Audit results (2026-10-08)
 
@@ -110,17 +111,45 @@ The turn of the month is the strongest effect found so far: it beat random timin
 tested. But it isn't steady enough to trade, and in India it has lost money since the start of 2024.
 Fourteen hypotheses over five rounds, none passed.
 
-## Research status: paused (2026-10-11)
+## Research round 6: Ernest Chan's strategies (2026-10-12)
 
-Five rounds have tested every well-documented daily-bar idea that fits the hard rule (most trades must
+Six strategies from Ernest Chan's *Algorithmic Trading* (2013), judged with the method of Aronson's
+*Evidence-Based Technical Analysis* on the years after the book appeared, data its rules were never
+designed on ([pre-registration](docs/research/round6-preregistration.md),
+[results](docs/research/round6-results.md)). The book's text wasn't available, so the rules are as
+described by secondary sources: a test of those rules, not a verdict on the book. A new criterion
+allows for the number of hypotheses now tested: the raw p-value against random entries must be below
+0.05 / 20.
+
+| Hypothesis | Trades | Winners | Net per trade | Result | Status |
+|---|---:|---:|---:|---|---|
+| C1: buy-on-gap, NIFTY 50 stocks, intraday | 111 | 54.1% | +0.15% | Weak (t 0.73); beat random days only before correcting for six tests; lost money in 2024 and 2025 | REJECTED |
+| C2: buy-on-gap, 82 S&P 100 stocks, intraday | 355 | 51.0% | +0.01% | Flat, and no better than random days | REJECTED |
+| C3: opening-gap momentum, NIFTY 50 index, intraday | 1,055 | 40.9% | -0.16% | Loses before costs too: NIFTY's gaps faded during the day | REJECTED |
+| C4: opening-gap momentum, SPY, intraday | 1,066 | 47.9% | -0.06% | Loses before costs too | REJECTED |
+| C5: time-series momentum, NIFTY 50 or cash, monthly | 127 | 55.1% | +0.50% | Its months did worse than random months; CAGR 5.2% against 10.9% bought and held | REJECTED |
+| C6: time-series momentum, SPY or T-bills, monthly | 141 | 70.2% | +1.00% | Profitable (t 3.01) but no better than random months: market drift. CAGR 10.6% against 14.0% bought and held | REJECTED |
+
+Twenty hypotheses over six rounds, none passed.
+
+## Research status: a forward test instead of more rounds (2026-10-13)
+
+Six rounds have tested the well-documented daily-bar ideas that fit the hard rule (most trades must
 win, and the profit must survive costs and beat random entries): pullbacks, the turn of the month,
-momentum. None passed. Testing more ideas on the same data until one passes would only find a lucky
-backtest, so research is paused. It restarts only with something genuinely new: different data (for
-example Kite's minute history, for intraday ideas) or a deliberate change to the rules.
+momentum, gaps. None passed. Each further test on the same data makes a lucky pass more likely, so
+there are no more rounds on it. Research restarts only with something genuinely new: different data
+(Kite's minute history, so intraday ideas can be tested with real fills after the open; a NIFTY
+universe as it was at each date, instead of today's members) or a deliberate change to the rules.
 
-In January 2027 the two near-misses (H11, H12) get a look on the months since their data ended, to see
-whether their recent losses continue. That is a check, not a test: a strategy that trades once a month
-needs years of new data before a pre-registered round could confirm it.
+The only data no one has seen is the future. The two strongest near-misses, H11 and H12 (the turn of
+the month), are judged only on sessions after their rules were pinned on 13 Oct 2026: [forward test
+1](docs/research/forward1-preregistration.md), `python -m trader.research.forward1`, status in
+[docs/research/forward1-results.md](docs/research/forward1-results.md). Its first trade can only come
+at the end of October 2026. A look each January decides from 2028 to 2036: every criterion passed makes
+a candidate for paper trading (with your approval), and from 2029 a forward loss retires it. A strategy
+that trades once a month needs years of new data to prove itself, so this test can show an effect has
+stopped working long before it can show one still works: nothing from it is expected to trade before
+2030.
 
 ## Project layout
 
@@ -234,7 +263,7 @@ close). A message that can't be sent is retried on the next run. A strategy whos
 from its research (`[decay]` in `config/gate.toml`) is suspended automatically.
 
 Only strategies whose status `PAPER` is backed by research evidence are traded. **Today there are none**
-(none of the fourteen swing hypotheses passed), so every run records NO TRADE. To run it every day, see
+(none of the twenty hypotheses tested passed), so every run records NO TRADE. To run it every day, see
 [Running unattended](#running-unattended).
 
 ### The US paper account
@@ -329,6 +358,8 @@ python -m trader.research.round2                                  # re-run resea
 python -m trader.research.round3                                  # re-run research round 3
 python -m trader.research.round4                                  # re-run research round 4
 python -m trader.research.round5                                  # re-run research round 5
+python -m trader.research.round6                                  # re-run research round 6 (Chan)
+python -m trader.research.forward1                                # forward test 1: H11, H12 on new sessions
 python -m trader.research.news status                             # the news history: counts, events, gaps
 pytest                                                            # fast tests
 pytest -m slow                                                    # research regressions (need the frozen data in data/)
@@ -390,6 +421,8 @@ python -m trader.risk.killswitch status
 | 3c | Research round 3: confirm or retire H6 on unseen data | Done: not confirmed; pullback rules retired |
 | 3d | Research round 4: the turn-of-the-month effect, US and India | Done: 0 of 2 passed |
 | 3e | Research round 5: four monthly effects at once | Done: 0 of 4 passed |
+| 3f | Research round 6: six strategies from Chan's *Algorithmic Trading* | Done: 0 of 6 passed |
+| 3g | Forward test 1: H11 and H12 on sessions after 13 Oct 2026 | Running: decisions each January, 2028 to 2036 |
 | 4 | Profitability gate enforced from evidence reports | Done |
 | 5-6 | Risk engine and portfolio limits | Done |
 | 7 | Paper trading (end-of-day, for swing strategies) | Done: India's account and, since 2026-10-12, a US one whose signals you place by hand. No strategy is eligible yet; the 60 unattended sessions are being counted (the health check shows how many) |

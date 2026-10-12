@@ -1,0 +1,89 @@
+{
+  "strategy_id": "C6",
+  "kind": "research",
+  "decision": "REJECTED",
+  "generated": "2026-10-13",
+  "source": "docs/research/round6-results.md (python -m trader.research.round6)",
+  "checks": [
+    {
+      "number": 1,
+      "criterion": "At least 50 trades",
+      "value": "141",
+      "passed": true
+    },
+    {
+      "number": 2,
+      "criterion": "Win rate at least 50%",
+      "value": "70.2%",
+      "passed": true
+    },
+    {
+      "number": 3,
+      "criterion": "Expectancy above 0 at base and 1.5x costs",
+      "value": "+0.997% / +0.996%",
+      "passed": true
+    },
+    {
+      "number": 4,
+      "criterion": "t-statistic at least 2.0",
+      "value": "3.01",
+      "passed": true
+    },
+    {
+      "number": 5,
+      "criterion": "Beats random entries (Holm-adjusted p < 0.05)",
+      "value": "1.000",
+      "passed": false
+    },
+    {
+      "number": 6,
+      "criterion": "Profit factor at least 1.3",
+      "value": "1.94",
+      "passed": true
+    },
+    {
+      "number": 7,
+      "criterion": "Avg loss at most 1.5x avg win",
+      "value": "-3.55% vs +2.92%",
+      "passed": true
+    },
+    {
+      "number": 8,
+      "criterion": "Expectancy above 0 in each half of the span",
+      "value": "+0.617% / +1.417%",
+      "passed": true
+    },
+    {
+      "number": 9,
+      "criterion": "Expectancy above 0 in each third of the span",
+      "value": "+0.833% / +0.615% / +1.663%",
+      "passed": true
+    },
+    {
+      "number": 11,
+      "criterion": "Cluster-robust t-statistic (signal weeks as clusters) at least 2.0",
+      "value": "3.01",
+      "passed": true
+    },
+    {
+      "number": 12,
+      "criterion": "Raw random-baseline p below 0.05/20 = 0.0025 (20 hypotheses tested)",
+      "value": "0.6975",
+      "passed": false
+    }
+  ],
+  "stats": {
+    "evaluation_span": "2013-07-01 to 2026-10-08",
+    "holdout_trades": 141,
+    "holdout_win_rate": 0.7021276595744681,
+    "holdout_mean_net": 0.009969876785095075,
+    "holdout_sd_net": 0.039332120617820134,
+    "holdout_profit_factor": 1.9439959815889538,
+    "holdout_t": 3.0098994321246924,
+    "holdout_t_clustered": 3.009899432124693,
+    "p_random_raw": 0.6975,
+    "p_random_holm": 1.0,
+    "round_trip_cost": 0.00042780000000000004
+  },
+  "preregistration_sha256": "31537d73fbb83c10319f1e8da78c7143a918d97abc991857a9718333279e239b"
+}

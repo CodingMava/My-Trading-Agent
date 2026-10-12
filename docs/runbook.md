@@ -117,8 +117,11 @@ Kill switch log (date, why it engaged, what changed before it was released):
 - **December:** add NSE's next-year holidays to `config/market_calendars.toml` when NSE publishes them,
   and NSE's Muhurat session when it is announced. Without the next year, nothing trades from 1 January.
   NYSE's holidays are in through 2028.
-- **January 2027:** look at the near-misses H11 and H12 on the months since their data ended (README,
-  "Research status"). It is a check, not a reason to trade them.
+- **Each January from 2027:** run `python -m trader.research.forward1` (forward test 1: H11 and H12 on
+  sessions after 13 Oct 2026) and commit its status. January 2027's look only reports; from January
+  2028 to 2036 each January look applies the decisions pinned in
+  `docs/research/forward1-preregistration.md`. If it stops on a daily move above 20%, find out what
+  happened and classify it in `forward1.CLASSIFIED_MOVES` before running it again.
 - **Yearly:** research evidence expires after 365 days; the health check warns 30 days before.
 - **After 31 March, once live:** `python -m trader.execution.records live <year>` writes the year's
   round trips (intraday, short- and long-term) to `state/reports/`. Check them against Zerodha's tax P&L
