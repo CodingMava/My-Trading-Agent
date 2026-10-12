@@ -11,7 +11,7 @@ from trader.execution.store import PaperStore
 from trader.gate import Evidence, save_evidence
 from trader.markets.calendar import load_calendars
 from trader.ops.health import ALERT, INFO, OK, WARN, backup_check, calendar_checks, data_checks, dry_run_check, \
-    health_checks, live_checks, run_checks, safety_checks, strategy_checks, unattended_record
+    health_checks, integrity_check, live_checks, run_checks, safety_checks, strategy_checks, unattended_record
 from trader.registry import StrategyRecord, StrategyRegistry
 from trader.risk.killswitch import KillSwitch
 
@@ -146,3 +146,17 @@ def test_the_live_account_is_watched(tmp_path):
     everything = health_checks(None, NSE, StrategyRegistry([]), KillSwitch(tmp_path / "KILL"), settings, EVENING,
                                session_file=no_login, live_store=store)
     assert everything[0].name == "live unknown orders"  # worst first
+
+
+
+def test_damaged_records_or_backups_are_caught(tmp_path):
+    assert integrity_check(None, None, tmp_path) == []  # no records yet
+    store, live = store_with(tmp_path, [date(2026, 8, 17)]), LiveStore(tmp_path / "live.db")
+    backup = store.backup(tmp_path / "backups", date(2026, 8, 17))
+    check = integrity_check(store, live, tmp_path / "backups")[0]
+    assert check.level == OK and check.detail == "paper records, live records, backup paper-2026-08-17.db intact"
+    assert integrity_check(store, None, None)[0].detail == "paper records intact"
+    with open(backup, "r+b") as damaged:  # overwrite the file's header
+        damaged.write(b"not a database file at all")
+    check = integrity_check(store, live, tmp_path / "backups")[0]
+    assert check.level == ALERT and "backup paper-2026-08-17.db (file is not a database)" in check.detail

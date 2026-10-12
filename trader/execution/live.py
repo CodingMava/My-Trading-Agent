@@ -237,12 +237,15 @@ def track(paper: PaperStore, store: LiveStore) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["session", "symbol", "side", "live quantity", "live price", "paper price", "slippage"])
 
 
-def check(kite: KiteOrders, store: LiveStore | None = None, symbol: str = "NIFTYBEES") -> tuple[list[str], list[str]]:
+def check(kite: KiteOrders, store: LiveStore | None = None, symbol: str = "NIFTYBEES",
+          detail: bool = True) -> tuple[list[str], list[str]]:
     """Read-only: the account as Kite reports it, and whether each answer has the fields the order system
-    relies on. It places, changes and deletes nothing. Returns (what it saw, problems)."""
+    relies on. It places, changes and deletes nothing. Returns (what it saw, problems). Without `detail`, what
+    it saw is counts only: no funds and no holdings (for Telegram)."""
     seen, problems = [], []
     equity = kite.margins().get("equity", {})
-    seen.append(f"Equity funds available: Rs {float(equity.get('net', 0)):,.2f}")
+    if detail:
+        seen.append(f"Equity funds available: Rs {float(equity.get('net', 0)):,.2f}")
     holdings, positions = kite.holdings(), kite.positions()
     if not {"net", "day"} <= set(positions):
         problems.append("positions: the answer lacks the 'net' and 'day' lists")
@@ -255,7 +258,7 @@ def check(kite: KiteOrders, store: LiveStore | None = None, symbol: str = "NIFTY
     legs = [g["orders"][0] for g in gtts if g.get("orders")]
     if any("trigger_values" not in g.get("condition", {}) for g in gtts) or any("quantity" not in leg for leg in legs):
         problems.append("GTTs: a trigger without its trigger values or its order's quantity")
-    for h in holdings:
+    for h in holdings if detail else []:
         exchange, symbol_held = h.get("exchange", "NSE"), h.get("tradingsymbol")
         seen.append(f"  {exchange}:{symbol_held}: {h.get('quantity', 0)} settled + {h.get('t1_quantity', 0)} T+1 - "
                     f"{h.get('used_quantity', 0)} sold today = {held_quantity(holdings, positions, symbol_held, exchange)} held")
@@ -290,7 +293,9 @@ def main(argv: list[str] | None = None) -> None:
     paper_db, live_db = ROOT / settings.paper_database, ROOT / settings.live_database
     if not paper_db.exists():
         raise SystemExit("No paper records yet: the daily run creates them.")
-    live = Live(settings, PaperStore(paper_db, settings.paper_starting_capital), LiveStore(live_db),
+    # Looking (status, check, track) leaves no live records behind; only a job that may send creates them.
+    store = LiveStore(live_db if live_db.exists() or args.job in JOBS else ":memory:")
+    live = Live(settings, PaperStore(paper_db, settings.paper_starting_capital), store,
                 StrategyRegistry.load(), KillSwitch(), load_calendars()["NSE"], notifier_from_settings(settings),
                 connect=lambda: from_session(settings))
     if args.job == "status":

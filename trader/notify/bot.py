@@ -24,8 +24,10 @@ from zoneinfo import ZoneInfo
 import requests
 
 from trader.config import ROOT, load_settings
-from trader.data.kite import (LOGIN_URL, SESSION_FILE, KiteError, create_session, load_session, request_token_from,
-                              save_session, session_secrets)
+from trader.data.kite import (LOGIN_URL, SESSION_FILE, KiteAuthError, KiteError, create_session, load_session,
+                              request_token_from, save_session, session_secrets)
+from trader.execution.kite_orders import from_session
+from trader.execution.live import check as live_check
 from trader.execution.store import PaperStore
 from trader.gate import load_gate_config
 from trader.logging_setup import configure_logging
@@ -48,7 +50,8 @@ HELP = ("<b>Commands</b>\n\n"
         "/positions: open positions\n"
         "/trades: the latest closed trades\n"
         "/kill reason: stop all new trades (open positions still exit as planned)\n"
-        "/login: log in to Kite for today (live trading needs it before 09:15)\n\n"
+        "/login: log in to Kite for today (live trading needs it before 09:15)\n"
+        "/kitecheck: check the Kite connection, read-only (after /login)\n\n"
         "Releasing the kill switch, changing a limit or trading is only possible on the PC.")
 
 
@@ -166,6 +169,23 @@ def kite_login(settings, argument: str, session_file: Path = SESSION_FILE, http=
     return escape(f"Logged in to Kite as {session.user_id} until {session.expires_at:%d %b %H:%M} IST.")
 
 
+def kite_check_text(settings, connect: Callable[[], object] | None = None) -> str:
+    """/kitecheck: python -m trader.execution.live check, from the phone. Counts and a verdict only: no funds
+    or holdings pass through Telegram."""
+    try:
+        seen, problems = live_check((connect or (lambda: from_session(settings)))(), open_live_store(settings),
+                                    detail=False)
+    except KiteAuthError as exc:
+        return f"Log in first: send /login. ({escape(str(exc))})"
+    except KiteError as exc:
+        return f"Kite check failed: {escape(str(exc))}"
+    except requests.RequestException as exc:  # its text could hold the request: name the type only
+        return f"Kite check failed: couldn't reach Kite ({type(exc).__name__})."
+    verdict = ("\n".join(f"PROBLEM: {p}" for p in problems) or "Every field the order system relies on is there, "
+               "and the account holds every share the system believes it holds.")
+    return "<b>Kite check (read-only)</b>\n\n" + escape("\n".join(seen) + "\n\n" + verdict)
+
+
 def login_reminder(settings, calendar, now: datetime, session_file: Path = SESSION_FILE) -> str | None:
     """While live trading is on: a trading morning between 08:30 and 09:15 without today's Kite login."""
     if (not settings.live_enabled or not calendar.is_trading_day(now.date())
@@ -179,17 +199,19 @@ class CommandBot:
     """Long-polls Telegram for messages and answers the commands from the configured chat."""
 
     def __init__(self, token: str, chat_id: str, notifier, context, http=requests, sleep=time.sleep,
-                 login: Callable[[str], str] | None = None, reminder: Callable[[], str | None] | None = None):
+                 direct: dict[str, Callable[[str], str]] | None = None,
+                 reminder: Callable[[], str | None] | None = None):
         self._token, self.chat_id = token, str(chat_id)
         self._url = f"https://api.telegram.org/bot{token}/getUpdates"  # contains the token: never log it
         self.notifier, self.context, self.http, self.sleep = notifier, context, http, sleep
-        self.login, self.reminder = login, reminder
+        self.direct, self.reminder = direct or {}, reminder  # direct: commands that need no paper records
         self.offset, self.reminded = None, None
 
     def answer(self, text: str) -> str:
         command, _, argument = text.strip().partition(" ")
-        if command.split("@")[0].lower() == "/login" and self.login is not None:
-            return self.login(argument.strip())  # needs no records, and its address is never logged
+        handler = self.direct.get(command.split("@")[0].lower())
+        if handler is not None:
+            return handler(argument.strip())  # needs no records, and what it is given is never logged
         try:
             ctx = self.context()
         except Exception as exc:  # e.g. the database is busy: say so rather than stay silent
@@ -256,7 +278,8 @@ def main() -> None:
     calendar = load_calendars()["NSE"]
     bot = CommandBot(settings.telegram_bot_token.reveal(), settings.telegram_chat_id,
                      notifier_from_settings(settings), lambda: load_context(settings, KillSwitch()),
-                     login=lambda argument: kite_login(settings, argument),
+                     direct={"/login": lambda argument: kite_login(settings, argument),
+                             "/kitecheck": lambda argument: kite_check_text(settings)},
                      reminder=lambda: login_reminder(settings, calendar, datetime.now(IST)))
     bot.run()
 

@@ -248,7 +248,8 @@ whenever it changes.
 
 From your Telegram chat with the bot: `/status` (health, mode, equity, positions), `/positions`,
 `/trades` (the latest closed trades), `/kill reason`, which stops all new trades at once while open
-positions still exit as planned, and `/login`, Kite's daily login from your phone: it sends the link,
+positions still exit as planned, `/kitecheck` (the read-only Kite check: counts and a verdict, no money
+figures), and `/login`, Kite's daily login from your phone: it sends the link,
 you log in and send back the address Kite returns to, and the PC makes the session (the API secret and
 the access token never pass through Telegram). Only your chat (`TELEGRAM_CHAT_ID`) is answered. No
 command can release the kill switch, change a limit or place an order; releasing is only possible on

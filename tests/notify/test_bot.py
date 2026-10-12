@@ -7,10 +7,12 @@ import requests
 
 from trader.config import load_settings
 from trader.core.models import Position
-from trader.data.kite import KiteSession, load_session, save_session
+from trader.data.kite import KiteAuthError, KiteError, KiteSession, load_session, save_session
+from trader.execution.kite_orders import KiteOrders
 from trader.execution.store import PaperStore
 from trader.markets.calendar import load_calendars
-from trader.notify.bot import HELP, CommandBot, Context, kite_login, login_reminder, reply_to
+from trader.notify import bot as bot_module
+from trader.notify.bot import HELP, CommandBot, Context, kite_check_text, kite_login, login_reminder, reply_to
 from trader.ops.health import ALERT, OK, Health
 from trader.registry import StrategyRecord, StrategyRegistry
 from trader.risk.killswitch import KillSwitch
@@ -156,7 +158,8 @@ def test_login_is_answered_even_when_the_records_cant_be_read(tmp_path):
     def unreadable():
         raise RuntimeError("database is locked")
     telegram = FakeTelegram({"ok": True, "result": [message(1, CHAT, "/login https://x/?status=success&request_token=t")]})
-    bot = CommandBot("TOKEN", CHAT, inbox, unreadable, http=telegram, login=lambda argument: f"login with {argument}")
+    bot = CommandBot("TOKEN", CHAT, inbox, unreadable, http=telegram,
+                     direct={"/login": lambda argument: f"login with {argument}"})
     assert bot.poll_once() == 1 and inbox.sent == ["login with https://x/?status=success&request_token=t"]
 
 
@@ -179,3 +182,28 @@ def test_a_live_trading_morning_without_a_login_gets_one_reminder(tmp_path):
     quiet = CommandBot("TOKEN", CHAT, inbox, lambda: None, reminder=lambda: None)
     quiet.remind(date(2026, 10, 14))
     assert len(inbox.sent) == 2
+
+
+
+def test_the_kite_check_from_the_phone_sends_counts_and_a_verdict_only(monkeypatch):
+    from tests.execution.fake_kite import FakeKite
+    monkeypatch.setattr(bot_module, "open_live_store", lambda settings: None)  # not the real state/
+    kite = FakeKite()
+    kite.holdings = [{"tradingsymbol": "INFY", "exchange": "NSE", "quantity": 10, "t1_quantity": 0, "used_quantity": 0}]
+    kite.prices = {"NIFTYBEES": 254.66}
+    settings = load_settings(env={})
+    text = kite_check_text(settings, connect=lambda: KiteOrders("key", "AT", http=kite, sleep=lambda seconds: None))
+    assert text.startswith("<b>Kite check (read-only)</b>") and "holdings: 1" in text and "NIFTYBEES last price: 254.66" in text
+    assert "Every field the order system relies on is there" in text
+    assert "INFY" not in text and "funds" not in text  # nothing about the money goes through Telegram
+
+    def fails(error):
+        def connect():
+            raise error
+        return connect
+    no_login = KiteAuthError("no valid Kite session today (run: python -m trader.data.kite login)")
+    assert kite_check_text(settings, fails(no_login)).startswith("Log in first: send /login.")
+    assert "Kite check failed: PermissionException" in kite_check_text(settings, fails(KiteError("PermissionException")))
+    offline = kite_check_text(settings, fails(requests.ConnectionError("https://api.kite.trade/portfolio/holdings")))
+    assert offline == "Kite check failed: couldn't reach Kite (ConnectionError)."
+    assert "/kitecheck" in HELP

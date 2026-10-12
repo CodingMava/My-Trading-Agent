@@ -9,6 +9,7 @@ when the run didn't happen at all, which the run itself can never report.
 from __future__ import annotations
 
 import argparse
+import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -182,6 +183,40 @@ def live_checks(settings, store: LiveStore | None, now: datetime, session_file: 
     return checks or [Health("live trading", INFO, "off: no real order has been sent; Indian orders are a dry run")]
 
 
+def _quick_check(conn: sqlite3.Connection) -> str:
+    try:
+        rows = [row[0] for row in conn.execute("PRAGMA quick_check").fetchall()]
+    except sqlite3.DatabaseError as exc:  # e.g. "file is not a database"
+        return str(exc)
+    return "ok" if rows == ["ok"] else "; ".join(rows[:3])
+
+
+def _quick_check_file(path: Path) -> str:
+    conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)  # read-only: a check must not change it
+    try:
+        return _quick_check(conn)
+    finally:
+        conn.close()
+
+
+def integrity_check(store: PaperStore | None, live_store: LiveStore | None, backup_dir: Path | None) -> list[Health]:
+    """SQLite's own check that the records and the newest backup are intact. The folder they live in is synced
+    by OneDrive; damage caught the same day can be undone from a backup taken before it."""
+    if store is None:
+        return []
+    found = {"paper records": _quick_check(store.conn)}
+    if live_store is not None:
+        found["live records"] = _quick_check(live_store.conn)
+    copies = sorted(Path(backup_dir).glob("paper-*.db")) if backup_dir is not None else []
+    if copies:
+        found[f"backup {copies[-1].name}"] = _quick_check_file(copies[-1])
+    damaged = [f"{name} ({result})" for name, result in found.items() if result != "ok"]
+    if damaged:
+        return [Health("integrity", ALERT, "damaged: " + "; ".join(damaged) + ". Stop the daily run and restore "
+                       "an intact backup (docs/runbook.md, Backups and restoring)")]
+    return [Health("integrity", OK, ", ".join(found) + " intact")]
+
+
 def backup_check(store: PaperStore | None, backup_dir: Path | None, today: date) -> list[Health]:
     """The daily run copies the records to <database folder>/backups after every run that didn't fail."""
     if store is None or backup_dir is None:
@@ -241,6 +276,7 @@ def health_checks(store: PaperStore | None, calendar: MarketCalendar, registry: 
     """Every check, worst first. `store` is None before the first daily run."""
     checks = [*run_checks(store, calendar, now), *safety_checks(store, kill_switch), unattended_record(store, now),
               dry_run_check(store, now.date()), *backup_check(store, backup_dir, now.date()),
+              *integrity_check(store, live_store, backup_dir),
               *strategy_checks(registry, now.date(), max_age_days, evidence_dir), calendar_checks(calendar, now.date()),
               data_checks(settings, now, session_file), *live_checks(settings, live_store, now, session_file)]
     order = (ALERT, WARN, INFO, OK)

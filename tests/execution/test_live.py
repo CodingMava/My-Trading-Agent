@@ -245,6 +245,7 @@ def test_the_command_line(tmp_path, monkeypatch, capsys):
     assert "Live trading: LOCKED" in capsys.readouterr().out  # the repository's settings: off
     live_jobs.main(["track"])
     assert "live price" in capsys.readouterr().out
+    assert not (tmp_path / "state" / "live.db").exists()  # looking leaves no live records behind
     with pytest.raises(SystemExit) as stopped:
         live_jobs.main(["evening"])
     assert stopped.value.code == 0
@@ -296,6 +297,8 @@ def test_the_read_only_check_holds_kites_answers_to_what_the_code_relies_on(tmp_
     assert problems == [] and "Equity funds available: Rs 100,000.00" in seen
     assert "  NSE:INFY: 10 settled + 5 T+1 - 0 sold today = 15 held" in seen and "NIFTYBEES last price: 285.5" in seen
     assert [call for call in kite.calls if call[0] != "GET"] == writes_before  # it wrote nothing
+    counts, _ = check(api, detail=False)  # for Telegram: no funds, no holdings
+    assert not any("funds" in line or "INFY" in line for line in counts) and "holdings: 1" in counts
     del kite.holdings[0]["t1_quantity"]
     kite.positions = {"net": []}
     kite.gtts[next(iter(kite.gtts))]["condition"].pop("trigger_values")

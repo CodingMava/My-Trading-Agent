@@ -27,6 +27,7 @@ Every alert is a `RISK ALERT` on Telegram with one of these titles.
 | Market data missing | More than 20% of the instruments (counting the market check, NIFTYBEES, fetched on every run even when nothing trades) had no price yet for a session, so the run stopped before that session rather than record a day it couldn't see. | Usually the provider is late: do nothing, the next run retries. If that day was a market holiday missing from `config/market_calendars.toml`, add it. |
 | Health check | Something the run can't report itself: the 18:00 run didn't happen or didn't finish, the last run failed or stopped early, the kill switch is on, messages are stuck, or the records don't reconcile. The alert lists which. | For a missed run: was the PC off, asleep or logged out? Check Task Scheduler for "Trading agent - daily run" (if its Conditions tab says "Start the task only if the computer is on AC power", or its last result is 0xC000013A, meaning its console window was closed, run `scripts\register_tasks.ps1` again: the tasks then run without a window and on battery), then run it by hand. For anything else, see its row here. |
 | Kill switch | The account fell 10% from its peak, or reconciliation failed. No new trades until a person releases it; exits keep running. | Find out why first. Release only once the cause is understood and written down (see the loss plan): `python -m trader.risk.killswitch release`. |
+| Health check: integrity | SQLite found the paper records, the live records or the newest backup damaged (the folder is synced by OneDrive, which occasionally interferes with open database files). | Disable "Trading agent - daily run" in Task Scheduler and restore the newest intact backup (Backups and restoring below). A damaged backup on its own: delete it; the next run makes a fresh one. |
 | Reconciliation failed | Cash or holdings no longer match the recorded fills: a bug or a damaged database. The kill switch engages automatically. | Don't release the kill switch. Compare the records with the latest backup and restore it if they are damaged (see Backups). Treat it as a bug to fix before anything trades again. |
 | Daily loss limit | Today's loss reached 2% of equity, so no new entries today. | Nothing: it resets with the next session. |
 | Strategy suspended | Its paper results drifted from its research: over its last 50 trades it won clearly less often or lost money on average, or it fell 20R from its best. | Review its trades against its research with `python -m trader.execution.report`. It stays suspended; putting it back needs new evidence, not a config edit. |
@@ -118,9 +119,10 @@ is built and locked. Before it sends anything for real:
   orders from a server that has one.
 - **A DDPI with Zerodha:** without it, every sale of shares from the demat account needs a TPIN
   approval by hand, which an unattended system can't give.
-- **A connection check:** after `python -m trader.data.kite login`, `python -m trader.execution.live check`
-  shows the account as Kite reports it and confirms every field the order system relies on is there. It
-  is read-only. Run it once before going live, and again whenever Kite changes its API.
+- **A connection check:** after a login, `python -m trader.execution.live check` shows the account as Kite
+  reports it and confirms every field the order system relies on is there. It is read-only. From the
+  phone, `/login` then `/kitecheck` runs the same check and replies with counts and the verdict (no funds
+  or holdings through Telegram). Run it once before going live, and again whenever Kite changes its API.
 - **A Kite login every trading day before 09:15:** sessions expire at 06:00 IST, and the live jobs run at
   09:20, 15:15 and 18:30. Send `/login` to the bot from your phone (or run `python -m trader.data.kite
   login` on the PC). While live trading is on, the bot reminds you at 08:30 on a trading day without a
