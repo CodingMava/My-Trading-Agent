@@ -12,7 +12,7 @@ timezone = "Asia/Kolkata"
 open = "09:15"
 close = "15:30"
 years = [2026]
-source = "NSE trading holidays 2026 (circular NSE/FAOP/71777, 12 Dec 2025) plus the one-off 15 Jan 2026 closure; dates up to 8 Oct 2026 checked against NIFTY 50 trading days."
+source = "NSE trading holidays 2026 (circular NSE/FAOP/71777, 12 Dec 2025) plus the one-off 15 Jan 2026 closure; dates up to 8 Oct 2026 checked against NIFTY 50 trading days. The Sunday 1 Feb 2026 Budget session, missing from Yahoo's data (so that check missed it), was added on 13 Oct 2026 from Kite's minute bars and NSE's notice."
 
 [NSE.holidays]
 # Weekday closures only. Weekend holidays in 2026 (no effect on trading): 15 Feb Mahashivratri,
@@ -35,6 +35,7 @@ source = "NSE trading holidays 2026 (circular NSE/FAOP/71777, 12 Dec 2025) plus 
 "2026-12-25" = "Christmas"
 
 [NSE.special_sessions]
+"2026-02-01" = ["09:15", "15:30"]  # Union Budget day, a Sunday: a full live session
 # Muhurat trading on Sunday 8 Nov 2026: add it here once NSE announces the session's hours.
 
 [NYSE]

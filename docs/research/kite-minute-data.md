@@ -53,8 +53,31 @@ Nothing was bought, saved or traded.
   limited drawdown, better than random entries, out of sample, and corrected for the twenty hypotheses
   already tested.
 
+## The frozen dataset (13 Oct 2026)
+
+`data/kite_minute/nifty_1m` (git-ignored: Kite's data is for this account's own use), with checksums and a
+validation report in its manifest. 1-minute bars of NIFTYBEES and the NIFTY 50 index (^NSEI), 1 Jan 2020
+to 12 Oct 2026: 628,692 and 628,721 bars on the same 1,684 sessions, no duplicate timestamps, no
+validation errors. Only completeness and data errors were examined: no returns, signals or patterns, which
+belong after a pre-registration.
+
+- **Complete:** 96-100% of each year's sessions have all 375 minutes; the rest are a few special sessions
+  (Muhurat trading, about an hour in the evening) and short days.
+- **NIFTYBEES' opening prints are unreliable in 2020-2022:** 117 of its 118 bar-to-bar jumps above 5% are
+  at the 09:15 bar, and 115 of those snap back the next minute (5 Mar 2020: a 119.40 close, then a
+  142.95 "open" in a bar that closed at 120.30). None since 2023. A test must never fill at the 09:15
+  bar's open. NIFTYBEES also had 541 minutes without a trade in 2020, almost none since.
+- **The index:** no volume, by nature. Its few moves above 5% in a minute are all genuine: the March
+  2020 crash (opening gaps, and the rebound after the 13 Mar circuit-breaker halt) and the 7 Apr 2025
+  opening gap. Since NSE's closing auction began on 3 Aug 2026, 686 of its 735 bars from 15:15
+  are flat: its stocks stop trading continuously at 15:15, so the index only moves again at the auction.
+  NIFTYBEES (not an F&O instrument) trades normally to 15:29.
+- **Loading it:** the research loaders' filter for Yahoo's holiday placeholders (flat bars with no
+  volume) would drop 539 real NIFTYBEES minutes and 828 index minutes. Don't apply it to minute data.
+- **The Budget-day session of Sunday 1 Feb 2026** is in Kite's bars but missing from Yahoo's, and was
+  missing from `config/market_calendars.toml` too; it has been added there as a special session.
+
 ## Next step (to approve first)
 
-Freeze a minute-data set that avoids survivorship (for example NIFTYBEES and the NIFTY 50 index from 2020),
-check it, and only then pre-register an intraday round: rules, costs and criteria pinned before any rule
-runs on the data.
+Pre-register an intraday round on this frozen dataset: rules, costs and criteria pinned before any rule
+runs on the data, with the realistic execution above and the project's standards.
