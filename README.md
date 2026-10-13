@@ -151,6 +151,19 @@ that trades once a month needs years of new data to prove itself, so this test c
 stopped working long before it can show one still works: nothing from it is expected to trade before
 2030.
 
+New data: Kite's minute history comes with this account's plan at no extra cost, from February 2015 and
+adjusted for corporate actions. Its limits matter as much: delisted stocks are missing (survivorship), and
+since 3 Aug 2026 NSE closes F&O stocks with an auction from 15:15. What it allows, and what an honest
+intraday test needs, is in [docs/research/kite-minute-data.md](docs/research/kite-minute-data.md).
+
+The standards, confirmed on 13 Oct 2026 before any new data was looked at, and not to be relaxed after
+seeing results: a strategy must show at least a 50% win rate, positive expectancy after all trading costs
+(also at 1.5x costs), an acceptable drawdown, and robust out-of-sample performance, better than random
+entries after correcting for every hypothesis tested. A 50% win rate alone is not enough. If nothing
+passes, the system stays in NO TRADE. From the next pre-registered round, the drawdown is an explicit
+criterion: no deeper than 20R in the backtest, the point where the decay rule disables a strategy (at 0.5%
+risk per trade, the kill switch's 10%).
+
 ## Project layout
 
 | Path | What it is |
@@ -301,7 +314,7 @@ whenever it changes.
 | Task | When | Runs |
 |---|---|---|
 | Daily run | 18:00 IST every day; if the PC was off then, as soon as it is back | `python -m trader.execution.eod` (India's account, then the US one) |
-| Health check | 21:00 IST every day | `python -m trader.ops.health --notify` |
+| Health check | 21:00 IST every day; if the PC was asleep or off then, as soon as it is back, after giving a catch-up daily run 10 minutes | `python -m trader.ops.health --notify --scheduled` |
 | Telegram commands | Always, from logon (no console window; restarted if it stops) | `python -m trader.notify.bot` |
 | News | Every 15 minutes, 07:00 to midnight | `python -m trader.research.news collect` |
 

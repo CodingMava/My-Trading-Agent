@@ -358,6 +358,10 @@ def main(argv: list[str] | None = None) -> None:
         failed = collect(store, now=now)
         for problem in failed:
             log.warning("News fetch failed: %s", problem)
+        fetches = store.table("fetches")  # a trace of every run, even a quiet one
+        done = [f"{r.feed} {r.items} item(s), {r.added} new" + (f", failed ({r.error})" if r.error else "")
+                for r in fetches[fetches["at"] == now.isoformat()].itertuples()]
+        log.info("Collected: %s", "; ".join(done) or "nothing")
         raise SystemExit(1 if failed else 0)
     if args.command == "tag-ai":
         if not settings.ai_enabled:

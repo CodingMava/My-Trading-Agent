@@ -9,9 +9,9 @@ interpreting under pressure.
 | When | What | Where to look |
 |---|---|---|
 | 18:00 IST daily (Task Scheduler, "Trading agent - daily run") | `python -m trader.execution.eod` processes every completed NSE session not yet processed, then the US paper account's (the US session that closed early that morning), sends `[PAPER]` Telegram messages, records the runs and backs up the records | `logs/trader.log` |
-| 21:00 IST daily ("Trading agent - health check") | `python -m trader.ops.health --notify` alerts you when anything below needs attention | `logs/health.log` |
+| 21:00 IST daily ("Trading agent - health check"); if the PC was asleep or off at 21:00, when it is back (after giving a catch-up daily run 10 minutes) | `python -m trader.ops.health --notify --scheduled` alerts you when anything below needs attention, and leaves one line per run in its log | `logs/health.log` |
 | Always, from logon ("Trading agent - Telegram commands") | `python -m trader.notify.bot` answers `/status`, `/positions`, `/trades` (both accounts), `/kill reason`, `/kitecheck` and `/login` from your chat only | `logs/bot.log` |
-| Every 15 minutes, 07:00 to midnight ("Trading agent - news") | `python -m trader.research.news collect` stores NSE's announcements for research; no trading code reads them | `logs/news.log` |
+| Every 15 minutes, 07:00 to midnight ("Trading agent - news") | `python -m trader.research.news collect` stores NSE's announcements for research (no trading code reads them) and leaves one line per run in its log | `logs/news.log` |
 | Any time | `streamlit run dashboard.py` (read-only) or `python -m trader.ops.health` | |
 
 No real order is ever placed: the system paper trades, and today it is in NO TRADE because no strategy has
@@ -146,6 +146,11 @@ is built and locked. Before it sends anything for real:
   reports it and confirms every field the order system relies on is there. It is read-only. From the
   phone, `/login` then `/kitecheck` runs the same check and replies with counts and the verdict (no funds
   or holdings through Telegram). Run it once before going live, and again whenever Kite changes its API.
+- **NSE's closing auction:** since 3 Aug 2026 continuous trading in F&O stocks (every NIFTY 50 stock)
+  ends at 15:15, and their closing price is set by an auction from 15:15 to 15:35. The pre-close job's
+  15:15 time exits were designed before it. Decide how a time exit meets the auction (a sale before
+  15:15, or an order into the auction, whichever Kite supports), change the job and its dry run, and test
+  them before any real order ([docs/research/kite-minute-data.md](research/kite-minute-data.md)).
 - **A Kite login every trading day before 09:15:** sessions expire at 06:00 IST, and the live jobs run at
   09:20, 15:15 and 18:30. Send `/login` to the bot from your phone (or run `python -m trader.data.kite
   login` on the PC). While live trading is on, the bot reminds you at 08:30 on a trading day without a

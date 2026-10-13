@@ -1,4 +1,4 @@
-# Registers the three Windows scheduled tasks that run the trading agent unattended. Review it, then run it
+# Registers the four Windows scheduled tasks that run the trading agent unattended. Review it, then run it
 # once from the project folder in PowerShell:
 #   powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1
 # The times are this PC's local time, which must be India time (IST). The tasks run while you are logged
@@ -27,13 +27,14 @@ Register-ScheduledTask -TaskName "Trading agent - daily run" -Force `
     -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.execution.eod" -WorkingDirectory $root) `
     -Trigger (New-ScheduledTaskTrigger -Daily -At "18:00") -Settings $runSettings | Out-Null
 
-# 21:00 every day: a Telegram alert if the run didn't happen, failed or halted. It deliberately doesn't
-# start late after the PC was off, so it can't raise a false alarm before the catch-up run has finished.
-$healthSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 15) `
-    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+# 21:00 every day: a Telegram alert if the run didn't happen, failed or halted. If the PC was asleep or off
+# at 21:00, it runs as soon as the PC is back, but first gives the daily run's own catch-up 10 minutes to
+# finish (--scheduled), so it can't raise a false alarm while that run is still to come.
+$healthSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName "Trading agent - health check" -Force `
     -Description "Alerts on silence (python -m trader.ops.health --notify)." `
-    -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.ops.health --notify" -WorkingDirectory $root) `
+    -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.ops.health --notify --scheduled" -WorkingDirectory $root) `
     -Trigger (New-ScheduledTaskTrigger -Daily -At "21:00") -Settings $healthSettings | Out-Null
 
 # Always on, from logon: answers your Telegram commands (/status, /positions, /trades, /kill, /login). It

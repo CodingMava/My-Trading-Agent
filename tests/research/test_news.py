@@ -1,6 +1,7 @@
 """The news layer against a fake NSE (no network): collection with visible gaps, rule tags, AI tags that must
 match a fixed shape, and no path from the news to any trading code."""
 import ast
+import logging
 import sqlite3
 from dataclasses import replace
 from datetime import date, datetime
@@ -196,3 +197,23 @@ def test_the_command(tmp_path, monkeypatch, capsys):
     with pytest.raises(SystemExit, match="AI tagging is off"):
         news.main(["tag-ai"])
     assert Path(news.__file__).name == "news.py"
+
+
+
+def test_each_collection_leaves_a_line_in_the_log(tmp_path, monkeypatch, caplog):
+    monkeypatch.setattr(news, "ROOT", tmp_path)
+    monkeypatch.setattr(news, "configure_logging", lambda **kwargs: None)  # not into the real logs/
+    monkeypatch.setattr(news, "load_settings", lambda: replace(load_settings(env={}), news_enabled=True))
+
+    def fake_collect(store, now):
+        store.record_fetch("announcements", now, [], 0, None)
+        store.record_fetch("corporate actions", now, [], 0, None, "HTTPError")
+        return []
+
+    monkeypatch.setattr(news, "collect", fake_collect)
+    caplog.set_level(logging.INFO, logger=news.__name__)
+    with pytest.raises(SystemExit) as done:
+        news.main(["collect"])
+    assert done.value.code == 0
+    assert ("Collected: announcements 0 item(s), 0 new; corporate actions 0 item(s), 0 new, failed (HTTPError)"
+            in caplog.text)

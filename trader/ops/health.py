@@ -9,11 +9,13 @@ when the run didn't happen at all, which the run itself can never report.
 from __future__ import annotations
 
 import argparse
+import logging
 import re
 import sqlite3
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
+from time import sleep as _sleep
 from zoneinfo import ZoneInfo
 
 from trader.config import ROOT, load_settings
@@ -30,10 +32,14 @@ from trader.notify.telegram import notifier_from_settings
 from trader.registry import StrategyRegistry
 from trader.risk.killswitch import KillSwitch
 
+log = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 OK, INFO, WARN, ALERT = "ok", "info", "warn", "alert"
 RUN_AT = time(18, 0)  # IST: when the daily run starts (scripts/register_tasks.ps1)
 RUN_DEADLINE = timedelta(hours=2)  # ... and it should be done by this long after that
+HEALTH_AT = time(21, 0)  # IST: when the scheduled check runs
+LATE_AFTER = timedelta(minutes=5)  # a scheduled check starting this late was missed while the PC slept or was off
+CATCH_UP_WAIT = timedelta(minutes=10)  # ... so it first gives the daily run's own catch-up time to finish
 RUN_TIMEOUT = timedelta(hours=2)  # a run still marked running after this long died without finishing
 EVIDENCE_NOTICE = timedelta(days=30)
 BACKUP_MAX_AGE = timedelta(days=3)
@@ -255,6 +261,19 @@ def integrity_check(store: PaperStore | None, live_store: LiveStore | None, back
 
 
 NEWS_STALE = timedelta(hours=2)  # collection runs every 15 minutes from 07:00
+NEWS_PAUSE = (time(0, 0), time(7, 0))  # IST: no collection overnight, so these hours don't count
+
+
+def collection_time(since: datetime, until: datetime) -> timedelta:
+    """The time between two moments, leaving out the nightly pause in news collection."""
+    elapsed, day = until - since, since.astimezone(IST).date()
+    while day <= until.astimezone(IST).date():
+        pause = [datetime.combine(day, moment, IST) for moment in NEWS_PAUSE]
+        overlap = min(until, pause[1]) - max(since, pause[0])
+        if overlap > timedelta(0):
+            elapsed -= overlap
+        day += timedelta(days=1)
+    return elapsed
 
 
 def news_check(settings, now: datetime) -> list[Health]:
@@ -270,7 +289,7 @@ def news_check(settings, now: datetime) -> list[Health]:
                                    ((now - timedelta(days=7)).isoformat(),)).fetchone()[0]
     finally:
         conn.close()
-    if last is None or now - datetime.fromisoformat(last) > NEWS_STALE:
+    if last is None or collection_time(datetime.fromisoformat(last), now) > NEWS_STALE:
         return [Health("news", WARN, f"no successful fetch since {_when(last) if last else 'it began'}: check "
                        "logs/news.log (NSE may be turning the requests away)")]
     return [Health("news", OK, f"{count} announcements, last fetched {_when(last)}; {recent_gaps} gap(s) in 7 days")]
@@ -344,13 +363,28 @@ def health_checks(store: PaperStore | None, calendar: MarketCalendar, registry: 
     return sorted(checks, key=lambda c: order.index(c.level))
 
 
-def main(argv: list[str] | None = None) -> None:
+def started_late(now: datetime) -> bool:
+    """Is the 21:00 check only starting now, because the PC was asleep or off at 21:00?"""
+    local = now.astimezone(IST)
+    scheduled = datetime.combine(local.date(), HEALTH_AT, IST)
+    if scheduled > local:
+        scheduled -= timedelta(days=1)  # e.g. a laptop that slept from the evening until the morning
+    return local - scheduled > LATE_AFTER
+
+
+def main(argv: list[str] | None = None, sleep=_sleep) -> None:
     parser = argparse.ArgumentParser(description="Health checks for unattended operation.")
     parser.add_argument("--notify", action="store_true", help="send a Telegram alert when something needs attention")
+    parser.add_argument("--scheduled", action="store_true",
+                        help="the 21:00 task: when it starts late, it first gives a catch-up daily run time to finish")
     args = parser.parse_args(argv)
     make_console_utf8()
     settings = load_settings()
     configure_logging(secrets=settings.secret_values() + session_secrets(), filename="health.log")
+    if args.scheduled and started_late(datetime.now(IST)):  # the daily run is catching up at the same time
+        log.info("The 21:00 check is starting late (the PC was asleep or off): waiting %d minutes for the daily "
+                 "run's own catch-up first", CATCH_UP_WAIT.total_seconds() // 60)
+        sleep(CATCH_UP_WAIT.total_seconds())
     database = ROOT / settings.paper_database
     store = PaperStore(database, settings.paper_starting_capital) if database.exists() else None
     now = datetime.now(IST)
@@ -361,7 +395,9 @@ def main(argv: list[str] | None = None) -> None:
     width = max(len(c.name) for c in checks)
     for check in checks:
         print(f"  [{check.level.upper():5s}] {check.name:<{width}}  {check.detail}")
-    alerts = [c for c in checks if c.level == ALERT]
+    alerts, warnings = [c for c in checks if c.level == ALERT], [c for c in checks if c.level == WARN]
+    log.info("%d alert(s), %d warning(s)%s", len(alerts), len(warnings),  # a trace of every run, even a clean one
+             "".join(f"; {c.level} {c.name}: {c.detail}" for c in alerts + warnings))
     if alerts and args.notify:
         notifier_from_settings(settings).send(templates.risk_alert(
             title="Health check", detail="; ".join(f"{c.name}: {c.detail}" for c in alerts)))

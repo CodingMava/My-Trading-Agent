@@ -1,7 +1,10 @@
+import logging
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from dataclasses import replace
+
+import pytest
 
 from trader.config import load_settings
 from trader.core.models import Position
@@ -207,3 +210,36 @@ def test_a_us_session_is_due_from_the_evening_run_after_it_closes(tmp_path):
     december = store_with(tmp_path / "b", [date(2026, 11, 30)], [("ok", 1, winter - timedelta(days=1))])
     assert levels(run_checks(december, nyse, winter))["daily run"] == OK
     assert levels(run_checks(december, nyse, winter + timedelta(hours=1)))["daily run"] == ALERT
+
+
+
+def test_the_nightly_pause_in_news_collection_is_not_a_stall(tmp_path, monkeypatch):
+    from trader.research.news import NewsStore
+    monkeypatch.setattr(health, "ROOT", tmp_path)
+    settings = replace(load_settings(env={}), news_enabled=True)
+    last = datetime(2026, 8, 18, 23, 45, tzinfo=IST)  # the day's last run; none again until 07:00
+    store = NewsStore(tmp_path / settings.news_database)
+    store.record_fetch("announcements", last, [], 0, None)
+    store.close()
+    assert health.collection_time(last, datetime(2026, 8, 19, 9, 0, tzinfo=IST)) == timedelta(hours=2, minutes=15)
+    morning = {at: news_check(settings, datetime(2026, 8, 19, *at, tzinfo=IST))[0].level for at in ((3, 0), (7, 30), (9, 0))}
+    assert morning == {(3, 0): OK, (7, 30): OK, (9, 0): WARN}  # asleep overnight is fine; silent after 07:00 is not
+
+
+def test_a_late_scheduled_check_first_gives_the_catch_up_run_time(tmp_path, monkeypatch, caplog):
+    assert not health.started_late(datetime(2026, 8, 18, 21, 2, tzinfo=IST))
+    assert health.started_late(datetime(2026, 8, 18, 21, 55, tzinfo=IST))  # the PC woke at 21:55
+    assert health.started_late(datetime(2026, 8, 19, 7, 0, tzinfo=IST))  # ... or only the next morning
+    waits = []
+    monkeypatch.setattr(health, "ROOT", tmp_path)
+    monkeypatch.setattr(health, "configure_logging", lambda **kwargs: None)  # not into the real logs/
+    monkeypatch.setattr(health, "load_settings", lambda: load_settings(env={}))
+    monkeypatch.setattr(health, "started_late", lambda now: True)
+    caplog.set_level(logging.INFO, logger=health.__name__)
+    with pytest.raises(SystemExit):
+        health.main(["--notify", "--scheduled"], sleep=waits.append)
+    assert waits == [600.0] and "starting late" in caplog.text
+    with pytest.raises(SystemExit):
+        health.main(["--notify"], sleep=waits.append)  # run by hand: no wait
+    assert waits == [600.0]
+    assert caplog.text.count("alert(s)") == 2  # every run leaves a line in the log, a clean one too
