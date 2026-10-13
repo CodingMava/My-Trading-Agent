@@ -1,9 +1,9 @@
 # Research round 7 pre-registration: market intraday momentum in NIFTYBEES, on 1-minute bars
 
-> **DRAFT for review, not pinned.** Written on 13 Oct 2026. Nothing has been computed on the frozen minute data
-> except the completeness and data-error checks in `docs/research/kite-minute-data.md`: no returns, signals or
-> patterns. Once you approve it, this note is removed and the file is pinned, pushed and only then used (see
-> "Protocol" at the end).
+> **Pinned on 13 Oct 2026, after your approval, before any test code was written.** Nothing had been computed on
+> the frozen minute data except the completeness and data-error checks in `docs/research/kite-minute-data.md`: no
+> returns, signals or patterns. This file's SHA-256 (LF line endings) is recorded in `trader/research/round7.py`,
+> which refuses to run if the file changes. The steps that follow are in "Protocol" at the end.
 
 ## Why this round
 
