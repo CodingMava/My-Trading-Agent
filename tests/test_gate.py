@@ -68,8 +68,9 @@ def test_repository_gate_config_matches_the_preregistered_defaults():
     assert load_gate_config() == GateConfig()
 
 
-def research_evidence(decision="PAPER", generated="2026-10-01", kind="research"):
-    return Evidence("X1", kind, decision, generated, "test", stats={"holdout_win_rate": 0.6})
+def research_evidence(decision="PAPER", generated="2026-10-01", kind="research", **stats):
+    return Evidence("X1", kind, decision, generated, "test",
+                    stats={"holdout_win_rate": 0.6, "max_drawdown_r": 8.0, **stats})
 
 
 def test_evidence_round_trip(tmp_path):
@@ -185,3 +186,23 @@ def test_level_6_small_live_capital_must_track_paper_and_survive_a_bad_week():
     assert failing(dear) == {4} and decide_small_live(dear) == "PAPER"
     missed = small_live_checks(live_net, paper_net, **{**passing, "fill_rate": 0.8})
     assert failing(missed) == {3}
+
+
+
+def test_paper_needs_a_backtest_drawdown_within_20r():
+    from trader.gate import drawdown_r
+    assert drawdown_r({"unit": "R", "max_dd_units": -12.5}) == 12.5 and drawdown_r({"unit": "R", "max_dd_units": 0.0}) == 0
+    assert drawdown_r({"unit": "%", "max_dd_units": -3.0}) is None  # no stops: no R, and nothing the engine would size
+
+
+def test_evidence_with_a_drawdown_beyond_20r_or_none_recorded_does_not_support_paper(tmp_path):
+    today = date(2026, 10, 9)
+    save_evidence(research_evidence(max_drawdown_r=20.0), tmp_path)
+    assert supported_status("PAPER", "X1", today, directory=tmp_path) == ("PAPER", None)  # at the limit: allowed
+    save_evidence(research_evidence(max_drawdown_r=20.5), tmp_path)
+    status, why = supported_status("PAPER", "X1", today, directory=tmp_path)
+    assert status == "RESEARCH" and "20.5R from a peak, deeper than the 20R limit" in why
+    save_evidence(research_evidence(max_drawdown_r=None), tmp_path)
+    status, why = supported_status("PAPER", "X1", today, directory=tmp_path)
+    assert status == "RESEARCH" and "doesn't record the backtest's drawdown" in why
+    assert load_gate_config().research.max_drawdown_r == 20  # the configured limit

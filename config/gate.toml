@@ -16,6 +16,9 @@ min_positive_years = 0.70    # share of calendar years (with min_trades_per_year
 min_trades_per_year = 10
 min_breadth = 0.60           # stock strategies: share of stocks (with min_trades_per_stock trades) in profit
 min_trades_per_stock = 5
+max_drawdown_r = 20          # the backtest's deepest drawdown, in R: no deeper than the decay rule's limit (and at
+                             # 0.5% risk per trade, the kill switch's 10%). Confirmed 13 Oct 2026; evidence without it
+                             # can't support PAPER
 
 [paper]
 # Paper-trading criteria before LIVE_SMALL: the audit's Level 5.

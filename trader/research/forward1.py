@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 
 from trader.config import ROOT
-from trader.gate import EVIDENCE_DIR, Check, Evidence, save_evidence
+from trader.gate import EVIDENCE_DIR, Check, Evidence, drawdown_r, save_evidence
 from trader.logging_setup import make_console_utf8
 from trader.research import round2, round3, round4, round5
 from trader.research.datasets import DATA_DIR, save_dataset, text_sha256
@@ -139,7 +139,7 @@ def evidence_for(key: str, r: dict, digest: str) -> Evidence:
                "holdout_win_rate": float((net > 0).mean()), "holdout_mean_net": float(net.mean()),
                "holdout_sd_net": float(net.std(ddof=1)), "holdout_t_clustered": r["t_week"],
                "p_random_raw": r["raw_p"], "p_random_holm": r["holm_p"], "round_trip_cost": r["cost"],
-               "look": r["look"]},
+               "max_drawdown_r": drawdown_r(r["stats"]), "look": r["look"]},
         preregistration_sha256=digest)
 
 

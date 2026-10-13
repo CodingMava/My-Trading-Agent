@@ -6,7 +6,8 @@
 * Evidence is saved as JSON under docs/research/evidence/ and committed with the code.
 * supported_status() is what the registry enforces when it loads: a strategy holds only the status its
   evidence supports. PAPER needs passing research evidence; LIVE_SMALL also needs passing paper
-  evidence; LIVE also needs passing small-capital live evidence. Evidence expires.
+  evidence; LIVE also needs passing small-capital live evidence. Evidence expires. PAPER also needs
+  research evidence recording a backtest drawdown no deeper than 20R.
 * decay_check() watches paper or live trades and demotes a strategy whose results fall apart.
 """
 from __future__ import annotations
@@ -43,6 +44,7 @@ class ResearchThresholds:
     min_trades_per_year: int = 10
     min_breadth: float = 0.60
     min_trades_per_stock: int = 5
+    max_drawdown_r: float = 20.0  # the backtest's deepest drawdown; supported_status() enforces it for PAPER
 
 
 @dataclass(frozen=True)
@@ -303,6 +305,14 @@ def load_evidence(strategy_id: str, kind: str, directory: Path = EVIDENCE_DIR) -
     return Evidence(**data)
 
 
+def drawdown_r(stats: dict) -> float | None:
+    """The deepest drawdown in R, as a positive depth, from summarize()'s statistics; None when the trades had
+    no stops, so there is no R (and no position the risk engine would size)."""
+    if stats.get("unit") != "R" or stats.get("max_dd_units") is None:
+        return None
+    return max(0.0, -float(stats["max_dd_units"]))
+
+
 # What each status needs, beyond the one below it: (evidence kind, decisions that support it).
 REQUIREMENTS = {"PAPER": ("research", {"PAPER", "LIVE_SMALL", "LIVE"}),
                 "LIVE_SMALL": ("paper", {"LIVE_SMALL", "LIVE"}),
@@ -327,6 +337,12 @@ def supported_status(claimed: str, strategy_id: str, today: date, cfg: GateConfi
             return status, f"its {kind} evidence is {age} days old (limit {cfg.max_evidence_age_days})"
         if evidence.decision not in accepted:
             return status, f"its {kind} evidence decided {evidence.decision}, which doesn't support {step}"
+        if step == "PAPER":  # the drawdown limit confirmed on 13 Oct 2026, the decay rule's own limit
+            depth, limit = (evidence.stats or {}).get("max_drawdown_r"), cfg.research.max_drawdown_r
+            if depth is None:
+                return status, "its research evidence doesn't record the backtest's drawdown in R"
+            if depth > limit:
+                return status, f"its backtest fell {depth:.1f}R from a peak, deeper than the {limit:g}R limit"
         status = step
     return status, None
 

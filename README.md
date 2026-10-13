@@ -160,9 +160,9 @@ The standards, confirmed on 13 Oct 2026 before any new data was looked at, and n
 seeing results: a strategy must show at least a 50% win rate, positive expectancy after all trading costs
 (also at 1.5x costs), an acceptable drawdown, and robust out-of-sample performance, better than random
 entries after correcting for every hypothesis tested. A 50% win rate alone is not enough. If nothing
-passes, the system stays in NO TRADE. From the next pre-registered round, the drawdown is an explicit
-criterion: no deeper than 20R in the backtest, the point where the decay rule disables a strategy (at 0.5%
-risk per trade, the kill switch's 10%).
+passes, the system stays in NO TRADE. The drawdown limit, confirmed the same day, is enforced by the gate:
+no strategy reaches `PAPER` unless its research evidence records a backtest drawdown no deeper than 20R,
+the point where the decay rule disables a strategy (at 0.5% risk per trade, the kill switch's 10%).
 
 ## Project layout
 
@@ -397,7 +397,8 @@ summarize(trades, ZERODHA_DELIVERY.round_trip(100_000), session_dates)
   `LIVE_SMALL` or `LIVE` could ever trade real money (Phase 11). A strategy missing from the registry is
   blocked (fail closed).
 - A status must be earned, not typed: when the registry loads, `PAPER` needs passing research evidence
-  in `docs/research/evidence/`, `LIVE_SMALL` also needs passing paper-trading evidence, and `LIVE` also
+  in `docs/research/evidence/` with a backtest drawdown no deeper than 20R, `LIVE_SMALL` also needs
+  passing paper-trading evidence, and `LIVE` also
   needs small-capital live evidence, none older than a year (`config/gate.toml`). Anything else is
   lowered automatically and the daily run logs why. Paper-trading evidence (the audit's Level 5,
   `python -m trader.execution.report`) needs three months and 40+ trades in line with the research,

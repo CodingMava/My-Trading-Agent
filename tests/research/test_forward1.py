@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from trader.gate import load_evidence
 from trader.research import forward1
 
 
@@ -93,6 +94,8 @@ def test_a_look_freezes_its_data_reports_and_records_a_decision(tmp_path, monkey
     report = (tmp_path / "forward1-results.md").read_text(encoding="utf-8")
     assert "decision look 1" in report and "| PAPER |" in report
     assert sorted(p.name for p in (tmp_path / "evidence").iterdir()) == ["H11F.research.json", "H12F.research.json"]
+    recorded = load_evidence("H11F", "research", tmp_path / "evidence").stats["max_drawdown_r"]
+    assert 0 <= recorded <= 20  # the gate's drawdown limit can be checked on it
     with pytest.raises(SystemExit, match="no data"):
         forward1.fetch(date(2028, 1, 5), FakeYahoo({}))
 
