@@ -6,10 +6,10 @@ Telegram; it **never places real orders**. US stocks are researched with the sam
 signals come to you to place by hand.
 
 > **Current mode: NO TRADE.** Nothing tested so far makes money after costs in a way that beats chance:
-> not the original nine intraday rules (audit, 2026-10-08), and not the twenty pre-registered hypotheses
-> of six research rounds. The daily paper-trading run records NO TRADE until a strategy passes the
-> profitability gate. New rounds on the same data are paused, and the two strongest near-misses are
-> being judged on new sessions instead ([why](#research-status-a-forward-test-instead-of-more-rounds-2026-10-13)).
+> not the original nine intraday rules (audit, 2026-10-08), and not the twenty-three pre-registered
+> hypotheses of seven research rounds. The daily paper-trading run records NO TRADE until a strategy
+> passes the profitability gate. New rounds on the same data are paused, and the two strongest
+> near-misses are being judged on new sessions instead ([why](#research-status-a-forward-test-instead-of-more-rounds-2026-10-13)).
 
 ## Audit results (2026-10-08)
 
@@ -132,14 +132,33 @@ allows for the number of hypotheses now tested: the raw p-value against random e
 
 Twenty hypotheses over six rounds, none passed.
 
+## Research round 7: intraday momentum on minute data (2026-10-13)
+
+The first test on Kite's 1-minute bars ([pre-registration](docs/research/round7-preregistration.md),
+pinned and pushed before any test code existed; [results](docs/research/round7-results.md), from one
+run). Market intraday momentum (Gao, Han, Li and Zhou, 2018): the morning's direction, from the
+previous 15:14 to 09:44, traded in NIFTYBEES from 14:45 to 15:14, at Zerodha's intraday costs (0.12% a
+round trip with slippage).
+
+| Hypothesis | Trades | Winners | Gross per trade | Net per trade | p vs random | Status |
+|---|---:|---:|---:|---:|---:|---|
+| I1: buy after a rising morning | 959 | 24.4% | +0.010% | -0.111% | 0.42 | REJECTED |
+| I2: short after a falling morning | 714 | 23.5% | -0.008% | -0.128% | 0.56 | REJECTED |
+| I3: either way after a big morning | 279 | 26.9% | -0.002% | -0.123% | 0.60 | REJECTED |
+
+The morning's direction carried no information about the last half hour of continuous trading: before
+costs, each window earned what the same window earned on random days, about zero. Costs then made every
+variant lose. Twenty-three hypotheses over seven rounds, none passed.
+
 ## Research status: a forward test instead of more rounds (2026-10-13)
 
-Six rounds have tested the well-documented daily-bar ideas that fit the hard rule (most trades must
-win, and the profit must survive costs and beat random entries): pullbacks, the turn of the month,
-momentum, gaps. None passed. Each further test on the same data makes a lucky pass more likely, so
-there are no more rounds on it. Research restarts only with something genuinely new: different data
-(Kite's minute history, so intraday ideas can be tested with real fills after the open; a NIFTY
-universe as it was at each date, instead of today's members) or a deliberate change to the rules.
+Seven rounds have tested the well-documented ideas that fit the hard rule (most trades must win, and the
+profit must survive costs and beat random entries): pullbacks, the turn of the month, momentum, gaps, and
+intraday momentum on minute data. None passed. Each further test on the same data makes a lucky pass more
+likely, so there are no more rounds on the daily data. The minute data has had one test (round 7), and
+every further idea on it adds to the count too, so it needs strong published evidence and costs it can
+plausibly beat before it is tried. Otherwise research restarts only with something genuinely new: a NIFTY
+universe as it was at each date, instead of today's members, or a deliberate change to the rules.
 
 The only data no one has seen is the future. The two strongest near-misses, H11 and H12 (the turn of
 the month), are judged only on sessions after their rules were pinned on 13 Oct 2026: [forward test
@@ -276,7 +295,7 @@ close). A message that can't be sent is retried on the next run. A strategy whos
 from its research (`[decay]` in `config/gate.toml`) is suspended automatically.
 
 Only strategies whose status `PAPER` is backed by research evidence are traded. **Today there are none**
-(none of the twenty hypotheses tested passed), so every run records NO TRADE. To run it every day, see
+(none of the twenty-three hypotheses tested passed), so every run records NO TRADE. To run it every day, see
 [Running unattended](#running-unattended).
 
 ### The US paper account
@@ -372,6 +391,7 @@ python -m trader.research.round3                                  # re-run resea
 python -m trader.research.round4                                  # re-run research round 4
 python -m trader.research.round5                                  # re-run research round 5
 python -m trader.research.round6                                  # re-run research round 6 (Chan)
+python -m trader.research.round7                                  # round 7: ran once; refuses a second run
 python -m trader.research.forward1                                # forward test 1: H11, H12 on new sessions
 python -m trader.research.news status                             # the news history: counts, events, gaps
 pytest                                                            # fast tests
@@ -437,6 +457,7 @@ python -m trader.risk.killswitch status
 | 3e | Research round 5: four monthly effects at once | Done: 0 of 4 passed |
 | 3f | Research round 6: six strategies from Chan's *Algorithmic Trading* | Done: 0 of 6 passed |
 | 3g | Forward test 1: H11 and H12 on sessions after 13 Oct 2026 | Running: decisions each January, 2028 to 2036 |
+| 3h | Research round 7: intraday momentum on Kite's minute data | Done: 0 of 3 passed |
 | 4 | Profitability gate enforced from evidence reports | Done |
 | 5-6 | Risk engine and portfolio limits | Done |
 | 7 | Paper trading (end-of-day, for swing strategies) | Done: India's account and, since 2026-10-12, a US one whose signals you place by hand. No strategy is eligible yet; the 60 unattended sessions are being counted (the health check shows how many) |

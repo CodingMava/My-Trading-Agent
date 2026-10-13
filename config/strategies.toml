@@ -172,3 +172,22 @@ evidence = "127 invested months 2013-2026, 55.1% winners, +0.505%/month net (t=1
 name = "Monthly: time-series momentum, SPY or T-bills"
 status = "REJECTED"
 evidence = "141 invested months 2013-2026, 70.2% winners, +0.997%/month net (t=3.01), PF 1.94, but no better than random months (p=0.70): market drift. CAGR 10.6% against 14.0% bought and held, at the same drawdown."
+
+# Research round 7 (docs/research/round7-preregistration.md, pinned 13 Oct 2026): market intraday momentum in
+# NIFTYBEES on the frozen Kite 1-minute bars, run once at commit 0e604d1; docs/research/round7-results.md.
+# Reproduce (without writing): pytest -m slow tests/research/test_round7_regression.py
+
+[I1]
+name = "Intraday: buy NIFTYBEES 14:45-15:14 after a rising morning"
+status = "REJECTED"
+evidence = "959 trades 2020-2026, 24.4% winners, -0.111%/trade net (t=-16.8); +0.0097% gross against +0.0083% for the same window on random days (p=0.42): the morning adds nothing, and 0.12% costs make it lose."
+
+[I2]
+name = "Intraday: short NIFTYBEES 14:45-15:14 after a falling morning"
+status = "REJECTED"
+evidence = "714 trades 2020-2026, 23.5% winners, -0.128%/trade net (t=-15.4); -0.0079% gross against -0.0065% on random days (p=0.56): no edge before costs."
+
+[I3]
+name = "Intraday: NIFTYBEES 14:45-15:14 in the direction of a big morning"
+status = "REJECTED"
+evidence = "279 trades 2021-2026, 26.9% winners, -0.123%/trade net (t=-9.6); -0.0024% gross against +0.0004% on random days (p=0.60): even big mornings carry no edge."
