@@ -6,10 +6,11 @@ Telegram; it **never places real orders**. US stocks are researched with the sam
 signals come to you to place by hand.
 
 > **Current mode: NO TRADE.** Nothing tested so far makes money after costs in a way that beats chance:
-> not the original nine intraday rules (audit, 2026-10-08), and not the twenty-three pre-registered
-> hypotheses of seven research rounds. The daily paper-trading run records NO TRADE until a strategy
-> passes the profitability gate. New rounds on the same data are paused, and the two strongest
-> near-misses are being judged on new sessions instead ([why](#research-status-a-forward-test-instead-of-more-rounds-2026-10-13)).
+> not the original nine intraday rules (audit, 2026-10-08), and not the twenty-five pre-registered
+> hypotheses of eight research rounds. The daily paper-trading run records NO TRADE until a strategy
+> passes the profitability gate. The newest lead, mid-cap momentum on a survivorship-free NSE universe
+> (round 8), beat random picks but failed the win-rate, stability and drawdown rules
+> ([round 8](#research-round-8-stock-momentum-on-a-survivorship-free-nse-universe-2026-10-14)).
 
 ## Audit results (2026-10-08)
 
@@ -150,6 +151,27 @@ The morning's direction carried no information about the last half hour of conti
 costs, each window earned what the same window earned on random days, about zero. Costs then made every
 variant lose. Twenty-three hypotheses over seven rounds, none passed.
 
+## Research round 8: stock momentum on a survivorship-free NSE universe (2026-10-14)
+
+New data first: NSE's own daily files (bhavcopies) for every security from 2005 to October 2026, delisted companies
+included, adjusted for splits, bonuses, rights, special dividends and demergers from NSE's corporate-action records
+(`python -m trader.research.nse_bhavcopy build`). At each month-end the eligible stocks were ranked by liquidity;
+each hypothesis bought the 5 with the best 12-1 month return, at the next open, with a 10% stop, at Zerodha's delivery
+costs and the risk engine's size, and was compared with 5 random stocks from the same tier
+([pre-registration](docs/research/round8-preregistration.md), pinned before any test; a development stage on 2006-2013,
+[stage 1](docs/research/round8-stage1.md), then one decision run on 2013-2026, [results](docs/research/round8-results.md)).
+
+| Hypothesis | Trades | Winners | Net per trade | Random picks | p vs random | Result | Status |
+|---|---:|---:|---:|---:|---:|---|---|
+| N1: the 100 most liquid stocks | 795 | 48.6% | +0.41% | +0.52% | 0.64 | No better than random picks; lost money in the first half | REJECTED |
+| N2: liquidity ranks 101-300 | 792 | 43.9% | +1.75% | +0.67% | 0.0019 | Beat random picks, but 44% winners (floor 50%), 64% of years profitable (70%), drawdown 34R (20R) | REJECTED |
+
+Mid-cap momentum is the second effect, after the turn of the month in India's sector indices (H11), to beat random
+entries at the project's multiple-testing bar (p below 0.05 / 25). It fails three rules where H11 failed one, and after
+the fact its edge leans on a few very large winners and on the years since 2020. The 10% stop hurt: without it, the same picks won 51-54% of their trades and beat random picks
+by more. Twenty-five hypotheses over eight rounds, none passed. What this suggests next, and what it would take, is in
+[the research review](docs/research/round8-research-review.md).
+
 ## Research status: a forward test instead of more rounds (2026-10-13)
 
 Seven rounds have tested the well-documented ideas that fit the hard rule (most trades must win, and the
@@ -158,7 +180,8 @@ intraday momentum on minute data. None passed. Each further test on the same dat
 likely, so there are no more rounds on the daily data. The minute data has had one test (round 7), and
 every further idea on it adds to the count too, so it needs strong published evidence and costs it can
 plausibly beat before it is tried. Otherwise research restarts only with something genuinely new: a NIFTY
-universe as it was at each date, instead of today's members, or a deliberate change to the rules.
+universe as it was at each date, instead of today's members, or a deliberate change to the rules. (Round 8,
+on 14 Oct 2026, used exactly that: a universe built from NSE's own daily files as it was at each month-end.)
 
 The only data no one has seen is the future. The two strongest near-misses, H11 and H12 (the turn of
 the month), are judged only on sessions after their rules were pinned on 13 Oct 2026: [forward test
@@ -295,7 +318,7 @@ close). A message that can't be sent is retried on the next run. A strategy whos
 from its research (`[decay]` in `config/gate.toml`) is suspended automatically.
 
 Only strategies whose status `PAPER` is backed by research evidence are traded. **Today there are none**
-(none of the twenty-three hypotheses tested passed), so every run records NO TRADE. To run it every day, see
+(none of the twenty-five hypotheses tested passed), so every run records NO TRADE. To run it every day, see
 [Running unattended](#running-unattended).
 
 ### The US paper account
@@ -392,6 +415,10 @@ python -m trader.research.round4                                  # re-run resea
 python -m trader.research.round5                                  # re-run research round 5
 python -m trader.research.round6                                  # re-run research round 6 (Chan)
 python -m trader.research.round7                                  # round 7: ran once; refuses a second run
+python -m trader.research.nse_bhavcopy build                      # NSE's daily files -> the adjusted, survivorship-free panel
+python -m trader.research.nse_bhavcopy audit                      # its data-quality report
+python -m trader.research.round8 --stage 1                        # round 8's development stage (2006-2013)
+python -m trader.research.round8 --stage 2                        # round 8's decision: ran once; refuses a second run
 python -m trader.research.forward1                                # forward test 1: H11, H12 on new sessions
 python -m trader.research.news status                             # the news history: counts, events, gaps
 pytest                                                            # fast tests
@@ -458,6 +485,7 @@ python -m trader.risk.killswitch status
 | 3f | Research round 6: six strategies from Chan's *Algorithmic Trading* | Done: 0 of 6 passed |
 | 3g | Forward test 1: H11 and H12 on sessions after 13 Oct 2026 | Running: decisions each January, 2028 to 2036 |
 | 3h | Research round 7: intraday momentum on Kite's minute data | Done: 0 of 3 passed |
+| 3i | Research round 8: stock momentum on a survivorship-free NSE universe (NSE's own daily files, 2005-2026) | Done: 0 of 2 passed; N2 (mid caps) beat random picks but failed the win-rate, stability and drawdown rules |
 | 4 | Profitability gate enforced from evidence reports | Done |
 | 5-6 | Risk engine and portfolio limits | Done |
 | 7 | Paper trading (end-of-day, for swing strategies) | Done: India's account and, since 2026-10-12, a US one whose signals you place by hand. No strategy is eligible yet; the 60 unattended sessions are being counted (the health check shows how many) |

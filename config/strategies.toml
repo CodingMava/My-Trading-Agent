@@ -191,3 +191,18 @@ evidence = "714 trades 2020-2026, 23.5% winners, -0.128%/trade net (t=-15.4); -0
 name = "Intraday: NIFTYBEES 14:45-15:14 in the direction of a big morning"
 status = "REJECTED"
 evidence = "279 trades 2021-2026, 26.9% winners, -0.123%/trade net (t=-9.6); -0.0024% gross against +0.0004% on random days (p=0.60): even big mornings carry no edge."
+
+# Research round 8 (docs/research/round8-preregistration.md, pinned 14 Oct 2026 01:38 IST): 12-1 month momentum on a
+# survivorship-free NSE universe built from NSE's own bhavcopies (2005-2026), decision span Jun 2013 - Aug 2026, run once
+# (stage 2) after a development stage; docs/research/round8-results.md. Reproduce (without writing):
+# pytest -m slow tests/research/test_round8_regression.py
+
+[N1]
+name = "Monthly: 12-1 momentum, top 5 of the 100 most liquid NSE stocks, 10% stop"
+status = "REJECTED"
+evidence = "795 trades 2013-2026, 48.6% winners, +0.413%/trade net (t=1.00), PF 1.09; no better than 5 random stocks from the same tier (+0.522%, p=0.64); first half lost money; drawdown 45.5R."
+
+[N2]
+name = "Monthly: 12-1 momentum, top 5 of NSE liquidity ranks 101-300, 10% stop"
+status = "REJECTED"
+evidence = "792 trades 2013-2026, +1.751%/trade net vs +0.668% for random picks from the same tier (p=0.0019, Holm 0.0038; t=2.92, cluster t 2.21, PF 1.32): with H11, one of the two leads to beat random entries at the cross-round bar, but 43.9% winners (floor 50%), 64% of years profitable (70%) and a 34.1R drawdown (20R). Post hoc, the edge leans on a few large winners and on 2020-2026."
