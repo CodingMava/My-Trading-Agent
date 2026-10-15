@@ -188,7 +188,7 @@ def test_the_command(tmp_path, monkeypatch, capsys):
     news.main(["collect"])
     assert not (tmp_path / "state" / "news.db").exists()  # off: nothing fetched, nothing made
     monkeypatch.setattr(news, "load_settings", lambda: replace(off, news_enabled=True))
-    monkeypatch.setattr(news, "collect", lambda store, now: ["announcements: ConnectionError"])
+    monkeypatch.setattr(news, "collect", lambda store, now, api=None: ["announcements: ConnectionError"])
     with pytest.raises(SystemExit) as failed:
         news.main(["collect"])
     assert failed.value.code == 1
@@ -205,7 +205,7 @@ def test_each_collection_leaves_a_line_in_the_log(tmp_path, monkeypatch, caplog)
     monkeypatch.setattr(news, "configure_logging", lambda **kwargs: None)  # not into the real logs/
     monkeypatch.setattr(news, "load_settings", lambda: replace(load_settings(env={}), news_enabled=True))
 
-    def fake_collect(store, now):
+    def fake_collect(store, now, api=None):
         store.record_fetch("announcements", now, [], 0, None)
         store.record_fetch("corporate actions", now, [], 0, None, "HTTPError")
         return []
@@ -217,3 +217,95 @@ def test_each_collection_leaves_a_line_in_the_log(tmp_path, monkeypatch, caplog)
     assert done.value.code == 0
     assert ("Collected: announcements 0 item(s), 0 new; corporate actions 0 item(s), 0 new, failed (HTTPError)"
             in caplog.text)
+
+
+# ---------------------------------------------------------------------------------------- catching up from the API
+def api_row(symbol, stamp, text="has informed the Exchange about Board Meeting to consider Fund raising"):
+    return {"sm_name": f"{symbol} Limited", "attchmntFile": f"https://nsearchives.nseindia.com/corporate/{symbol}_12102026_x.pdf",
+            "attchmntText": f"{symbol} Limited {text}", "desc": "Board Meeting Intimation", "an_dt": stamp, "symbol": symbol}
+
+
+def feed_item(row):
+    """The same announcement as NSE's feed writes it."""
+    return (row["sm_name"], row["attchmntFile"], f"{row['attchmntText']} |SUBJECT: {row['desc']}", row["an_dt"])
+
+
+class FakeApi:
+    def __init__(self, days, failing=()):
+        self.days, self.failing, self.calls = days, set(failing), []
+
+    def day(self, day):
+        self.calls.append(day)
+        if day in self.failing:
+            raise requests.HTTPError("403")
+        return self.days.get(day, [])
+
+
+def test_the_api_rebuilds_an_announcement_exactly_as_the_feed_writes_it():
+    row = api_row("TCS", "12-Oct-2026 09:15:00")
+    from_api = news.api_items([row])[0]
+    from_feed = parse_feed("announcements", rss(feed_item(row)))[0]
+    assert from_api == from_feed  # same guid, company, subject, link, time and symbol: stored once
+    assert news.api_items([{"sm_name": "X", "an_dt": "not a time"}, "junk"]) == []
+    with pytest.raises(ValueError):
+        news.api_items({"error": "not a list"})
+
+
+def test_a_sleeping_laptop_loses_nothing(tmp_path):
+    store = NewsStore(tmp_path / "news.db")
+    a, b = api_row("TCS", "12-Oct-2026 09:15:00"), api_row("INFY", "12-Oct-2026 09:30:00")
+    x, y, c = (api_row(s, t) for s, t in (("LT", "12-Oct-2026 10:00:00"), ("HDFC", "12-Oct-2026 10:30:00"),
+                                          ("ITC", "12-Oct-2026 11:00:00")))
+    collect(store, FakeNSE(rss(feed_item(a), feed_item(b))), NOW.replace(hour=9, minute=30))
+    api = FakeApi({date(2026, 10, 12): [a, b, x, y, c]})
+    # asleep from 09:30 to 11:15: the feed has moved on, and leaves a gap the API fills straight away
+    assert collect(store, FakeNSE(rss(feed_item(c))), NOW.replace(hour=11, minute=15), api=api) == []
+    assert api.calls == [date(2026, 10, 12)]
+    assert len(store.table("announcements")[lambda t: t["feed"] == "announcements"]) == 5  # each stored once
+    assert len(gaps(store, NOW.replace(hour=0))) == 1 and news.open_gaps(store, NOW.replace(hour=12)).empty
+    # the next morning the finished day is fetched whole once more, and then left alone
+    morning = datetime(2026, 10, 13, 8, 0, tzinfo=IST)
+    collect(store, FakeNSE(rss(feed_item(c))), morning, api=api)
+    collect(store, FakeNSE(rss(feed_item(c))), morning.replace(minute=15), api=api)
+    assert api.calls == [date(2026, 10, 12), date(2026, 10, 12)]
+    assert store.complete_days() == {date(2026, 10, 12)} and news.days_to_catch_up(store, morning) == []
+    assert "not yet seen whole: none" in status_text(store, morning)
+
+
+def test_a_refused_api_call_is_recorded_and_tried_again(tmp_path):
+    store = NewsStore(tmp_path / "news.db")
+    first = datetime(2026, 10, 12, 20, 0, tzinfo=IST)
+    collect(store, FakeNSE(rss(feed_item(api_row("TCS", "12-Oct-2026 19:00:00")))), first)
+    later = datetime(2026, 10, 14, 9, 0, tzinfo=IST)
+    refusing = FakeApi({}, failing={date(2026, 10, 12)})
+    failed = collect(store, FakeNSE(rss(feed_item(api_row("TCS", "12-Oct-2026 19:00:00")))), later, api=refusing)
+    assert failed == ["announcements API, 2026-10-12: HTTPError"] and refusing.calls == [date(2026, 10, 12)]  # stops there
+    assert news.days_to_catch_up(store, later) == [date(2026, 10, 12), date(2026, 10, 13)]
+    working = FakeApi({})
+    assert news.catch_up(store, working, later.replace(minute=15), pause=0) == []
+    assert working.calls == [date(2026, 10, 12), date(2026, 10, 13)] and news.days_to_catch_up(store, later) == []
+
+
+def test_storing_a_fetch_is_all_or_nothing(tmp_path, monkeypatch):
+    store = NewsStore(tmp_path / "news.db")
+    items = news.api_items([api_row("TCS", "12-Oct-2026 09:15:00"), api_row("INFY", "12-Oct-2026 09:30:00")])
+
+    def broken(*args, **kwargs):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(store, "add_tag", broken)
+    with pytest.raises(sqlite3.OperationalError):
+        store.add(items, NOW, {})
+    assert store.table("announcements").empty
+
+
+def test_a_gap_across_midnight_is_filled_day_by_day(tmp_path):
+    store = NewsStore(tmp_path / "news.db")
+    late = api_row("TCS", "13-Oct-2026 23:48:45")
+    collect(store, FakeNSE(rss(feed_item(late))), datetime(2026, 10, 13, 23, 50, tzinfo=IST))
+    early = api_row("INFY", "14-Oct-2026 00:00:11")
+    collect(store, FakeNSE(rss(feed_item(early))), datetime(2026, 10, 14, 0, 15, tzinfo=IST))
+    assert len(news.open_gaps(store, datetime(2026, 10, 14, 1, 0, tzinfo=IST))) == 1  # 23:48:45 to 00:00:11
+    api = FakeApi({date(2026, 10, 13): [late], date(2026, 10, 14): [early]})
+    news.catch_up(store, api, datetime(2026, 10, 14, 23, 17, tzinfo=IST), pause=0)
+    assert news.open_gaps(store, datetime(2026, 10, 14, 23, 30, tzinfo=IST)).empty

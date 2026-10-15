@@ -206,3 +206,18 @@ evidence = "795 trades 2013-2026, 48.6% winners, +0.413%/trade net (t=1.00), PF 
 name = "Monthly: 12-1 momentum, top 5 of NSE liquidity ranks 101-300, 10% stop"
 status = "REJECTED"
 evidence = "792 trades 2013-2026, +1.751%/trade net vs +0.668% for random picks from the same tier (p=0.0019, Holm 0.0038; t=2.92, cluster t 2.21, PF 1.32): with H11, one of the two leads to beat random entries at the cross-round bar, but 43.9% winners (floor 50%), 64% of years profitable (70%) and a 34.1R drawdown (20R). Post hoc, the edge leans on a few large winners and on 2020-2026."
+
+[L1]
+name = "Monthly: low volatility, the 5 least volatile of the 100 most liquid NSE stocks, 10% stop"
+status = "REJECTED"
+evidence = "795 trades 2013-2026, 51.4% winners, +0.577%/trade net vs +0.522% for random picks from the same tier (p=0.43, Holm 0.85; t=2.36, cluster t 1.62, PF 1.24), drawdown 17.1R, 57% of years profitable: steadier than momentum, but no better than random picks."
+
+[L2]
+name = "Monthly: low volatility, the 5 least volatile of NSE liquidity ranks 101-300, 10% stop"
+status = "REJECTED"
+evidence = "795 trades 2013-2026, 52.7% winners, +0.671%/trade net vs +0.679% for random picks from the same tier (p=0.50, Holm 0.85): passed 11 of 13 criteria (t 2.85, cluster t 2.05, PF 1.31, 71% of years, drawdown 12.9R) but has no edge over random picks (criteria 5 and 12): the tier's drift with smaller swings."
+
+[V2]
+name = "Monthly: volatility-adjusted 12-1 and 6-1 momentum, top 5 of NSE liquidity ranks 101-300, 10% stop"
+status = "REJECTED"
+evidence = "791 trades 2013-2026, +2.068%/trade net vs +0.669% for random picks from the same tier (p=0.0002, Holm 0.0006; t=3.51, cluster t 2.57, PF 1.41): the strongest edge over random picks in the project, but 45.9% winners (floor 50%), 64% of years profitable (70%) and a 30.4R drawdown (20R). It overlaps N2."

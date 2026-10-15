@@ -5,13 +5,18 @@ materiality.
 
     python -m trader.research.news collect     # fetch NSE's feeds; scheduled every 15 minutes
     python -m trader.research.news status      # what was collected, and every gap in it
+    python -m trader.research.news backfill --from 2026-10-01 --to 2026-10-14   # whole days from NSE's API
     python -m trader.research.news tag-ai      # optional: AI tags for untagged announcements ([ai] in settings)
 
 NSE's announcement feed keeps only its latest items, so it is read every 15 minutes, as a feed reader
 would. A gap can't hide: when the feed's oldest item is newer than the newest one stored, items in
-between may be missing, and the gap is recorded, so research knows which hours are complete. Every
-announcement is tagged by fixed rules when it's stored (what kind of event it is). AI tags (event,
-sentiment, materiality) are optional, must match a fixed shape exactly, and are kept apart by tagger.
+between may be missing, and the gap is recorded, so research knows which hours are complete.
+
+A laptop sleeps, so every collection also catches up from NSE's announcement API, which serves any past day
+whole: each recent day not yet seen whole (and today, when the feed left a gap) is fetched and recorded in
+`coverage`. The API's items are rebuilt exactly as the feed writes them, so an announcement seen in both is
+stored once. Every announcement is tagged by fixed rules when it's stored (what kind of event it is). AI tags
+(event, sentiment, materiality) are optional, must match a fixed shape exactly, and are kept apart by tagger.
 
 The audit's bar for this phase: the tags must demonstrably improve a strategy, judged by a pre-registered
 research round on the collected history; otherwise the phase is cut.
@@ -25,6 +30,7 @@ import json
 import logging
 import re
 import sqlite3
+import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -45,6 +51,11 @@ COMPANIES_URL = "https://nsearchives.nseindia.com/content/equities/EQUITY_L.csv"
 # NSE turns away requests that look like scripts; this says what it is: a personal feed reader.
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) trading-agent-news/1.0 (personal feed reader)"}
 MAX_BYTES = 5_000_000
+# NSE's announcement API serves a whole day at a time; its session cookies come from NSE's home page.
+API_HOME = "https://www.nseindia.com/"
+API_PAGE = "https://www.nseindia.com/companies-listing/corporate-filings-announcements"
+API_URL = "https://www.nseindia.com/api/corporate-announcements?index=equities&from_date={day}&to_date={day}"
+BACKFILL_DAYS = 14  # each collection checks this many days back for days not yet seen whole
 RULES_TAGGER = "rules-v2"
 EVENTS = ("results", "dividend", "corporate action", "deal", "fund raising", "order win", "rating", "management",
           "regulatory", "investor meeting", "board meeting", "routine", "other")
@@ -78,6 +89,10 @@ CREATE TABLE IF NOT EXISTS tags (id INTEGER PRIMARY KEY, announcement INTEGER NO
     tagger TEXT NOT NULL, event TEXT NOT NULL, sentiment INTEGER, materiality TEXT, at TEXT NOT NULL,
     UNIQUE (announcement, tagger));
 CREATE TABLE IF NOT EXISTS companies (name TEXT PRIMARY KEY, symbol TEXT NOT NULL, updated TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS coverage (id INTEGER PRIMARY KEY, day TEXT NOT NULL, at TEXT NOT NULL, items INTEGER NOT NULL,
+    added INTEGER NOT NULL, complete INTEGER NOT NULL, error TEXT NOT NULL DEFAULT '');
+CREATE TRIGGER IF NOT EXISTS coverage_no_update BEFORE UPDATE ON coverage BEGIN SELECT RAISE(ABORT, 'the news history is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS coverage_no_delete BEFORE DELETE ON coverage BEGIN SELECT RAISE(ABORT, 'the news history is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS announcements_no_update BEFORE UPDATE ON announcements BEGIN SELECT RAISE(ABORT, 'the news history is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS announcements_no_delete BEFORE DELETE ON announcements BEGIN SELECT RAISE(ABORT, 'the news history is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS fetches_no_update BEFORE UPDATE ON fetches BEGIN SELECT RAISE(ABORT, 'the news history is append-only'); END;
@@ -156,6 +171,48 @@ def fetch(http, url: str) -> bytes:
     return response.content
 
 
+def api_items(rows) -> list[Item]:
+    """A day's announcements from NSE's API, rebuilt exactly as the feed writes them (company, filing link, text
+    with its subject, and time), so an announcement seen in both has the same guid and is stored once."""
+    if not isinstance(rows, list):
+        raise ValueError("NSE's announcement API answered with something other than a list")
+    items = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        title, link = str(row.get("sm_name") or "").strip(), str(row.get("attchmntFile") or "").strip()
+        subject = f"{str(row.get('attchmntText') or '').strip()} |SUBJECT: {str(row.get('desc') or '').strip()}"
+        try:
+            published = datetime.strptime(str(row.get("an_dt") or "").strip(), "%d-%b-%Y %H:%M:%S").replace(tzinfo=IST)
+        except ValueError:
+            continue
+        if not title:
+            continue
+        guid = hashlib.sha256(f"announcements|{title}|{link}|{subject}".encode()).hexdigest()
+        symbol = symbol_from_link(link) or (str(row.get("symbol") or "").strip() or None)
+        items.append(Item("announcements", guid, title, subject, link, published, symbol))
+    return items
+
+
+class NseApi:
+    """NSE's corporate-announcement API, one whole day per request. The session cookies come from one visit to
+    NSE's home page; the same feed-reader user agent says what is asking."""
+
+    def __init__(self, http=requests):
+        self.http, self.session = http, None
+
+    def day(self, day: date) -> list:
+        if self.session is None:
+            self.session = self.http.Session()
+            self.session.headers.update({**HEADERS, "Accept": "application/json, text/plain, */*", "Referer": API_PAGE})
+            self.session.get(API_HOME, timeout=30)
+        response = self.session.get(API_URL.format(day=day.strftime("%d-%m-%Y")), timeout=60)
+        response.raise_for_status()
+        if len(response.content) > MAX_BYTES:
+            raise ValueError(f"{len(response.content)} bytes is more than a day of announcements should be")
+        return response.json()
+
+
 class NewsStore:
     """The news history in SQLite (state/news.db), apart from every trading record."""
 
@@ -170,18 +227,43 @@ class NewsStore:
         self.conn.close()
 
     def add(self, items: list[Item], collected: datetime, companies: dict[str, str]) -> int:
-        """Store the new items and tag them by the rules; returns how many were new."""
+        """Store the new items and tag them by the rules, in one transaction; returns how many were new."""
         added = 0
-        for item in items:
-            symbol = item.symbol or companies.get(company_key(item.company))
-            cursor = self.conn.execute(
-                "INSERT OR IGNORE INTO announcements (guid, feed, symbol, company, subject, link, published, collected) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (item.guid, item.feed, symbol, item.company, item.subject, item.link,
-                                                   item.published.isoformat(), collected.isoformat()))
-            if cursor.rowcount == 1:
-                self.add_tag(cursor.lastrowid, RULES_TAGGER, rule_event(item.subject), None, None, collected)
-                added += 1
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            for item in items:
+                symbol = item.symbol or companies.get(company_key(item.company))
+                cursor = self.conn.execute(
+                    "INSERT OR IGNORE INTO announcements (guid, feed, symbol, company, subject, link, published, collected) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (item.guid, item.feed, symbol, item.company, item.subject, item.link,
+                                                       item.published.isoformat(), collected.isoformat()))
+                if cursor.rowcount == 1:
+                    self.add_tag(cursor.lastrowid, RULES_TAGGER, rule_event(item.subject), None, None, collected)
+                    added += 1
+            self.conn.execute("COMMIT")
+        except BaseException:
+            self.conn.execute("ROLLBACK")
+            raise
         return added
+
+    def record_coverage(self, day: date, at: datetime, items: int, added: int, error: str = "") -> None:
+        """One API fetch of a whole day. It covers the day completely once it was made after the day ended."""
+        complete = int(not error and at >= day_end(day))
+        self.conn.execute("INSERT INTO coverage (day, at, items, added, complete, error) VALUES (?, ?, ?, ?, ?, ?)",
+                          (day.isoformat(), at.isoformat(), items, added, complete, error))
+
+    def complete_days(self) -> set[date]:
+        rows = self.conn.execute("SELECT DISTINCT day FROM coverage WHERE complete = 1").fetchall()
+        return {date.fromisoformat(r[0]) for r in rows}
+
+    def covered_until(self, day: date) -> str | None:
+        """The latest time up to which an API fetch has seen `day` (its fetch time, capped at the day's end)."""
+        row = self.conn.execute("SELECT MAX(at) FROM coverage WHERE day = ? AND error = ''", (day.isoformat(),)).fetchone()
+        return min(row[0], day_end(day).isoformat()) if row and row[0] else None
+
+    def first_day(self) -> date | None:
+        row = self.conn.execute("SELECT MIN(at) FROM fetches").fetchone()
+        return datetime.fromisoformat(row[0]).astimezone(IST).date() if row and row[0] else None
 
     def add_tag(self, announcement: int, tagger: str, event: str, sentiment: int | None, materiality: str | None,
                 at: datetime) -> None:
@@ -216,9 +298,14 @@ class NewsStore:
                                  "ORDER BY id LIMIT ?", (tagger, limit)).fetchall()
 
     def table(self, name: str) -> pd.DataFrame:
-        if name not in {"announcements", "fetches", "tags", "companies"}:
+        if name not in {"announcements", "fetches", "tags", "companies", "coverage"}:
             raise ValueError(name)
         return pd.read_sql_query(f"SELECT * FROM {name} ORDER BY rowid", self.conn)
+
+
+def day_end(day: date) -> datetime:
+    """Midnight at the end of an IST day."""
+    return datetime.combine(day + timedelta(days=1), datetime.min.time(), tzinfo=IST)
 
 
 def refresh_companies(store: NewsStore, http, now: datetime) -> dict[str, str]:
@@ -237,9 +324,9 @@ def refresh_companies(store: NewsStore, http, now: datetime) -> dict[str, str]:
     return mapping
 
 
-def collect(store: NewsStore, http=requests, now: datetime | None = None) -> list[str]:
+def collect(store: NewsStore, http=requests, now: datetime | None = None, api: NseApi | None = None) -> list[str]:
     """One pass over the feeds: store what's new, tag it by the rules, and record what each fetch covered,
-    with any gap. Returns the feeds that failed."""
+    with any gap; then, given NSE's API, catch up on the days not yet seen whole. Returns what failed."""
     now, failed = now or datetime.now(IST), []
     companies = refresh_companies(store, http, now)
     for feed, url in FEEDS.items():
@@ -255,7 +342,53 @@ def collect(store: NewsStore, http=requests, now: datetime | None = None) -> lis
         gap = ((newest_stored, oldest) if feed == "announcements" and newest_stored and oldest and oldest > newest_stored
                else None)
         store.record_fetch(feed, now, items, store.add(items, now, companies), gap)
+    if api is not None:
+        failed += catch_up(store, api, now, companies)
     return failed
+
+
+def days_to_catch_up(store: NewsStore, now: datetime, days_back: int = BACKFILL_DAYS) -> list[date]:
+    """Every day since collection began (at most `days_back`) not yet seen whole by the API, and today when the feed
+    has left a gap the API hasn't filled."""
+    today, first = now.astimezone(IST).date(), store.first_day()
+    if first is None:
+        return []
+    complete, start = store.complete_days(), max(first, today - timedelta(days=days_back))
+    days = [start + timedelta(days=k) for k in range((today - start).days) if start + timedelta(days=k) not in complete]
+    if any(datetime.fromisoformat(g).astimezone(IST).date() == today for g in open_gaps(store, now)["gap_to"]):
+        days.append(today)
+    return days
+
+
+def catch_up(store: NewsStore, api: NseApi, now: datetime, companies: dict[str, str] | None = None,
+             days: list[date] | None = None, pause: float = 1.0) -> list[str]:
+    """Fetch whole days from NSE's API and store what the feed missed, a second apart. Stops at the first failure
+    (NSE may be refusing), which is recorded; the next run tries again."""
+    companies = companies if companies is not None else store.companies()[0]
+    for k, day in enumerate(days if days is not None else days_to_catch_up(store, now)):
+        if k and pause:
+            time.sleep(pause)
+        try:
+            items = api_items(api.day(day))
+        except (requests.RequestException, ValueError) as exc:
+            store.record_coverage(day, now, 0, 0, type(exc).__name__)
+            return [f"announcements API, {day}: {type(exc).__name__}"]
+        store.record_coverage(day, now, len(items), store.add(items, now, companies))
+    return []
+
+
+def open_gaps(store: NewsStore, now: datetime, since: datetime | None = None) -> pd.DataFrame:
+    """The gaps the feed recorded that the API hasn't filled since: a gap is filled once every day it touches was
+    fetched whole after the gap ended."""
+    gaps_ = gaps(store, since or now - timedelta(days=BACKFILL_DAYS))
+    keep = []
+    for start, end in zip(gaps_["gap_from"], gaps_["gap_to"]):
+        first, last = (datetime.fromisoformat(t).astimezone(IST).date() for t in (start, end))
+        days = [first + timedelta(days=k) for k in range((last - first).days + 1)]
+        # each day only has to be seen up to its own part of the gap (a gap can cross midnight)
+        filled = all((c := store.covered_until(d)) is not None and c >= min(end, day_end(d).isoformat()) for d in days)
+        keep.append(not filled)
+    return gaps_[keep].reset_index(drop=True) if len(gaps_) else gaps_
 
 
 def validate_tags(raw) -> Tags:
@@ -333,10 +466,13 @@ def status_text(store: NewsStore, now: datetime) -> str:
     fetches = store.table("fetches")
     good = fetches[fetches["error"] == ""]
     announcements, tags = store.table("announcements"), store.table("tags")
+    behind = days_to_catch_up(store, now)
     lines = [f"{len(announcements)} announcements ({announcements['symbol'].notna().sum()} with a symbol), "
              f"{len(tags)} tags",
              "Last good fetch: " + (good["at"].iloc[-1][:16].replace("T", " ") if len(good) else "none"),
-             f"Gaps in the last 7 days: {len(gaps(store, now - timedelta(days=7)))}"]
+             f"Gaps in the last 7 days: {len(gaps(store, now - timedelta(days=7)))}, "
+             f"of which not yet filled from NSE's API: {len(open_gaps(store, now, now - timedelta(days=7)))}",
+             "Days since collection began not yet seen whole: " + (", ".join(str(d) for d in behind) or "none")]
     if len(tags):
         rules = tags[tags["tagger"] == RULES_TAGGER]["event"].value_counts()
         lines.append("Events: " + ", ".join(f"{event} {count}" for event, count in rules.items()))
@@ -345,8 +481,12 @@ def status_text(store: NewsStore, now: datetime) -> str:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="NSE announcements: collect, tag, and report coverage (research only).")
-    parser.add_argument("command", choices=["collect", "status", "tag-ai"])
+    parser.add_argument("command", choices=["collect", "status", "tag-ai", "backfill"])
+    parser.add_argument("--from", dest="start", type=date.fromisoformat, help="backfill: first day (YYYY-MM-DD)")
+    parser.add_argument("--to", dest="end", type=date.fromisoformat, help="backfill: last day (default: today)")
     args = parser.parse_args(argv)
+    if args.command == "backfill" and args.start is None:
+        parser.error("backfill needs --from")
     make_console_utf8()
     settings = load_settings()
     configure_logging(secrets=settings.secret_values(), filename="news.log")
@@ -355,13 +495,24 @@ def main(argv: list[str] | None = None) -> None:
         return
     store, now = NewsStore(ROOT / settings.news_database), datetime.now(IST)
     if args.command == "collect":
-        failed = collect(store, now=now)
+        failed = collect(store, now=now, api=NseApi())
         for problem in failed:
             log.warning("News fetch failed: %s", problem)
-        fetches = store.table("fetches")  # a trace of every run, even a quiet one
+        fetches, coverage = store.table("fetches"), store.table("coverage")  # a trace of every run, even a quiet one
         done = [f"{r.feed} {r.items} item(s), {r.added} new" + (f", failed ({r.error})" if r.error else "")
                 for r in fetches[fetches["at"] == now.isoformat()].itertuples()]
+        done += [f"API {r.day} {r.items} item(s), {r.added} new" + (f", failed ({r.error})" if r.error else "")
+                 for r in coverage[coverage["at"] == now.isoformat()].itertuples()]
         log.info("Collected: %s", "; ".join(done) or "nothing")
+        raise SystemExit(1 if failed else 0)
+    if args.command == "backfill":
+        end = args.end or now.date()
+        days = [args.start + timedelta(days=k) for k in range((end - args.start).days + 1)]
+        failed = catch_up(store, NseApi(), now, days=days)
+        coverage = store.table("coverage")
+        added = int(coverage.loc[coverage["at"] == now.isoformat(), "added"].sum())
+        print(f"{len(days)} day(s) from {args.start} to {end}: {added} announcement(s) added"
+              + (f"; stopped: {failed[0]}" if failed else ""))
         raise SystemExit(1 if failed else 0)
     if args.command == "tag-ai":
         if not settings.ai_enabled:

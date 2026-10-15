@@ -11,7 +11,8 @@ interpreting under pressure.
 | 18:00 IST daily (Task Scheduler, "Trading agent - daily run") | `python -m trader.execution.eod` processes every completed NSE session not yet processed, then the US paper account's (the US session that closed early that morning), sends `[PAPER]` Telegram messages, records the runs and backs up the records | `logs/trader.log` |
 | 21:00 IST daily ("Trading agent - health check"); if the PC was asleep or off at 21:00, when it is back (after giving a catch-up daily run 10 minutes) | `python -m trader.ops.health --notify --scheduled` alerts you when anything below needs attention, and leaves one line per run in its log | `logs/health.log` |
 | Always, from logon ("Trading agent - Telegram commands") | `python -m trader.notify.bot` answers `/status`, `/positions`, `/trades` (both accounts), `/kill reason`, `/kitecheck` and `/login` from your chat only | `logs/bot.log` |
-| Every 15 minutes, 07:00 to midnight ("Trading agent - news") | `python -m trader.research.news collect` stores NSE's announcements for research (no trading code reads them) and leaves one line per run in its log | `logs/news.log` |
+| Every 15 minutes, all day ("Trading agent - news"; a start missed while the PC slept runs when it wakes) | `python -m trader.research.news collect` stores NSE's announcements for research (no trading code reads them), fetches whole from NSE's announcement API every recent day not yet seen whole, and leaves one line per run in its log | `logs/news.log` |
+| 19:30 IST daily ("Trading agent - forward test 2"); if the PC was asleep or off then, when it is back | `python -m trader.research.forward2 daily` downloads the evening's NSE file and corporate actions, records forward test 2's paper picks and closed paper positions (N2 on new sessions, research only), and sends `[FORWARD TEST 2 · paper only]` messages | `logs/forward2.log`, `state/forward2-status.md` |
 | Any time | `streamlit run dashboard.py` (read-only) or `python -m trader.ops.health` | |
 
 No real order is ever placed: the system paper trades, and today it is in NO TRADE because no strategy has
@@ -117,6 +118,9 @@ Kill switch log (date, why it engaged, what changed before it was released):
 - **December:** add NSE's next-year holidays to `config/market_calendars.toml` when NSE publishes them,
   and NSE's Muhurat session when it is announced. Without the next year, nothing trades from 1 January.
   NYSE's holidays are in through 2028.
+- **Each January from 2028:** run `python -m trader.research.forward2 look` (forward test 2: N2 in paper mode on
+  months after 30 Oct 2026). Each January look applies the decisions pinned in
+  `docs/research/forward2-preregistration.md`, and writes `docs/research/forward2-look-<date>.md`; commit it.
 - **Each January from 2027:** run `python -m trader.research.forward1` (forward test 1: H11 and H12 on
   sessions after 13 Oct 2026) and commit its status. January 2027's look only reports; from January
   2028 to 2036 each January look applies the decisions pinned in

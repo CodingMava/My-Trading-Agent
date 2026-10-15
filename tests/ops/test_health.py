@@ -243,3 +243,30 @@ def test_a_late_scheduled_check_first_gives_the_catch_up_run_time(tmp_path, monk
         health.main(["--notify"], sleep=waits.append)  # run by hand: no wait
     assert waits == [600.0]
     assert caplog.text.count("alert(s)") == 2  # every run leaves a line in the log, a clean one too
+
+
+def test_a_finished_day_never_fetched_whole_is_a_warning(tmp_path, monkeypatch):
+    from trader.research.news import NewsStore
+    monkeypatch.setattr(health, "ROOT", tmp_path)
+    settings = replace(load_settings(env={}), news_enabled=True)
+    store = NewsStore(tmp_path / settings.news_database)
+    store.record_fetch("announcements", EVENING - timedelta(days=2), [], 0, None)  # collection began on Sunday
+    store.record_fetch("announcements", EVENING - timedelta(minutes=10), [], 0, None)
+    check = news_check(settings, EVENING)[0]
+    assert check.level == WARN and "1 day(s) not yet fetched whole" in check.detail and "2026-08-16" in check.detail
+    store.record_coverage(date(2026, 8, 16), EVENING - timedelta(days=1), 10, 2)  # fetched after the day ended
+    assert news_check(settings, EVENING)[0].level == OK
+    store.close()
+
+
+def test_forward_test_2_that_stops_updating_is_a_warning(tmp_path, monkeypatch):
+    from trader.research.forward2 import Ledger
+    monkeypatch.setattr(health, "ROOT", tmp_path)
+    assert health.forward2_check(EVENING) == []  # not started
+    ledger = Ledger(tmp_path / "state" / "forward2.db")
+    ledger.add_run(EVENING - timedelta(days=1), "ok", "saved 1 session(s)")
+    ledger.add_run(EVENING - timedelta(hours=1), "failed", "ConnectionError")
+    check = health.forward2_check(EVENING)[0]
+    assert check.level == OK and check.detail.startswith("updated 17 Aug 21:00 IST; 0 closed")
+    assert health.forward2_check(EVENING + timedelta(days=3))[0].level == WARN
+    ledger.close()

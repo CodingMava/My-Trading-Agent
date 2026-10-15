@@ -260,7 +260,7 @@ def integrity_check(store: PaperStore | None, live_store: LiveStore | None, back
     return [Health("integrity", OK, ", ".join(found) + " intact")]
 
 
-NEWS_STALE = timedelta(hours=2)  # collection runs every 15 minutes from 07:00
+NEWS_STALE = timedelta(hours=2)  # collection runs every 15 minutes; missed hours are fetched whole later
 NEWS_PAUSE = (time(0, 0), time(7, 0))  # IST: no collection overnight, so these hours don't count
 
 
@@ -284,15 +284,51 @@ def news_check(settings, now: datetime) -> list[Health]:
     conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
     try:
         last = conn.execute("SELECT MAX(at) FROM fetches WHERE error = ''").fetchone()[0]
+        first = conn.execute("SELECT MIN(at) FROM fetches").fetchone()[0]
         count = conn.execute("SELECT COUNT(*) FROM announcements").fetchone()[0]
         recent_gaps = conn.execute("SELECT COUNT(*) FROM fetches WHERE gap_to >= ?",
                                    ((now - timedelta(days=7)).isoformat(),)).fetchone()[0]
+        try:  # whole days fetched from NSE's API (the catch-up after a sleeping laptop)
+            whole = {r[0] for r in conn.execute("SELECT DISTINCT day FROM coverage WHERE complete = 1")}
+        except sqlite3.OperationalError:  # a history from before the catch-up existed
+            whole = None
     finally:
         conn.close()
     if last is None or collection_time(datetime.fromisoformat(last), now) > NEWS_STALE:
         return [Health("news", WARN, f"no successful fetch since {_when(last) if last else 'it began'}: check "
                        "logs/news.log (NSE may be turning the requests away)")]
-    return [Health("news", OK, f"{count} announcements, last fetched {_when(last)}; {recent_gaps} gap(s) in 7 days")]
+    today = now.astimezone(IST).date()
+    if whole is not None and first is not None:
+        # each day is fetched whole after it ends; one still missing two days on means NSE's API is refusing
+        start = max(datetime.fromisoformat(first).astimezone(IST).date(), today - timedelta(days=7))
+        behind = [start + timedelta(days=k) for k in range((today - start).days - 1)
+                  if (start + timedelta(days=k)).isoformat() not in whole]
+        if behind:
+            return [Health("news", WARN, f"{len(behind)} day(s) not yet fetched whole from NSE's API "
+                           f"({', '.join(str(d) for d in behind)}): check logs/news.log")]
+    return [Health("news", OK, f"{count} announcements, last fetched {_when(last)}; {recent_gaps} gap(s) in 7 days, "
+                   "every finished day fetched whole")]
+
+
+FORWARD2_LEDGER = Path("state") / "forward2.db"
+FORWARD2_STALE = timedelta(days=3)  # it updates every evening; three days without a good update means it has stopped
+
+
+def forward2_check(now: datetime) -> list[Health]:
+    """Forward test 2 (N2 in paper mode, research only): is its evening update still running? Never an alert."""
+    path = ROOT / FORWARD2_LEDGER
+    if not path.exists():
+        return []
+    conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+    try:
+        last_ok = conn.execute("SELECT MAX(at) FROM runs WHERE status = 'ok'").fetchone()[0]
+        closed = conn.execute("SELECT COUNT(*) FROM trades WHERE outcome != 'not bought'").fetchone()[0]
+    finally:
+        conn.close()
+    if last_ok is None or now - datetime.fromisoformat(last_ok) > FORWARD2_STALE:
+        return [Health("forward test 2", WARN, f"no good update since {_when(last_ok) if last_ok else 'it began'}: "
+                       "check logs/forward2.log")]
+    return [Health("forward test 2", OK, f"updated {_when(last_ok)}; {closed} closed paper trade(s)")]
 
 
 def backup_check(store: PaperStore | None, backup_dir: Path | None, today: date) -> list[Health]:
@@ -355,7 +391,7 @@ def health_checks(store: PaperStore | None, calendar: MarketCalendar, registry: 
     """Every check, worst first. `store` is None before the first daily run."""
     checks = [*run_checks(store, calendar, now), *safety_checks(store, kill_switch), unattended_record(store, now),
               dry_run_check(store, now.date()), *backup_check(store, backup_dir, now.date()),
-              *integrity_check(store, live_store, backup_dir), *news_check(settings, now),
+              *integrity_check(store, live_store, backup_dir), *news_check(settings, now), *forward2_check(now),
               *us_checks(us_store, now, backup_dir),
               *strategy_checks(registry, now.date(), max_age_days, evidence_dir), calendar_checks(calendar, now.date()),
               data_checks(settings, now, session_file), *live_checks(settings, live_store, now, session_file)]

@@ -36,11 +36,13 @@ import io
 import json
 import re
 import zipfile
-from datetime import date, datetime, timezone
+from collections.abc import Sequence
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import requests
 
 from trader.research.datasets import DATA_DIR
 
@@ -72,8 +74,26 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def raw_files(raw_dir: Path = RAW_DIR) -> list[Path]:
-    return sorted(raw_dir.glob("*/*.zip"), key=file_date)
+def _dirs(where: Path | Sequence[Path]) -> list[Path]:
+    return [Path(where)] if isinstance(where, (str, Path)) else [Path(d) for d in where]
+
+
+def raw_files(raw_dir: Path | Sequence[Path] = RAW_DIR) -> list[Path]:
+    """Every session's file, in date order. Given several folders, a later folder's file for a session wins."""
+    by_session = {}
+    for folder in _dirs(raw_dir):
+        for path in folder.glob("*/*.zip"):
+            by_session[file_date(path)] = path
+    return [by_session[day] for day in sorted(by_session)]
+
+
+def ca_files(ca_dir: Path | Sequence[Path] = CA_DIR) -> list[Path]:
+    """Every month's corporate-action file. Given several folders, a later folder's copy of a month wins (newer)."""
+    by_month = {}
+    for folder in _dirs(ca_dir):
+        for path in folder.glob("*.json"):
+            by_month[path.name] = path
+    return [by_month[name] for name in sorted(by_month)]
 
 
 def file_date(path: Path) -> date:
@@ -180,10 +200,10 @@ def standard_ratios() -> dict[float, str]:
     return out
 
 
-def load_corporate_actions(ca_dir: Path = CA_DIR) -> pd.DataFrame:
+def load_corporate_actions(ca_dir: Path | Sequence[Path] = CA_DIR) -> pd.DataFrame:
     """Every equity record: symbol, isin, ex_date, subject, ratio (split and bonus factor), distribution (bool)."""
     rows = []
-    for path in sorted(ca_dir.glob("*.json")):
+    for path in ca_files(ca_dir):
         for r in json.loads(path.read_text(encoding="utf-8")):
             ex = pd.to_datetime(r.get("exDate"), format="%d-%b-%Y", errors="coerce")
             if pd.isna(ex):
@@ -387,13 +407,17 @@ def corporate_action_factors(panel: pd.DataFrame, actions: pd.DataFrame) -> tupl
     return factor, pd.DataFrame(log)
 
 
-def build(raw_dir: Path = RAW_DIR, out_dir: Path = PANEL_DIR, ca_dir: Path = CA_DIR,
+def build(raw_dir: Path | Sequence[Path] = RAW_DIR, out_dir: Path = PANEL_DIR, ca_dir: Path | Sequence[Path] = CA_DIR,
           changes_path: Path = SYMBOL_CHANGES) -> Path:
-    files = raw_files(raw_dir)
+    """Parse, join, adjust and freeze. Several raw or corporate-action folders may be given (forward test 2 adds
+    the sessions after round 8's archive): later folders win for the same session or month."""
+    files, raw_dirs = raw_files(raw_dir), _dirs(raw_dir)
     frames, inventory = [], {}
     for path in files:
         frames.append(parse(path))
-        inventory[path.relative_to(raw_dir).as_posix()] = sha256(path)
+        base = next(d for d in raw_dirs if path.is_relative_to(d))
+        key = path.relative_to(base).as_posix()
+        inventory[key if len(raw_dirs) == 1 else f"{base.parent.name}/{key}"] = sha256(path)
     panel = pd.concat(frames, ignore_index=True)
     del frames
     isins = (panel.dropna(subset=["isin"]).groupby("symbol", observed=True)["isin"]
@@ -426,7 +450,7 @@ def build(raw_dir: Path = RAW_DIR, out_dir: Path = PANEL_DIR, ca_dir: Path = CA_
                 "rows": len(panel), "securities": int(panel["sid"].nunique()),
                 "panel_sha256": sha256(panel_path), "isins_sha256": sha256(out_dir / "isins.csv"),
                 "symbol_changes_sha256": sha256(changes_path),
-                "corporate_actions_sha256": {p.name: sha256(p) for p in sorted(ca_dir.glob("*.json"))},
+                "corporate_actions_sha256": {p.name: sha256(p) for p in ca_files(ca_dir)},
                 "raw": inventory}
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=1), encoding="utf-8")
     return panel_path
@@ -448,6 +472,73 @@ def load_isins(out_dir: Path = PANEL_DIR) -> dict[str, str]:
         raise ValueError(f"{path} does not match its checksum")
     frame = pd.read_csv(path, dtype=str, keep_default_na=False)
     return dict(zip(frame["symbol"], frame["isins"]))
+
+
+# --------------------------------------------------------------------------------------------- downloads
+# What asks: NSE's archive and API answer a plainly named research client.
+RESEARCH_HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) trading-agent-research/1.0 (personal research)"}
+OLD_URL = "https://nsearchives.nseindia.com/content/historical/EQUITIES/{y}/{mon}/cm{d:02d}{mon}{y}bhav.csv.zip"
+NEW_URL = "https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{ymd}_F_0000.csv.zip"
+UDIFF_FROM = date(2024, 7, 8)  # the old format's last file is 5 Jul 2024
+CA_URL = "https://www.nseindia.com/api/corporates-corporateActions?index=equities&from_date={a}&to_date={b}"
+SYMBOL_CHANGES_URL = "https://nsearchives.nseindia.com/content/equities/symbolchange.csv"
+
+
+def bhavcopy_url(day: date) -> str:
+    if day >= UDIFF_FROM:
+        return NEW_URL.format(ymd=day.strftime("%Y%m%d"))
+    return OLD_URL.format(y=day.year, mon=day.strftime("%b").upper(), d=day.day)
+
+
+def fetch_bhavcopy(day: date, raw_dir: Path, http=requests) -> str:
+    """Download one session's file into raw_dir/<year>/, unchanged. Returns "saved", "no session" (NSE answers 404
+    for a day without a session) or raises for anything else (the caller tries again later)."""
+    url = bhavcopy_url(day)
+    response = http.get(url, headers=RESEARCH_HEADERS, timeout=60)
+    if response.status_code == 404:
+        return "no session"
+    response.raise_for_status()
+    if response.content[:2] != b"PK":
+        raise ValueError(f"{day}: not a zip file")
+    target = raw_dir / str(day.year) / url.rsplit("/", 1)[1]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(response.content)
+    try:
+        parse(target)  # refuse a file that can't be read, rather than keep it
+    except Exception:
+        target.unlink()
+        raise
+    return "saved"
+
+
+def nse_session(http=requests, referer: str = "https://www.nseindia.com/companies-listing/corporate-filings-actions"):
+    """A session with the cookies NSE's API wants, from one visit to its home page."""
+    session = http.Session()
+    session.headers.update({**RESEARCH_HEADERS, "Accept": "application/json, text/plain, */*", "Referer": referer})
+    session.get("https://www.nseindia.com/", timeout=30)
+    return session
+
+
+def fetch_corporate_actions(year: int, month: int, ca_dir: Path, session) -> int:
+    """One month's corporate-action records into ca_dir/<YYYY-MM>.json (replacing an older copy: NSE adds and
+    revises records as the month goes on). Returns how many records."""
+    last = (date(year + month // 12, month % 12 + 1, 1) - timedelta(days=1)).day
+    response = session.get(CA_URL.format(a=f"01-{month:02d}-{year}", b=f"{last:02d}-{month:02d}-{year}"), timeout=60)
+    response.raise_for_status()
+    records = response.json()
+    if not isinstance(records, list):
+        raise ValueError(f"{year}-{month:02d}: NSE's corporate-action API answered with something other than a list")
+    ca_dir.mkdir(parents=True, exist_ok=True)
+    (ca_dir / f"{year}-{month:02d}.json").write_text(json.dumps(records), encoding="utf-8")
+    return len(records)
+
+
+def fetch_symbol_changes(path: Path, http=requests) -> int:
+    response = http.get(SYMBOL_CHANGES_URL, headers=RESEARCH_HEADERS, timeout=60)
+    response.raise_for_status()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(response.content)
+    return len(load_symbol_changes(path))
 
 
 # ------------------------------------------------------------------------------------------------- audit

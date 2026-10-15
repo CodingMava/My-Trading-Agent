@@ -1,4 +1,4 @@
-# Registers the four Windows scheduled tasks that run the trading agent unattended. Review it, then run it
+# Registers the five Windows scheduled tasks that run the trading agent unattended. Review it, then run it
 # once from the project folder in PowerShell:
 #   powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1
 # The times are this PC's local time, which must be India time (IST). The tasks run while you are logged
@@ -49,17 +49,29 @@ Register-ScheduledTask -TaskName "Trading agent - Telegram commands" -Force `
 Stop-ScheduledTask -TaskName "Trading agent - Telegram commands"
 Start-ScheduledTask -TaskName "Trading agent - Telegram commands"
 
-# Every 15 minutes from 07:00 to midnight: NSE's corporate announcements, collected for research (Phase 9).
-# A missed run only leaves a gap, which the next run records.
-$newsTrigger = New-ScheduledTaskTrigger -Daily -At "07:00"
-$newsTrigger.Repetition = (New-ScheduledTaskTrigger -Once -At "07:00" -RepetitionInterval (New-TimeSpan -Minutes 15) `
-    -RepetitionDuration (New-TimeSpan -Hours 17)).Repetition
-$newsSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 5) `
-    -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+# Every 15 minutes, all day: NSE's corporate announcements, collected for research (Phase 9). The repetition
+# never ends, so it doesn't hang on one daily start: with a 07:00 daily trigger, a laptop asleep at 07:00 ran
+# nothing all day (14 Oct 2026). A start missed while the PC slept runs as soon as it wakes, and each run
+# fetches whole from NSE's announcement API every recent day it hasn't seen whole, so nothing is lost.
+$newsStart = (Get-Date).Date.AddHours((Get-Date).Hour + 1)  # the next full hour
+$newsTrigger = New-ScheduledTaskTrigger -Once -At $newsStart -RepetitionInterval (New-TimeSpan -Minutes 15)  # no end
+$newsSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 Register-ScheduledTask -TaskName "Trading agent - news" -Force `
     -Description "Collects NSE announcements for research (python -m trader.research.news collect). Never trades." `
     -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.news collect" -WorkingDirectory $root) `
     -Trigger $newsTrigger -Settings $newsSettings | Out-Null
+
+# 19:30 every evening: forward test 2, round 8's N2 in paper mode (research only, docs/research/forward2-preregistration.md).
+# It downloads the evening's NSE file and corporate actions, rebuilds the adjusted history when something changed,
+# records the month's picks and the closed paper positions, and sends forward-test messages labelled paper only.
+# If the PC was asleep or off at 19:30, it runs as soon as it is back and catches up every day it missed.
+$forwardSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 45) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+Register-ScheduledTask -TaskName "Trading agent - forward test 2" -Force `
+    -Description "Forward test 2: N2 in paper mode on new NSE sessions (python -m trader.research.forward2 daily). Research only; never trades." `
+    -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.forward2 daily" -WorkingDirectory $root) `
+    -Trigger (New-ScheduledTaskTrigger -Daily -At "19:30") -Settings $forwardSettings | Out-Null
 
 # Live trading through Zerodha Kite: 18:30 after the daily run (orders for the next open), 09:20 after the
 # open (stops), 15:15 before the close (time exits). The morning job may start late, since a stop placed late

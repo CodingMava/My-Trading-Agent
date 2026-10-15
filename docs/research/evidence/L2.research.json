@@ -1,0 +1,103 @@
+{
+  "strategy_id": "L2",
+  "kind": "research",
+  "decision": "REJECTED",
+  "generated": "2026-10-14",
+  "source": "docs/research/round9-results.md (python -m trader.research.round9 --stage 2)",
+  "checks": [
+    {
+      "number": 1,
+      "criterion": "At least 50 trades",
+      "value": "795",
+      "passed": true
+    },
+    {
+      "number": 2,
+      "criterion": "Win rate at least 50%",
+      "value": "52.7%",
+      "passed": true
+    },
+    {
+      "number": 3,
+      "criterion": "Expectancy above 0 at base and 1.5x costs",
+      "value": "+0.6706% / +0.4394%",
+      "passed": true
+    },
+    {
+      "number": 4,
+      "criterion": "t-statistic at least 2.0",
+      "value": "2.85",
+      "passed": true
+    },
+    {
+      "number": 5,
+      "criterion": "Beats the random baseline: Holm-adjusted p below 0.05",
+      "value": "0.85486",
+      "passed": false
+    },
+    {
+      "number": 6,
+      "criterion": "Profit factor at least 1.3",
+      "value": "1.31",
+      "passed": true
+    },
+    {
+      "number": 7,
+      "criterion": "Average loss at most 1.5x the average win; no trade worse than -3R",
+      "value": "-4.635% vs +5.432% (0.85x); worst -1.46R",
+      "passed": true
+    },
+    {
+      "number": 8,
+      "criterion": "Expectancy above 0 in each half of the span",
+      "value": "+0.4359% / +0.9024% (split 2020-01-29)",
+      "passed": true
+    },
+    {
+      "number": 9,
+      "criterion": "At least 70% of calendar years with 10+ trades profitable",
+      "value": "71% of 14 years",
+      "passed": true
+    },
+    {
+      "number": 10,
+      "criterion": "At least 60% of stocks with 5+ trades profitable; expectancy above 0 without the top stock",
+      "value": "67% of 36 stocks; +0.6311% without COLPAL",
+      "passed": true
+    },
+    {
+      "number": 11,
+      "criterion": "Cluster-robust t-statistic (signal months as clusters) at least 2.0",
+      "value": "2.05",
+      "passed": true
+    },
+    {
+      "number": 12,
+      "criterion": "Raw random-baseline p below 0.05/28 = 0.00179",
+      "value": "0.50437",
+      "passed": false
+    },
+    {
+      "number": 13,
+      "criterion": "Drawdown no deeper than 20R (cumulative R in exit order)",
+      "value": "12.9R",
+      "passed": true
+    }
+  ],
+  "stats": {
+    "evaluation_span": "2013-06-28 to 2026-08-31",
+    "holdout_trades": 795,
+    "holdout_win_rate": 0.5270440251572327,
+    "holdout_mean_net": 0.006706243457635806,
+    "holdout_sd_net": 0.06626291228950298,
+    "holdout_profit_factor": 1.3059183550614017,
+    "holdout_t": 2.853595165264942,
+    "holdout_t_clustered": 2.04931451378262,
+    "p_random_raw": 0.5043747812609369,
+    "p_random_holm": 0.8548572571371431,
+    "round_trip_cost": 0.004531612,
+    "max_drawdown_r": 12.913148760795593,
+    "runner_sha256": "23d80754878d4a9997eaa0e47f552a51ec6b2be840c3ba17578f25be0ea34883"
+  },
+  "preregistration_sha256": "2f35fd4b44e1b9ef455509ceab5506820dbe0299daafe06f79b4bd6360ddbbf4"
+}

@@ -6,11 +6,12 @@ Telegram; it **never places real orders**. US stocks are researched with the sam
 signals come to you to place by hand.
 
 > **Current mode: NO TRADE.** Nothing tested so far makes money after costs in a way that beats chance:
-> not the original nine intraday rules (audit, 2026-10-08), and not the twenty-five pre-registered
-> hypotheses of eight research rounds. The daily paper-trading run records NO TRADE until a strategy
-> passes the profitability gate. The newest lead, mid-cap momentum on a survivorship-free NSE universe
-> (round 8), beat random picks but failed the win-rate, stability and drawdown rules
-> ([round 8](#research-round-8-stock-momentum-on-a-survivorship-free-nse-universe-2026-10-14)).
+> not the original nine intraday rules (audit, 2026-10-08), and not the twenty-eight pre-registered
+> hypotheses of nine research rounds. The daily paper-trading run records NO TRADE until a strategy
+> passes the profitability gate. The strongest leads, mid-cap momentum on a survivorship-free NSE universe
+> (rounds 8 and 9), beat random picks but failed the win-rate, stability and drawdown rules
+> ([round 8](#research-round-8-stock-momentum-on-a-survivorship-free-nse-universe-2026-10-14),
+> [round 9](#research-round-9-low-volatility-and-volatility-adjusted-momentum-2026-10-14)).
 
 ## Audit results (2026-10-08)
 
@@ -171,6 +172,28 @@ entries at the project's multiple-testing bar (p below 0.05 / 25). It fails thre
 the fact its edge leans on a few very large winners and on the years since 2020. The 10% stop hurt: without it, the same picks won 51-54% of their trades and beat random picks
 by more. Twenty-five hypotheses over eight rounds, none passed. What this suggests next, and what it would take, is in
 [the research review](docs/research/round8-research-review.md).
+
+## Research round 9: low volatility and volatility-adjusted momentum (2026-10-14)
+
+Round 8's universe, tiers, trade, 10% stop, costs, random baseline and criteria, with two other ways of choosing the 5
+stocks: the least volatile (L1 among the 100 most liquid, L2 among ranks 101-300), and momentum divided by volatility,
+like NSE's Nifty200 Momentum 30 (V2, ranks 101-300). Pinned before any code computed them
+([pre-registration](docs/research/round9-preregistration.md)); a development stage on 2006-2013
+([stage 1](docs/research/round9-stage1.md)), then one decision run on 2013-2026 ([results](docs/research/round9-results.md)).
+
+| Hypothesis | Trades | Winners | Net per trade | Random picks | p vs random | Result | Status |
+|---|---:|---:|---:|---:|---:|---|---|
+| L1: least volatile of the 100 most liquid | 795 | 51.4% | +0.58% | +0.52% | 0.43 | No better than random picks; profit factor 1.24, 57% of years profitable | REJECTED |
+| L2: least volatile of ranks 101-300 | 795 | 52.7% | +0.67% | +0.68% | 0.50 | Passed 11 of 13 criteria (drawdown 12.9R, 71% of years) but no edge over random picks | REJECTED |
+| V2: volatility-adjusted momentum, ranks 101-300 | 791 | 45.9% | +2.07% | +0.67% | 0.0002 | The project's strongest edge over random picks, but 46% winners, 64% of years profitable, drawdown 30R | REJECTED |
+
+The two halves of the problem showed up in different rules. Low-volatility mid caps (L2) had the payoff the rules ask
+for (more winners than losers, small drawdowns, steady years) but earned exactly what random picks from the same tier
+earned. Volatility-adjusted momentum (V2) beat random picks by far more than chance allows (p 0.0002 against a bar of
+0.0018) but failed the same three rules as N2, with which it shares many picks. Twenty-eight hypotheses over nine
+rounds, none passed. Two notes on stage 1 (decides nothing): two months held 4 picks because the top stock could not be
+bought (round 8's rule, as in round 8), and one closed-end fund (MORGANSTAN, until 2008) was counted as a company by
+round 8's data audit; neither touches the 2013-2026 decision.
 
 ## Research status: a forward test instead of more rounds (2026-10-13)
 
@@ -347,7 +370,7 @@ cover the US account too, and the heartbeat is pinged only when both accounts' r
 
 ## Running unattended
 
-Four Windows scheduled tasks run the system. `scripts/register_tasks.ps1` creates them: review it, then
+Five Windows scheduled tasks run the system. `scripts/register_tasks.ps1` creates them: review it, then
 run it once with `powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1`. They run on
 battery too (by Windows' default a laptop that isn't plugged in would skip them), and without a console
 window, so nothing pops up to be closed by accident; their output is in `logs/`. Run the script again
@@ -358,7 +381,8 @@ whenever it changes.
 | Daily run | 18:00 IST every day; if the PC was off then, as soon as it is back | `python -m trader.execution.eod` (India's account, then the US one) |
 | Health check | 21:00 IST every day; if the PC was asleep or off then, as soon as it is back, after giving a catch-up daily run 10 minutes | `python -m trader.ops.health --notify --scheduled` |
 | Telegram commands | Always, from logon (no console window; restarted if it stops) | `python -m trader.notify.bot` |
-| News | Every 15 minutes, 07:00 to midnight | `python -m trader.research.news collect` |
+| News | Every 15 minutes, all day; a run missed while the PC slept starts when it wakes, and hours it slept through are fetched whole from NSE's announcement API | `python -m trader.research.news collect` |
+| Forward test 2 | 19:30 every evening; if the PC was off or asleep then, as soon as it is back | `python -m trader.research.forward2 daily` (N2 in paper mode on new NSE sessions; research only) |
 
 From your Telegram chat with the bot: `/status` (health, mode, equity, positions), `/positions`,
 `/trades` (the latest closed trades; both accounts), `/kill reason`, which stops all new trades at
@@ -419,8 +443,13 @@ python -m trader.research.nse_bhavcopy build                      # NSE's daily 
 python -m trader.research.nse_bhavcopy audit                      # its data-quality report
 python -m trader.research.round8 --stage 1                        # round 8's development stage (2006-2013)
 python -m trader.research.round8 --stage 2                        # round 8's decision: ran once; refuses a second run
+python -m trader.research.round9 --stage 1                        # round 9's development stage (2006-2013)
+python -m trader.research.round9 --stage 2                        # round 9's decision: ran once; refuses a second run
 python -m trader.research.forward1                                # forward test 1: H11, H12 on new sessions
-python -m trader.research.news status                             # the news history: counts, events, gaps
+python -m trader.research.forward2 status                         # forward test 2: N2 in paper mode, the ledger so far
+python -m trader.research.forward2 look                           # its look: informational any time, a decision each January
+python -m trader.research.news status                             # the news history: counts, events, gaps, days seen whole
+python -m trader.research.news backfill --from 2026-10-01         # whole past days from NSE's announcement API
 pytest                                                            # fast tests
 pytest -m slow                                                    # research regressions (need the frozen data in data/)
 ```
@@ -486,6 +515,8 @@ python -m trader.risk.killswitch status
 | 3g | Forward test 1: H11 and H12 on sessions after 13 Oct 2026 | Running: decisions each January, 2028 to 2036 |
 | 3h | Research round 7: intraday momentum on Kite's minute data | Done: 0 of 3 passed |
 | 3i | Research round 8: stock momentum on a survivorship-free NSE universe (NSE's own daily files, 2005-2026) | Done: 0 of 2 passed; N2 (mid caps) beat random picks but failed the win-rate, stability and drawdown rules |
+| 3j | Forward test 2: N2, unchanged, in paper mode on months after 30 Oct 2026 | Running: picks recorded each month-end, decisions each January, 2028 to 2036 |
+| 3k | Research round 9: low volatility and volatility-adjusted momentum on the same NSE universe | Done: 0 of 3 passed; L2 had the right payoff but no edge, V2 the strongest edge but N2's failures |
 | 4 | Profitability gate enforced from evidence reports | Done |
 | 5-6 | Risk engine and portfolio limits | Done |
 | 7 | Paper trading (end-of-day, for swing strategies) | Done: India's account and, since 2026-10-12, a US one whose signals you place by hand. No strategy is eligible yet; the 60 unattended sessions are being counted (the health check shows how many) |
