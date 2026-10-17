@@ -270,3 +270,16 @@ def test_forward_test_2_that_stops_updating_is_a_warning(tmp_path, monkeypatch):
     assert check.level == OK and check.detail.startswith("updated 17 Aug 21:00 IST; 0 closed")
     assert health.forward2_check(EVENING + timedelta(days=3))[0].level == WARN
     ledger.close()
+
+
+def test_forward_test_3_is_watched_but_never_alerts(tmp_path, monkeypatch):
+    from trader.research.forward3 import Ledger
+    monkeypatch.setattr(health, "ROOT", tmp_path)
+    assert health.forward3_check(EVENING) == []  # not started
+    ledger = Ledger(tmp_path / "state" / "forward3.db")
+    ledger.add_run(EVENING - timedelta(hours=1), "ok", "board meetings ...")
+    ledger.close()
+    check = health.forward3_check(EVENING)[0]
+    assert check.level == OK and "0 signal(s), 0 closed paper trade(s)" in check.detail
+    assert health.forward3_check(EVENING + timedelta(days=3))[0].level == WARN
+

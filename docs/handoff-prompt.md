@@ -54,7 +54,7 @@ want a clear answer and real progress, not bookkeeping.
   evidence, 60 clean unattended sessions and more; it is locked today ([live] enabled = false, capital Rs 0).
 - **What exists and runs** (Windows scheduled tasks, windowless, battery-proof): the daily paper run at 18:00 IST
   (India, then a US paper account), a health check at 21:00, the NSE news collector every 15 minutes (catches up missed
-  days whole), forward test 2 at 19:30, and a Telegram bot (/status /positions /trades /kill /login /kitecheck; it can
+  days whole), forward tests 2 and 3 at 19:30 (one task, "Trading agent - forward tests"), and a Telegram bot (/status /positions /trades /kill /login /kitecheck; it can
   never release the kill switch or place a trade). Also: append-only SQLite records with daily backups, a read-only
   dashboard, a Kite order path that exists only as a journaled dry run plus an order-management system tested against a
   fake Kite, tax records, and a CI suite with a 100% branch-coverage gate on the risk engine and order path.
@@ -214,6 +214,10 @@ were 2015, 2018, 2022, 2024 and 2025.
   in 2028; realistically nothing is decided before 2030.
 - **Forward test 2:** N2, rules unchanged, pinned 14 October 2026 23:27 IST, runs daily at 19:30. First picks at the 30
   October 2026 close; January looks 2028-2036. Its pinned rules were pushed to GitHub on 16 October (public timestamp).
+- **Forward test 3:** round 10's E2, rules unchanged, pinned 17 October 2026 19:02 IST (docs/research/forward3-preregistration.md),
+  runs daily after forward test 2 (same 19:30 task). Results meetings from 19 Oct 2026; first possible paper entry 22 Oct
+  2026. NSE's board-meeting notices are fetched each evening into data/forward3/; ledger state/forward3.db; evidence id
+  E2F; January looks 2028-2036. About 20-25 trades a year, so slow.
 - **Round 10 (pinned 17 Oct 17:45 IST, run once, all REJECTED):** see §6 (E2, Q, M). The earlier draft below was replaced
   by the pinned pre-registration (E1 was dropped by screening; E2 got a 15% stop and 40-session hold):
   File docs/research/round10-preregistration.md. Universe: round 8's 300 most liquid stocks at the latest month-end.

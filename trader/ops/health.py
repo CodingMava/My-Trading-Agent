@@ -331,6 +331,27 @@ def forward2_check(now: datetime) -> list[Health]:
     return [Health("forward test 2", OK, f"updated {_when(last_ok)}; {closed} closed paper trade(s)")]
 
 
+FORWARD3_LEDGER = Path("state") / "forward3.db"
+
+
+def forward3_check(now: datetime) -> list[Health]:
+    """Forward test 3 (round 10's E2 in paper mode, research only): is its evening update still running? Never an alert."""
+    path = ROOT / FORWARD3_LEDGER
+    if not path.exists():
+        return []
+    conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+    try:
+        last_ok = conn.execute("SELECT MAX(at) FROM runs WHERE status = 'ok'").fetchone()[0]
+        closed = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
+        signals = conn.execute("SELECT COUNT(*) FROM signals WHERE late = 0").fetchone()[0]
+    finally:
+        conn.close()
+    if last_ok is None or now - datetime.fromisoformat(last_ok) > FORWARD2_STALE:
+        return [Health("forward test 3", WARN, f"no good update since {_when(last_ok) if last_ok else 'it began'}: "
+                       "check logs/forward3.log")]
+    return [Health("forward test 3", OK, f"updated {_when(last_ok)}; {signals} signal(s), {closed} closed paper trade(s)")]
+
+
 def backup_check(store: PaperStore | None, backup_dir: Path | None, today: date) -> list[Health]:
     """The daily run copies the records to <database folder>/backups after every run that didn't fail."""
     if store is None or backup_dir is None:
@@ -391,7 +412,7 @@ def health_checks(store: PaperStore | None, calendar: MarketCalendar, registry: 
     """Every check, worst first. `store` is None before the first daily run."""
     checks = [*run_checks(store, calendar, now), *safety_checks(store, kill_switch), unattended_record(store, now),
               dry_run_check(store, now.date()), *backup_check(store, backup_dir, now.date()),
-              *integrity_check(store, live_store, backup_dir), *news_check(settings, now), *forward2_check(now),
+              *integrity_check(store, live_store, backup_dir), *news_check(settings, now), *forward2_check(now), *forward3_check(now),
               *us_checks(us_store, now, backup_dir),
               *strategy_checks(registry, now.date(), max_age_days, evidence_dir), calendar_checks(calendar, now.date()),
               data_checks(settings, now, session_file), *live_checks(settings, live_store, now, session_file)]

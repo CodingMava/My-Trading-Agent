@@ -12,7 +12,7 @@ interpreting under pressure.
 | 21:00 IST daily ("Trading agent - health check"); if the PC was asleep or off at 21:00, when it is back (after giving a catch-up daily run 10 minutes) | `python -m trader.ops.health --notify --scheduled` alerts you when anything below needs attention, and leaves one line per run in its log | `logs/health.log` |
 | Always, from logon ("Trading agent - Telegram commands") | `python -m trader.notify.bot` answers `/status`, `/positions`, `/trades` (both accounts), `/kill reason`, `/kitecheck` and `/login` from your chat only | `logs/bot.log` |
 | Every 15 minutes, all day ("Trading agent - news"; a start missed while the PC slept runs when it wakes) | `python -m trader.research.news collect` stores NSE's announcements for research (no trading code reads them), fetches whole from NSE's announcement API every recent day not yet seen whole, and leaves one line per run in its log | `logs/news.log` |
-| 19:30 IST daily ("Trading agent - forward test 2"); if the PC was asleep or off then, when it is back | `python -m trader.research.forward2 daily` downloads the evening's NSE file and corporate actions, records forward test 2's paper picks and closed paper positions (N2 on new sessions, research only), and sends `[FORWARD TEST 2 · paper only]` messages | `logs/forward2.log`, `state/forward2-status.md` |
+| 19:30 IST daily ("Trading agent - forward tests"); if the PC was asleep or off then, when it is back | First `python -m trader.research.forward2 daily`: downloads the evening's NSE file and corporate actions, records forward test 2's paper picks and closed paper positions (N2 on new sessions), and sends `[FORWARD TEST 2 · paper only]` messages. Then `python -m trader.research.forward3 daily`: fetches NSE's board-meeting notices, records forward test 3's E2 signals, paper entries and exits on the rebuilt history, and sends `[FORWARD TEST 3 · paper only]` messages. Research only | `logs/forward2.log`, `state/forward2-status.md`, `logs/forward3.log`, `state/forward3-status.md` |
 | Any time | `streamlit run dashboard.py` (read-only) or `python -m trader.ops.health` | |
 
 No real order is ever placed: the system paper trades, and today it is in NO TRADE because no strategy has
@@ -121,6 +121,9 @@ Kill switch log (date, why it engaged, what changed before it was released):
 - **Each January from 2028:** run `python -m trader.research.forward2 look` (forward test 2: N2 in paper mode on
   months after 30 Oct 2026). Each January look applies the decisions pinned in
   `docs/research/forward2-preregistration.md`, and writes `docs/research/forward2-look-<date>.md`; commit it.
+- **Each January from 2028:** run `python -m trader.research.forward3 look` (forward test 3: E2 in paper mode on
+  results meetings from 19 Oct 2026). It applies the decisions pinned in `docs/research/forward3-preregistration.md`
+  and writes `docs/research/forward3-look-<date>.md`; commit it.
 - **Each January from 2027:** run `python -m trader.research.forward1` (forward test 1: H11 and H12 on
   sessions after 13 Oct 2026) and commit its status. January 2027's look only reports; from January
   2028 to 2036 each January look applies the decisions pinned in

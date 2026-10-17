@@ -62,15 +62,24 @@ Register-ScheduledTask -TaskName "Trading agent - news" -Force `
     -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.news collect" -WorkingDirectory $root) `
     -Trigger $newsTrigger -Settings $newsSettings | Out-Null
 
-# 19:30 every evening: forward test 2, round 8's N2 in paper mode (research only, docs/research/forward2-preregistration.md).
-# It downloads the evening's NSE file and corporate actions, rebuilds the adjusted history when something changed,
-# records the month's picks and the closed paper positions, and sends forward-test messages labelled paper only.
-# If the PC was asleep or off at 19:30, it runs as soon as it is back and catches up every day it missed.
+# 19:30 every evening: the forward tests, in paper mode (research only), one after the other in one task so they never
+# rebuild the data at the same time.
+# 1. Forward test 2, round 8's N2 (docs/research/forward2-preregistration.md): downloads the evening's NSE file and
+#    corporate actions, rebuilds the adjusted history when something changed, records the month's picks and the closed
+#    paper positions.
+# 2. Forward test 3, round 10's E2 (docs/research/forward3-preregistration.md): fetches NSE's board-meeting notices,
+#    records new results-reaction signals, paper entries and exits on forward test 2's rebuilt history.
+# Both send forward-test messages labelled paper only. If the PC was asleep or off at 19:30, the task runs as soon as it
+# is back and both catch up every day they missed.
 $forwardSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes 45) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-Register-ScheduledTask -TaskName "Trading agent - forward test 2" -Force `
-    -Description "Forward test 2: N2 in paper mode on new NSE sessions (python -m trader.research.forward2 daily). Research only; never trades." `
-    -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.forward2 daily" -WorkingDirectory $root) `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 60) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+if (Get-ScheduledTask -TaskName "Trading agent - forward test 2" -ErrorAction SilentlyContinue) {
+    Unregister-ScheduledTask -TaskName "Trading agent - forward test 2" -Confirm:$false  # now part of "forward tests"
+}
+Register-ScheduledTask -TaskName "Trading agent - forward tests" -Force `
+    -Description "Forward tests 2 (N2) and 3 (E2) in paper mode on new NSE sessions (python -m trader.research.forward2 daily, then forward3 daily). Research only; never trades." `
+    -Action @((New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.forward2 daily" -WorkingDirectory $root),
+              (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.forward3 daily" -WorkingDirectory $root)) `
     -Trigger (New-ScheduledTaskTrigger -Daily -At "19:30") -Settings $forwardSettings | Out-Null
 
 # Live trading through Zerodha Kite: 18:30 after the daily run (orders for the next open), 09:20 after the
