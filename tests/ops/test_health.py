@@ -283,3 +283,15 @@ def test_forward_test_3_is_watched_but_never_alerts(tmp_path, monkeypatch):
     assert check.level == OK and "0 signal(s), 0 closed paper trade(s)" in check.detail
     assert health.forward3_check(EVENING + timedelta(days=3))[0].level == WARN
 
+
+def test_paper_trial_1_is_watched_and_shows_its_brakes(tmp_path, monkeypatch):
+    from trader.research.trial import Ledger
+    monkeypatch.setattr(health, "ROOT", tmp_path)
+    assert health.trial_check(EVENING) == []  # not started
+    ledger = Ledger(tmp_path / "state" / "trial1.db")
+    ledger.add_run(EVENING - timedelta(hours=1), "ok", "data to ...")
+    ledger.add_brake("V2", "paused", EVENING.date(), "averaged -0.05R over the last 50 trades", EVENING)
+    ledger.close()
+    check = health.trial_check(EVENING)[0]
+    assert check.level == OK and "0 closed paper trade(s), +0.00R; brakes: V2 paused" in check.detail
+    assert health.trial_check(EVENING + timedelta(days=3))[0].level == WARN

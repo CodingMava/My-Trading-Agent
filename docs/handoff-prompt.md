@@ -218,6 +218,12 @@ were 2015, 2018, 2022, 2024 and 2025.
   runs daily after forward test 2 (same 19:30 task). Results meetings from 19 Oct 2026; first possible paper entry 22 Oct
   2026. NSE's board-meeting notices are fetched each evening into data/forward3/; ledger state/forward3.db; evidence id
   E2F; January looks 2028-2036. About 20-25 trades a year, so slow.
+- **Paper trial 1 (my decision, 17 Oct 2026):** stop searching for one passing strategy; paper-trade the best bunch of
+  near-misses in one account: E2 with 3 of the 5 positions + V2 (volatility-adjusted mid-cap momentum) with 2
+  (docs/research/trial1-definition.md, pinned 21:00 IST; trader/research/trial.py; state/trial1.db). Chosen by a
+  backtest of position splits on 2013-2026 (not evidence): +6.9R a year, 10 of 14 years profitable, worst year -10.4R,
+  drawdown 18.4R. Risk engine sizes, 20R kill switch, the gate's decay rule per part. Runs at 19:30 after the forward
+  tests. Changes no strategy's status; live stays locked.
 - **Round 10 (pinned 17 Oct 17:45 IST, run once, all REJECTED):** see §6 (E2, Q, M). The earlier draft below was replaced
   by the pinned pre-registration (E1 was dropped by screening; E2 got a 15% stop and 40-session hold):
   File docs/research/round10-preregistration.md. Universe: round 8's 300 most liquid stocks at the latest month-end.

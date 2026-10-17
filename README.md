@@ -205,6 +205,15 @@ signals, paper entries and exits and the random-pick pools in an append-only led
 `[FORWARD TEST 3 · paper only]` messages. Decisions each January from 2028 (evidence id E2F); it is slow: about 20-25
 trades a year, so it can show an edge has gone long before it can confirm one.
 
+**Paper trial 1** (your decision, 17 Oct 2026): instead of searching for one strategy that passes everything, the best
+bunch of near-misses runs together in one paper account ([definition](docs/research/trial1-definition.md), pinned
+17 Oct 2026 21:00 IST): E2 with 3 of the 5 positions and V2 (volatility-adjusted mid-cap momentum, round 9) with 2. A
+backtest of every reasonable split on 2013-2026 (chosen after seeing those years, so not evidence) gave this one the
+best return for its drawdown: +6.9R a year (+3.4% at 0.5% risk a position), 10 of 14 years profitable, worst year
+-10.4R, drawdown 18.4R; E2 and V2's yearly results were only loosely related (0.39). The account uses the risk engine's
+sizes, the 20R kill switch and the gate's decay rule per part, records everything in `state/trial1.db`, and sends
+`[PAPER TRIAL 1 · paper only]` messages. It changes no strategy's status and cannot reach real money.
+
 ## Research round 9: low volatility and volatility-adjusted momentum (2026-10-14)
 
 Round 8's universe, tiers, trade, 10% stop, costs, random baseline and criteria, with two other ways of choosing the 5
@@ -414,7 +423,7 @@ whenever it changes.
 | Health check | 21:00 IST every day; if the PC was asleep or off then, as soon as it is back, after giving a catch-up daily run 10 minutes | `python -m trader.ops.health --notify --scheduled` |
 | Telegram commands | Always, from logon (no console window; restarted if it stops) | `python -m trader.notify.bot` |
 | News | Every 15 minutes, all day; a run missed while the PC slept starts when it wakes, and hours it slept through are fetched whole from NSE's announcement API | `python -m trader.research.news collect` |
-| Forward tests 2 and 3 (one task, "Trading agent - forward tests") | 19:30 every evening; if the PC was off or asleep then, as soon as it is back | `python -m trader.research.forward2 daily` (N2 in paper mode on new NSE sessions), then `python -m trader.research.forward3 daily` (E2 in paper mode on new results meetings, with NSE's board-meeting notices fetched each evening); research only |
+| Forward tests 2 and 3, then paper trial 1 (one task, "Trading agent - forward tests") | 19:30 every evening; if the PC was off or asleep then, as soon as it is back | `python -m trader.research.forward2 daily` (N2 in paper mode on new NSE sessions), `python -m trader.research.forward3 daily` (E2 in paper mode on new results meetings, with NSE's board-meeting notices fetched each evening), then `python -m trader.research.trial daily` (E2 x3 + V2 x2 in one paper account); research only |
 
 From your Telegram chat with the bot: `/status` (health, mode, equity, positions), `/positions`,
 `/trades` (the latest closed trades; both accounts), `/kill reason`, which stops all new trades at
@@ -484,6 +493,7 @@ python -m trader.research.forward2 status                         # forward test
 python -m trader.research.forward2 look                           # its look: informational any time, a decision each January
 python -m trader.research.forward3 status                         # forward test 3: E2 in paper mode, signals and positions so far
 python -m trader.research.forward3 look                           # its look: informational any time, a decision each January
+python -m trader.research.trial status                            # paper trial 1: E2 x3 + V2 x2 in one paper account, so far
 python -m trader.research.news status                             # the news history: counts, events, gaps, days seen whole
 python -m trader.research.news backfill --from 2026-10-01         # whole past days from NSE's announcement API
 pytest                                                            # fast tests
@@ -555,6 +565,7 @@ python -m trader.risk.killswitch status
 | 3k | Research round 9: low volatility and volatility-adjusted momentum on the same NSE universe | Done: 0 of 3 passed; L2 had the right payoff but no edge, V2 the strongest edge but N2's failures |
 | 3l | Research round 10: results drift, promoter buying and their mix, on new NSE event data | Done: 0 of 3 passed; E2 passed 11 of 13 (all but beating random picks significantly) |
 | 3m | Forward test 3: E2, unchanged, in paper mode on results meetings from 19 Oct 2026 | Running: signals and paper trades recorded each evening, decisions each January, 2028 to 2036 |
+| 3n | Paper trial 1: the best bunch of near-misses (E2 x3 + V2 x2) in one paper account | Running from 22 Oct 2026: not evidence, changes no status; live stays locked |
 | 4 | Profitability gate enforced from evidence reports | Done |
 | 5-6 | Risk engine and portfolio limits | Done |
 | 7 | Paper trading (end-of-day, for swing strategies) | Done: India's account and, since 2026-10-12, a US one whose signals you place by hand. No strategy is eligible yet; the 60 unattended sessions are being counted (the health check shows how many) |
