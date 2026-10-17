@@ -1,0 +1,103 @@
+{
+  "strategy_id": "Q",
+  "kind": "research",
+  "decision": "REJECTED",
+  "generated": "2026-10-17",
+  "source": "docs/research/round10-results.md (python -m trader.research.round10 --stage 2)",
+  "checks": [
+    {
+      "number": 1,
+      "criterion": "At least 50 trades",
+      "value": "230",
+      "passed": true
+    },
+    {
+      "number": 2,
+      "criterion": "Win rate at least 50%",
+      "value": "50.0%",
+      "passed": true
+    },
+    {
+      "number": 3,
+      "criterion": "Expectancy above 0 at base and 1.5x costs",
+      "value": "+1.3328% / +1.1014%",
+      "passed": true
+    },
+    {
+      "number": 4,
+      "criterion": "t-statistic at least 2.0",
+      "value": "1.30",
+      "passed": false
+    },
+    {
+      "number": 5,
+      "criterion": "Beats the random baseline: Holm-adjusted p below 0.05",
+      "value": "0.36018",
+      "passed": false
+    },
+    {
+      "number": 6,
+      "criterion": "Profit factor at least 1.3",
+      "value": "1.24",
+      "passed": false
+    },
+    {
+      "number": 7,
+      "criterion": "Average loss at most 1.5x the average win; no trade worse than -3R",
+      "value": "-10.919% vs +13.584% (0.80x); worst -1.30R",
+      "passed": true
+    },
+    {
+      "number": 8,
+      "criterion": "Expectancy above 0 in each half of the span",
+      "value": "+2.4736% / -0.2313% (split 2022-02-14)",
+      "passed": false
+    },
+    {
+      "number": 9,
+      "criterion": "At least 70% of calendar years with 10+ trades profitable",
+      "value": "50% of 8 years",
+      "passed": false
+    },
+    {
+      "number": 10,
+      "criterion": "At least 60% of stocks with 5+ trades profitable; expectancy above 0 without the top stock",
+      "value": "70% of 10 stocks; +0.9513% without CHAMBLFERT",
+      "passed": true
+    },
+    {
+      "number": 11,
+      "criterion": "Cluster-robust t-statistic (entry months as clusters) at least 2.0",
+      "value": "1.09",
+      "passed": false
+    },
+    {
+      "number": 12,
+      "criterion": "Raw random-baseline p below 0.05/57 = 0.000877",
+      "value": "0.309485",
+      "passed": false
+    },
+    {
+      "number": 13,
+      "criterion": "Drawdown no deeper than 20R (cumulative R in exit order)",
+      "value": "17.1R",
+      "passed": true
+    }
+  ],
+  "stats": {
+    "evaluation_span": "2018-01-01 to 2026-03-31",
+    "holdout_trades": 230,
+    "holdout_win_rate": 0.5,
+    "holdout_mean_net": 0.013328418070855347,
+    "holdout_sd_net": 0.15528406458617466,
+    "holdout_profit_factor": 1.2441378256654463,
+    "holdout_t": 1.3017141761053603,
+    "holdout_t_clustered": 1.0948609127092812,
+    "p_random_raw": 0.3094845257737113,
+    "p_random_holm": 0.360181990900455,
+    "round_trip_cost": 0.004685012,
+    "max_drawdown_r": 17.10684482846409,
+    "runner_sha256": "21f3bba31e2aa17966898541abce37652d6a572f9362215d68876d9e4eb3068c"
+  },
+  "preregistration_sha256": "c973d560263b7caac18022718d90fa468dfd2a153af1e7a11977dc702b89fc2b"
+}

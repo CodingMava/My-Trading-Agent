@@ -221,3 +221,18 @@ evidence = "795 trades 2013-2026, 52.7% winners, +0.671%/trade net vs +0.679% fo
 name = "Monthly: volatility-adjusted 12-1 and 6-1 momentum, top 5 of NSE liquidity ranks 101-300, 10% stop"
 status = "REJECTED"
 evidence = "791 trades 2013-2026, +2.068%/trade net vs +0.669% for random picks from the same tier (p=0.0002, Holm 0.0006; t=3.51, cluster t 2.57, PF 1.41): the strongest edge over random picks in the project, but 45.9% winners (floor 50%), 64% of years profitable (70%) and a 30.4R drawdown (20R). It overlaps N2."
+
+[E2]
+name = "Event: drift after a top-10% results reaction (NSE board-meeting dates), 300 most liquid stocks, 40 sessions, 15% stop, 5 positions"
+status = "REJECTED"
+evidence = "313 trades 2013-2026, 55.0% winners, +2.329%/trade net vs +0.832% for random picks from the same tier (p=0.030, Holm 0.089): passed 11 of 13 criteria (t 2.65, cluster t 2.08, PF 1.47, 71% of years, drawdown 17.3R) but its edge over random picks is not significant at the round's bar of 0.05/57 (criteria 5 and 12). The closest the project has come."
+
+[Q]
+name = "Event: promoter open-market purchases of Rs 10 lakh+ (SEBI insider disclosures), 300 most liquid stocks, 40 sessions, 15% stop, 5 positions"
+status = "REJECTED"
+evidence = "230 trades 2018-2026, 50.0% winners, +1.333%/trade net vs +0.886% for random picks (p=0.31): no edge over random picks; t 1.30, PF 1.24, 50% of years, second half negative."
+
+[M]
+name = "Mix: E2 and Q in one account sharing 5 positions (E2 first)"
+status = "REJECTED"
+evidence = "288 trades 2018-2026, 53.8% winners, +1.881%/trade net vs +1.150% for random picks (p=0.18, Holm 0.36): passed 10 of 13 (PF 1.35, 75% of years, drawdown 15.4R) but no significant edge (criteria 5, 11, 12); Q diluted E2."

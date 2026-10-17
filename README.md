@@ -6,12 +6,13 @@ Telegram; it **never places real orders**. US stocks are researched with the sam
 signals come to you to place by hand.
 
 > **Current mode: NO TRADE.** Nothing tested so far makes money after costs in a way that beats chance:
-> not the original nine intraday rules (audit, 2026-10-08), and not the twenty-eight pre-registered
-> hypotheses of nine research rounds. The daily paper-trading run records NO TRADE until a strategy
-> passes the profitability gate. The strongest leads, mid-cap momentum on a survivorship-free NSE universe
-> (rounds 8 and 9), beat random picks but failed the win-rate, stability and drawdown rules
-> ([round 8](#research-round-8-stock-momentum-on-a-survivorship-free-nse-universe-2026-10-14),
-> [round 9](#research-round-9-low-volatility-and-volatility-adjusted-momentum-2026-10-14)).
+> not the original nine intraday rules (audit, 2026-10-08), and not the thirty-one pre-registered
+> hypotheses of ten research rounds (plus 28 variants screened on development years). The daily paper-trading
+> run records NO TRADE until a strategy passes the profitability gate. The closest so far is round 10's E2, drift
+> after a strong results reaction: profitable, 55% winners, steady years and a 17R drawdown, but its edge over
+> random picks was not significant enough (p 0.03 against a bar of 0.00088)
+> ([round 10](#research-round-10-results-drift-promoter-buying-and-the-two-combined-2026-10-17)). Mid-cap
+> momentum (rounds 8 and 9) beat random picks but failed the win-rate, stability and drawdown rules.
 
 ## Audit results (2026-10-08)
 
@@ -172,6 +173,30 @@ entries at the project's multiple-testing bar (p below 0.05 / 25). It fails thre
 the fact its edge leans on a few very large winners and on the years since 2020. The 10% stop hurt: without it, the same picks won 51-54% of their trades and beat random picks
 by more. Twenty-five hypotheses over eight rounds, none passed. What this suggests next, and what it would take, is in
 [the research review](docs/research/round8-research-review.md).
+
+## Research round 10: results drift, promoter buying, and the two combined (2026-10-17)
+
+Two kinds of new data: NSE's board-meeting notices (2009-2026, with the time each was filed) and SEBI insider-trading
+disclosures (from November 2015, with the time each was published). Following your suggestion of a mix of strategies
+whose losses offset, 28 rule variants were first screened only on development years (2009 to May 2013 for
+board-meeting rules; November 2015 to December 2017 for insider rules); every one is listed with its numbers in the
+[pre-registration](docs/research/round10-preregistration.md), pinned 17 Oct 2026 17:45 IST, and counts toward the
+multiple-testing bar (0.05 / 57). Two survived and were tested alone and combined: a development stage
+([stage 1](docs/research/round10-stage1.md)), then one decision run on later years ([results](docs/research/round10-results.md)).
+
+| Hypothesis | Span | Trades | Winners | Net per trade | Random picks | p vs random (raw / Holm) | Result | Status |
+|---|---|---:|---:|---:|---:|---:|---|---|
+| E2: drift after a top-10% results reaction, 300 most liquid stocks, 40 sessions, 15% stop, 5 positions | 2013-2026 | 313 | 55.0% | +2.33% | +0.83% | 0.030 / 0.089 | Passed 11 of 13 criteria (profit factor 1.47, 71% of years profitable, drawdown 17.3R); failed only the two tests of beating random picks | REJECTED |
+| Q: promoter open-market purchases of Rs 10 lakh or more | 2018-2026 | 230 | 50.0% | +1.33% | +0.89% | 0.31 / 0.36 | No edge over random picks in the decision years | REJECTED |
+| M: E2 and Q sharing the 5 positions | 2018-2026 | 288 | 53.8% | +1.88% | +1.15% | 0.18 / 0.36 | Passed 10 of 13; Q diluted E2 | REJECTED |
+
+E2 is the closest the project has come: a profitable rule with the payoff and stability the rules ask for, ahead of
+random picks from the same stocks by about 1.5% a trade (1.8% with every event taken, 1,597 trades), but not by enough
+to rule out luck at the bar this many tests require. The mix did not help, because promoter buying, which looked
+promising on 2016-2017, had no edge in 2018-2026. What did not survive screening: holding through the results day (the
+rise comes before it), bonus, split and buyback meetings (too few), the high-volume premium (high-volume stocks did
+worse than random in India), same-month seasonality, and promoter pledge releases. NSE's insider-trading API returns
+nothing published after 2 May 2026, so any insider-based rule would need another source.
 
 ## Research round 9: low volatility and volatility-adjusted momentum (2026-10-14)
 
@@ -445,6 +470,8 @@ python -m trader.research.round8 --stage 1                        # round 8's de
 python -m trader.research.round8 --stage 2                        # round 8's decision: ran once; refuses a second run
 python -m trader.research.round9 --stage 1                        # round 9's development stage (2006-2013)
 python -m trader.research.round9 --stage 2                        # round 9's decision: ran once; refuses a second run
+python -m trader.research.round10 --stage 1                       # round 10's development stage (2009-2013, 2015-2017)
+python -m trader.research.round10 --stage 2                       # round 10's decision: ran once; refuses a second run
 python -m trader.research.forward1                                # forward test 1: H11, H12 on new sessions
 python -m trader.research.forward2 status                         # forward test 2: N2 in paper mode, the ledger so far
 python -m trader.research.forward2 look                           # its look: informational any time, a decision each January
@@ -517,6 +544,7 @@ python -m trader.risk.killswitch status
 | 3i | Research round 8: stock momentum on a survivorship-free NSE universe (NSE's own daily files, 2005-2026) | Done: 0 of 2 passed; N2 (mid caps) beat random picks but failed the win-rate, stability and drawdown rules |
 | 3j | Forward test 2: N2, unchanged, in paper mode on months after 30 Oct 2026 | Running: picks recorded each month-end, decisions each January, 2028 to 2036 |
 | 3k | Research round 9: low volatility and volatility-adjusted momentum on the same NSE universe | Done: 0 of 3 passed; L2 had the right payoff but no edge, V2 the strongest edge but N2's failures |
+| 3l | Research round 10: results drift, promoter buying and their mix, on new NSE event data | Done: 0 of 3 passed; E2 passed 11 of 13 (all but beating random picks significantly) |
 | 4 | Profitability gate enforced from evidence reports | Done |
 | 5-6 | Risk engine and portfolio limits | Done |
 | 7 | Paper trading (end-of-day, for swing strategies) | Done: India's account and, since 2026-10-12, a US one whose signals you place by hand. No strategy is eligible yet; the 60 unattended sessions are being counted (the health check shows how many) |
