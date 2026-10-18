@@ -37,6 +37,12 @@ def _security(sid, n, closes=None, lows=None, locked=()):
                            adj_close=closes.copy(), last_row=np.arange(n))
 
 
+def _cut(s, n):
+    c = lambda a: a[:n]
+    return replace(s, present=c(s.present), eq=c(s.eq), raw_close=c(s.raw_close), raw_open=c(s.raw_open), raw_high=c(s.raw_high),
+                   raw_low=c(s.raw_low), raw_prev=c(s.raw_prev), value=c(s.value), adj_open=c(s.adj_open), adj_low=c(s.adj_low),
+                   adj_close=c(s.adj_close), last_row=c(s.last_row))
+
 def _market(n=160, **special):
     sessions = _sessions(n)
     secs = {s: special.get(s) or _security(s, n) for s in "ABCDEFGHIJ"}
@@ -137,3 +143,34 @@ def test_messages_are_labelled_paper_trial():
 def test_trial_definition_matches_its_pin():
     assert trial.check_definition() == trial.DEFINITION_SHA256
 
+
+
+def test_forward_test_4_pools_are_recorded_once_closed_and_the_look_applies_the_criteria():
+    sessions = _sessions()
+    secs = {s: _security(s, len(sessions)) for s in "ABCDEFGHIJ"}
+    oct30 = sessions.index(date(2026, 10, 30))
+    table = pd.DataFrame({"i": oct30, "sid": list("ABCDEFGHIJ"), "rank": [1, 2, 3, 4, 5, 101, 102, 103, 104, 105]})
+    universe = round10.Universe(table)
+    e2 = _e2([("A", oct30 + 4, 0.3)])  # an E2 signal after October's month-end, entry the next session
+    v2 = _v2(sessions, date(2026, 10, 30), ["F", "G"])
+    ledger = trial.Ledger(":memory:")
+    early = {}
+    trial.update(ledger, sessions[:oct30 + 10], {k: _cut(s, oct30 + 10) for k, s in secs.items()}, e2, v2, NOW)
+    trial.record_pools(ledger, sessions[:oct30 + 10], {k: _cut(s, oct30 + 10) for k, s in secs.items()}, universe, NOW, early)
+    assert early.get("pools", []) == [] and ledger.table("pools").empty  # nothing has closed yet
+    events = {}
+    trial.update(ledger, sessions, secs, e2, v2, NOW)
+    trial.record_pools(ledger, sessions, secs, universe, NOW, events)
+    pools = ledger.table("pools")
+    assert sorted(zip(pools["part"], pools["tier"])) == [("E2", "N1"), ("V2", "N2")]
+    assert all(len(__import__("json").loads(p)) == 5 for p in pools["pool"])  # every enterable member of the tier
+    trial.record_pools(ledger, sessions, secs, universe, NOW, {})
+    assert len(ledger.table("pools")) == 2  # once each
+    r = trial.judge(ledger, date(2027, 6, 1))
+    assert r["decision"] == "INFORMATIONAL" and r["covered"] == len(r["trades"]) == 3
+    assert {c.number for c in r["checks"]} == set(range(1, 12)) | {13}
+    assert trial.judge(ledger, date(2028, 1, 5))["look"] == 1
+
+
+def test_forward_4_preregistration_matches_its_pin():
+    assert trial.check_forward4() == trial.FORWARD4_SHA256

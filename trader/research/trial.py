@@ -3,18 +3,21 @@ docs/research/trial1-definition.md.
 
     python -m trader.research.trial daily     # scheduled each evening after the forward tests
     python -m trader.research.trial status    # the account: open positions, closed trades, each part against its backtest
+    python -m trader.research.trial look      # forward test 4 on the trial's trades: informational any time, a decision each January
 
 E2 (round 10: drift after a strong results reaction) holds up to 3 positions and V2 (round 9: volatility-adjusted
 mid-cap momentum, monthly) up to 2, one position per stock, with the risk engine's sizes (0.5% of equity at risk), its
 kill switch (20R) and the gate's decay rule for each part. Signals, entries, exits and brakes go into an append-only
 ledger (state/trial1.db) as they happen; nothing recorded is decided again. Research only: nothing here can place an
-order or change a strategy's status in the gate, and the bunch was chosen after seeing its history, so its results are
-not evidence.
+order or change a strategy's status in the gate. The bunch was chosen after seeing its history, so its backtest is not
+evidence; its future trades are judged by forward test 4 (docs/research/forward4-preregistration.md), against the
+project's criteria and a random baseline recorded here for every closed trade.
 """
 from __future__ import annotations
 
 import argparse
 import html
+import json
 import logging
 import sqlite3
 from datetime import date, datetime
@@ -26,7 +29,7 @@ import pandas as pd
 import requests
 
 from trader.config import ROOT, load_settings
-from trader.gate import DecayThresholds, decay_check
+from trader.gate import Check, DecayThresholds, Evidence, decay_check, save_evidence
 from trader.logging_setup import configure_logging, make_console_utf8
 from trader.research import forward2, forward3, round8, round9, round10
 from trader.research.datasets import text_sha256
@@ -35,6 +38,11 @@ log = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 DEFINITION = ROOT / "docs" / "research" / "trial1-definition.md"
 DEFINITION_SHA256 = "ec1e9ace330124b9b4552ea41e1615f75b859c3621aef69a13a674c7c16a2084"  # pinned 2026-10-17 21:00 IST
+FORWARD4 = ROOT / "docs" / "research" / "forward4-preregistration.md"
+FORWARD4_SHA256 = "4e7c3e27d9b52a8887030ddb1698eed2c6a81e38a36dde8f54ef8ac118509247"  # pinned 2026-10-18 12:24 IST
+LOOKS = ROOT / "docs" / "research"
+FIRST_ENTRY = date(2026, 10, 22)  # forward test 4 judges trades entered from here
+FIRST_DECISION_YEAR, RETIRE_FROM_YEAR, LAST_YEAR = 2028, 2029, 2036
 LEDGER = ROOT / "state" / "trial1.db"
 STATUS = ROOT / "state" / "trial1-status.md"
 CAPITAL, RISK = 1_000_000, 0.005
@@ -47,7 +55,7 @@ RANKED = 20  # V2: the month's ranked list kept in the ledger (replacements for 
 KILL_R = 20.0
 DECAY = DecayThresholds()
 TAG = "<b>[PAPER TRIAL 1 · paper only]</b>"
-TABLES = ("signals", "decisions", "trades", "brakes", "runs", "notices")
+TABLES = ("signals", "decisions", "trades", "brakes", "pools", "runs", "notices")
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS signals (id INTEGER PRIMARY KEY, part TEXT NOT NULL, sid TEXT NOT NULL, signal_date TEXT NOT NULL,
     rank INTEGER, strength REAL NOT NULL, tier TEXT NOT NULL, late INTEGER NOT NULL, recorded_at TEXT NOT NULL,
@@ -60,6 +68,8 @@ CREATE TABLE IF NOT EXISTS trades (id INTEGER PRIMARY KEY, part TEXT NOT NULL, s
     recorded_at TEXT NOT NULL, UNIQUE (part, sid, signal_date));
 CREATE TABLE IF NOT EXISTS brakes (id INTEGER PRIMARY KEY, scope TEXT UNIQUE NOT NULL, kind TEXT NOT NULL,
     effective_date TEXT NOT NULL, reason TEXT NOT NULL, recorded_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS pools (id INTEGER PRIMARY KEY, part TEXT NOT NULL, month_end TEXT NOT NULL, tier TEXT NOT NULL,
+    entry_date TEXT NOT NULL, pool TEXT NOT NULL, recorded_at TEXT NOT NULL, UNIQUE (part, month_end, tier, entry_date));
 CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY, at TEXT NOT NULL, status TEXT NOT NULL, detail TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS notices (id INTEGER PRIMARY KEY, key TEXT NOT NULL, at TEXT NOT NULL, sent INTEGER NOT NULL);
 CREATE UNIQUE INDEX IF NOT EXISTS notices_sent_once ON notices (key) WHERE sent = 1;
@@ -75,6 +85,14 @@ def check_definition() -> str:
     digest = text_sha256(DEFINITION)
     if digest != DEFINITION_SHA256:
         raise SystemExit(f"{DEFINITION.name} changed after it was pinned (sha256 {digest}); define a new trial instead.")
+    return digest
+
+
+def check_forward4() -> str:
+    digest = text_sha256(FORWARD4)
+    if digest != FORWARD4_SHA256:
+        raise SystemExit(f"{FORWARD4.name} changed after it was pinned (sha256 {digest}); "
+                         "pre-register a new forward test instead of editing this one.")
     return digest
 
 
@@ -117,6 +135,15 @@ class Ledger:
         self.conn.execute("INSERT INTO brakes (scope, kind, effective_date, reason, recorded_at) VALUES (?, ?, ?, ?, ?)",
                           (scope, kind, effective.isoformat(), reason, at.isoformat()))
 
+    def has_pool(self, part: str, month_end: date, tier: str, entry: date) -> bool:
+        return self.conn.execute("SELECT 1 FROM pools WHERE part = ? AND month_end = ? AND tier = ? AND entry_date = ?",
+                                 (part, month_end.isoformat(), tier, entry.isoformat())).fetchone() is not None
+
+    def add_pool(self, part: str, month_end: date, tier: str, entry: date, pool: list[float], at: datetime) -> None:
+        self.conn.execute("INSERT INTO pools (part, month_end, tier, entry_date, pool, recorded_at) VALUES (?, ?, ?, ?, ?, ?)",
+                          (part, month_end.isoformat(), tier, entry.isoformat(),
+                           json.dumps([round(float(x), 8) for x in pool]), at.isoformat()))
+
     def add_run(self, at: datetime, status: str, detail: str) -> None:
         self.conn.execute("INSERT INTO runs (at, status, detail) VALUES (?, ?, ?)", (at.isoformat(), status, detail[:2000]))
 
@@ -154,6 +181,12 @@ class _ReadOnly:
 
     def add_brake(self, scope, kind, effective, reason, at) -> None:
         self._extra["brakes"].append({"scope": scope, "kind": kind, "effective_date": effective.isoformat(), "reason": reason})
+
+    def has_pool(self, *args) -> bool:
+        return True
+
+    def add_pool(self, *args, **kwargs) -> None:
+        pass
 
     def __getattr__(self, name):
         return getattr(self._ledger, name)
@@ -368,6 +401,125 @@ def update(ledger, sessions: list[date], secs: dict, e2: pd.DataFrame, v2: dict[
     return events
 
 
+def record_pools(ledger, sessions: list[date], secs: dict, universe: round10.Universe, now: datetime, events: dict) -> None:
+    """(Forward test 4, "The random baseline") Once every member's outcome has closed: for an E2 trade, every member of
+    its tier at the month-end that defined the universe on its signal session that could be bought at its entry open,
+    held by E2's rules; for a V2 trade, every member of ranks 101-300 at its signal month-end that could be bought at
+    its entry open, held by V2's rules."""
+    trades = ledger.table("trades")
+    if trades.empty:
+        return
+    n = len(sessions)
+    index = {d.isoformat(): i for i, d in enumerate(sessions)}
+    ends = forward2.month_ends_known(sessions)
+    for part, tier, signal, entry in trades.drop_duplicates(["part", "tier", "entry_date"])[
+            ["part", "tier", "signal_date", "entry_date"]].itertuples(index=False):
+        if signal not in index or entry not in index:
+            continue
+        s_i, e = index[signal], index[entry]
+        i_me, members = universe.at(s_i) if part == "E2" else (s_i, universe.members.get(s_i, {}))
+        if i_me is None or ledger.has_pool(part, sessions[i_me], tier, sessions[e]):
+            continue
+        names = [s for s, t in members.items() if t == tier and s in secs and round8.enterable(secs[s], e)]
+        if part == "E2":
+            outcomes = [e2_position(secs[s], e, n, tier) for s in names]
+        else:
+            later = [j for j in ends if j > s_i]
+            if not later:
+                continue
+            outcomes = [v2_position(secs[s], e, later[0] + 1, n) for s in names]
+        if outcomes and all(o["outcome"] in forward3.CLOSED for o in outcomes):
+            ledger.add_pool(part, sessions[i_me], tier, sessions[e], [o["net"] for o in outcomes], now)
+            events.setdefault("pools", []).append((part, sessions[i_me], tier, sessions[e], len(outcomes)))
+
+
+def forward4_trades(ledger, end: date | None = None) -> pd.DataFrame:
+    """The trial's closed trades entered from 22 Oct 2026, as round 10's criteria want them."""
+    t = ledger.table("trades")
+    if len(t):
+        keep = t["entry_date"] >= FIRST_ENTRY.isoformat()
+        if end is not None:
+            keep &= t["entry_date"] <= end.isoformat()
+        t = t[keep]
+    if t.empty:
+        return t
+    t = t.copy()
+    t["entry_date"] = pd.to_datetime(t["entry_date"]).dt.date
+    t["signal_date"] = t["entry_date"]  # halves and years use entry dates
+    t["exit_date"] = pd.to_datetime(t["exit_date"]).dt.date
+    t["signal_i"] = [d.year * 12 + d.month for d in t["entry_date"]]  # clusters: entry months
+    t["ticker"], t["R"] = t["sid"], t["r"]
+    t["stopped"], t["gapped"] = t["outcome"] == "stop", t["gapped"].astype(bool)
+    return t.reset_index(drop=True)
+
+
+def judge(ledger, as_of: date) -> dict:
+    """Forward test 4 at a look on `as_of`: the criteria and decision ("Criteria at a decision look", "Decisions")."""
+    look, end = forward3.look_number(as_of), forward3.cutoff(as_of)
+    trades = forward4_trades(ledger, end)
+    if trades.empty:
+        return {"look": look, "cutoff": end, "trades": trades, "decision": "WAITING", "checks": [], "raw_p": np.nan}
+    pt = ledger.table("pools")
+    pools = {(0, f"{p}:{tier}", date.fromisoformat(e).toordinal()): np.asarray(json.loads(v))
+             for p, tier, e, v in zip(pt["part"], pt["tier"], pt["entry_date"], pt["pool"])}
+    base = pd.DataFrame({"i_me": 0, "tier": trades["part"] + ":" + trades["tier"], "net": trades["net"],
+                         "entry_i": [d.toordinal() for d in trades["entry_date"]]})
+    covered = base[[(0, k, e) in pools for k, e in zip(base["tier"], base["entry_i"])]]
+    random_mean, raw_p = round10.baseline(covered, pools) if len(covered) else (np.nan, 1.0)
+    alpha = 0.05 / max(look, 1)
+    checks, stats = round8.criteria(trades, (FIRST_ENTRY, end), raw_p * max(look, 1), raw_p)
+    out = []
+    for c in checks:
+        if c.number == 12:
+            continue
+        if c.number == 5:
+            c = Check(5, f"Beats the random baseline: p below 0.05/{max(look, 1)} = {alpha:.4f}", f"{raw_p:.5f}",
+                      bool(raw_p < alpha))
+        elif c.number == 11:
+            c = Check(11, "Cluster-robust t-statistic (entry months as clusters) at least 2.0", c.value, c.passed)
+        out.append(c)
+    if stats["max_drawdown_r"] > KILL_R:
+        decision = "REJECTED"
+    elif look == 0:
+        decision = "INFORMATIONAL"
+    elif all(c.passed for c in out):
+        decision = "PAPER"
+    elif look >= LAST_YEAR - FIRST_DECISION_YEAR + 1 or (look >= RETIRE_FROM_YEAR - FIRST_DECISION_YEAR + 1
+                                                        and not stats["mean_net"] > 0):
+        decision = "REJECTED"
+    else:
+        decision = "CONTINUE"
+    return {"look": look, "cutoff": end, "trades": trades, "checks": out, "stats": stats, "raw_p": raw_p,
+            "random_mean": random_mean, "covered": len(covered), "decision": decision}
+
+
+def evidence_for(r: dict, digest: str) -> Evidence:
+    s = r["stats"]
+    return Evidence(
+        strategy_id="B1F", kind="research", decision=r["decision"], generated=date.today().isoformat(),
+        source="docs/research/forward4-look-*.md (python -m trader.research.trial look)",
+        checks=tuple({"number": c.number, "criterion": c.criterion, "value": c.value, "passed": c.passed}
+                     for c in r["checks"]),
+        stats={"evaluation_span": f"{FIRST_ENTRY} to {r['cutoff']}", "holdout_trades": s["trades"],
+               "holdout_win_rate": s["win_rate"], "holdout_mean_net": s["mean_net"], "holdout_sd_net": s["sd_net"],
+               "holdout_profit_factor": s["profit_factor"], "holdout_t": s["t"], "holdout_t_clustered": s["t_clustered"],
+               "p_random_raw": r["raw_p"], "round_trip_cost": round8.ROUND_TRIP["N2"], "max_drawdown_r": s["max_drawdown_r"],
+               "look": r["look"]},
+        preregistration_sha256=digest)
+
+
+def write_look(r: dict, digest: str, as_of: date) -> None:
+    lines = [f"# Forward test 4: look on {as_of}", "",
+             f"Look {r['look'] or 'informational'}; paper trial 1's trades entered {FIRST_ENTRY} to {r['cutoff']}; "
+             f"pre-registration SHA-256 `{digest[:16]}...`.", "", f"**Decision: {r['decision']}.**", ""]
+    if r["checks"]:
+        lines += [f"Random picks with the same rules earned {_pct(r['random_mean'], 3)} a trade "
+                  f"({r['covered']} of {len(r['trades'])} trades have a recorded pool).", "",
+                  "| # | Criterion | Value | Result |", "|---|---|---|---|"]
+        lines += [f"| {c.number} | {c.criterion} | {c.value} | {'pass' if c.passed else '**fail**'} |" for c in r["checks"]]
+    (LOOKS / f"forward4-look-{as_of}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 # ----------------------------------------------------------------------------------------------- reports
 def _pct(v, digits: int = 1) -> str:
     return f"{100 * v:+.{digits}f}%" if v is not None and not pd.isna(v) else "-"
@@ -407,7 +559,7 @@ def messages(events: dict, trades: pd.DataFrame, latest: date) -> list[tuple[str
     return out
 
 
-def write_status(ledger, events: dict | None, now: datetime) -> str:
+def write_status(ledger, events: dict | None, now: datetime, verdict: dict | None = None) -> str:
     trades, brakes = ledger.table("trades"), ledger.table("brakes")
     acct = account(trades, events)
     lines = ["# Paper trial 1: status (E2 x3 + V2 x2)", "",
@@ -416,6 +568,12 @@ def write_status(ledger, events: dict | None, now: datetime) -> str:
              "no strategy's status changes because of it.", "",
              f"Account: Rs {acct['equity']:,.0f} (closed trades {acct['closed_r']:+.2f}R, open positions {acct['open_r']:+.2f}R; "
              "0.5% of Rs 10,00,000 at risk per position).", ""]
+    if verdict is not None:
+        lines += [f"Forward test 4 (these trades against the project's criteria, decisions each January from 2028): "
+                  f"{len(verdict['trades'])} closed trade(s) judged so far; now {verdict['decision']}"
+                  + (f", {sum(c.passed for c in verdict['checks'])} of {len(verdict['checks'])} criteria passing"
+                     if verdict["checks"] else "")
+                  + ". Real money stays NO TRADE unless every criterion passes and the approval stages follow.", ""]
     if len(brakes):
         lines += ["Brakes: " + "; ".join(f"{b.scope} {b.kind} from after {b.effective_date} ({b.reason})"
                                          for b in brakes.itertuples(index=False)), ""]
@@ -451,7 +609,7 @@ def inputs(ledger_for_notices):
     finally:
         if ledger_for_notices is None:
             notices_ledger.close()
-    return sessions, secs, e2, v2_lists(sessions, secs, table)
+    return sessions, secs, universe, e2, v2_lists(sessions, secs, table)
 
 
 def daily(now: datetime | None = None, notify: bool = True) -> int:
@@ -459,11 +617,18 @@ def daily(now: datetime | None = None, notify: bool = True) -> int:
     now = now or datetime.now(IST)
     ledger = Ledger()
     try:
-        sessions, secs, e2, v2 = inputs(None)
+        sessions, secs, universe, e2, v2 = inputs(None)
         events = update(ledger, sessions, secs, e2, v2, now)
+        record_pools(ledger, sessions, secs, universe, now, events)
         trades = ledger.table("trades")
         notes = messages(events, trades, sessions[-1])
-        write_status(ledger, events, now)
+        verdict = judge(ledger, now.astimezone(IST).date())
+        if verdict.get("stats") and verdict["stats"]["max_drawdown_r"] > KILL_R:  # forward test 4: "passes 20R"
+            if not ledger.sent("forward 4 rejected: drawdown"):
+                save_evidence(evidence_for(verdict, check_forward4()))
+            notes.append(("forward 4 rejected: drawdown", f"{TAG} Forward test 4: the bunch's paper drawdown passed 20R "
+                          f"({verdict['stats']['max_drawdown_r']:.1f}R): REJECTED, as pre-registered. Real money stays NO TRADE."))
+        write_status(ledger, events, now, verdict)
         if notify:
             notifier = notifier_from_settings(load_settings())
             for key, text in notes:
@@ -471,8 +636,8 @@ def daily(now: datetime | None = None, notify: bool = True) -> int:
                     ledger.add_notice(key, now, notifier.send(text))
         acct = account(trades, events)
         detail = (f"data to {sessions[-1]}; signals {len(events['signals'])}, entries {len(events['entries'])}, closed "
-                  f"{len(events['closed'])}, open {len(events['open'])}, brakes {len(events['brakes'])}; account Rs "
-                  f"{acct['equity']:,.0f}")
+                  f"{len(events['closed'])}, open {len(events['open'])}, brakes {len(events['brakes'])}, pools "
+                  f"{len(events.get('pools', []))}; account Rs {acct['equity']:,.0f}; forward test 4 {verdict['decision']}")
         ledger.add_run(now, "ok", detail)
         log.info("Paper trial 1: %s", detail)
         return 0
@@ -486,20 +651,33 @@ def daily(now: datetime | None = None, notify: bool = True) -> int:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Paper trial 1: E2 x3 + V2 x2 in one paper account (research only).")
-    parser.add_argument("command", choices=["daily", "status"])
+    parser.add_argument("command", choices=["daily", "status", "look"])
     parser.add_argument("--no-notify", action="store_true", help="daily: don't send Telegram messages")
     args = parser.parse_args(argv)
     make_console_utf8()
     settings = load_settings()
     configure_logging(secrets=settings.secret_values(), filename="trial1.log")
     check_definition()
+    digest = check_forward4()
     if args.command == "daily":
         raise SystemExit(daily(notify=not args.no_notify))
     ledger = Ledger()
     try:
-        sessions, secs, e2, v2 = inputs(None)
-        view = _ReadOnly(ledger)
-        print(write_status(view, update(view, sessions, secs, e2, v2, datetime.now(IST)), datetime.now(IST)))
+        if args.command == "status":
+            sessions, secs, universe, e2, v2 = inputs(None)
+            view = _ReadOnly(ledger)
+            now = datetime.now(IST)
+            events = update(view, sessions, secs, e2, v2, now)
+            print(write_status(view, events, now, judge(ledger, now.date())))
+            return
+        as_of = datetime.now(IST).date()
+        r = judge(ledger, as_of)
+        write_look(r, digest, as_of)
+        if r["look"] and r["decision"] in ("PAPER", "REJECTED"):
+            save_evidence(evidence_for(r, digest))
+        print(f"Forward test 4, look {r['look'] or 'informational'}: {r['decision']}")
+        for c in r["checks"]:
+            print(f"   [{'x' if c.passed else ' '}] {c.number}. {c.criterion}: {c.value}")
     finally:
         ledger.close()
 

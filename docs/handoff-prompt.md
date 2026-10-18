@@ -224,6 +224,10 @@ were 2015, 2018, 2022, 2024 and 2025.
   backtest of position splits on 2013-2026 (not evidence): +6.9R a year, 10 of 14 years profitable, worst year -10.4R,
   drawdown 18.4R. Risk engine sizes, 20R kill switch, the gate's decay rule per part. Runs at 19:30 after the forward
   tests. Changes no strategy's status; live stays locked.
+- **Forward test 4 (my decision, 18 Oct 2026):** the trial's future trades judged against the mandatory criteria
+  (docs/research/forward4-preregistration.md, pinned 12:24 IST before the first trade): random-baseline pools recorded
+  for every closed trade, January looks 2028-2036 (`python -m trader.research.trial look`), p < 0.05/L, evidence id
+  B1F. Any failed criterion: real money stays NO TRADE. A pass: the existing approval stages, nothing waived.
 - **Round 10 (pinned 17 Oct 17:45 IST, run once, all REJECTED):** see §6 (E2, Q, M). The earlier draft below was replaced
   by the pinned pre-registration (E1 was dropped by screening; E2 got a 15% stop and 40-session hold):
   File docs/research/round10-preregistration.md. Universe: round 8's 300 most liquid stocks at the latest month-end.

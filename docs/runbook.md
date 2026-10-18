@@ -124,6 +124,10 @@ Kill switch log (date, why it engaged, what changed before it was released):
 - **Each January from 2028:** run `python -m trader.research.forward3 look` (forward test 3: E2 in paper mode on
   results meetings from 19 Oct 2026). It applies the decisions pinned in `docs/research/forward3-preregistration.md`
   and writes `docs/research/forward3-look-<date>.md`; commit it.
+- **Each January from 2028:** run `python -m trader.research.trial look` (forward test 4: paper trial 1's trades
+  against the mandatory criteria). It applies `docs/research/forward4-preregistration.md` and writes
+  `docs/research/forward4-look-<date>.md`; commit it. A pass makes the bunch a candidate (B1F) for the approval
+  stages only with your approval; any failed criterion keeps real money in NO TRADE.
 - **Each January from 2027:** run `python -m trader.research.forward1` (forward test 1: H11 and H12 on
   sessions after 13 Oct 2026) and commit its status. January 2027's look only reports; from January
   2028 to 2036 each January look applies the decisions pinned in

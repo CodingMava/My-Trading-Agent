@@ -214,6 +214,13 @@ best return for its drawdown: +6.9R a year (+3.4% at 0.5% risk a position), 10 o
 sizes, the 20R kill switch and the gate's decay rule per part, records everything in `state/trial1.db`, and sends
 `[PAPER TRIAL 1 · paper only]` messages. It changes no strategy's status and cannot reach real money.
 
+**Forward test 4** (your decision, 18 Oct 2026): the trial's future trades are judged against the project's mandatory
+criteria ([pre-registration](docs/research/forward4-preregistration.md), pinned 18 Oct 2026 12:24 IST, before its first
+trade): realistic costs, the random baseline (pools recorded for every closed trade), drawdown, stable years and
+significance at 0.05 / L, each January from 2028. Fail any criterion: real money stays NO TRADE. Pass every one: a
+candidate (B1F) for the existing approval stages, nothing automatic. Most likely obstacle: the 50% win-rate floor
+(the bunch won 48.7% in the backtest), which stays.
+
 ## Research round 9: low volatility and volatility-adjusted momentum (2026-10-14)
 
 Round 8's universe, tiers, trade, 10% stop, costs, random baseline and criteria, with two other ways of choosing the 5
@@ -494,6 +501,7 @@ python -m trader.research.forward2 look                           # its look: in
 python -m trader.research.forward3 status                         # forward test 3: E2 in paper mode, signals and positions so far
 python -m trader.research.forward3 look                           # its look: informational any time, a decision each January
 python -m trader.research.trial status                            # paper trial 1: E2 x3 + V2 x2 in one paper account, so far
+python -m trader.research.trial look                              # forward test 4 on its trades: informational; a decision each January
 python -m trader.research.news status                             # the news history: counts, events, gaps, days seen whole
 python -m trader.research.news backfill --from 2026-10-01         # whole past days from NSE's announcement API
 pytest                                                            # fast tests
@@ -566,6 +574,7 @@ python -m trader.risk.killswitch status
 | 3l | Research round 10: results drift, promoter buying and their mix, on new NSE event data | Done: 0 of 3 passed; E2 passed 11 of 13 (all but beating random picks significantly) |
 | 3m | Forward test 3: E2, unchanged, in paper mode on results meetings from 19 Oct 2026 | Running: signals and paper trades recorded each evening, decisions each January, 2028 to 2036 |
 | 3n | Paper trial 1: the best bunch of near-misses (E2 x3 + V2 x2) in one paper account | Running from 22 Oct 2026: not evidence, changes no status; live stays locked |
+| 3o | Forward test 4: paper trial 1's trades judged against the mandatory criteria | Running: decisions each January, 2028 to 2036; any failed criterion keeps NO TRADE |
 | 4 | Profitability gate enforced from evidence reports | Done |
 | 5-6 | Risk engine and portfolio limits | Done |
 | 7 | Paper trading (end-of-day, for swing strategies) | Done: India's account and, since 2026-10-12, a US one whose signals you place by hand. No strategy is eligible yet; the 60 unattended sessions are being counted (the health check shows how many) |
