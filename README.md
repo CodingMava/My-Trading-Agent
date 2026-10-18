@@ -219,7 +219,9 @@ criteria ([pre-registration](docs/research/forward4-preregistration.md), pinned 
 trade): realistic costs, the random baseline (pools recorded for every closed trade), drawdown, stable years and
 significance at 0.05 / L, each January from 2028. Fail any criterion: real money stays NO TRADE. Pass every one: a
 candidate (B1F) for the existing approval stages, nothing automatic. Most likely obstacle: the 50% win-rate floor
-(the bunch won 48.7% in the backtest), which stays.
+(the bunch won 48.7% in the backtest), which stays. Between looks, `state/trial1-status.md` and the monthly Telegram
+summary show its figures after costs (win rate, average win and loss, profit factor, drawdown, p against random), and
+every random-pick comparison is sent on Telegram; each January the health check warns until the looks are written.
 
 ## Research round 9: low volatility and volatility-adjusted momentum (2026-10-14)
 

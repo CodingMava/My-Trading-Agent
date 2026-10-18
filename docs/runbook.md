@@ -128,6 +128,13 @@ Kill switch log (date, why it engaged, what changed before it was released):
   against the mandatory criteria). It applies `docs/research/forward4-preregistration.md` and writes
   `docs/research/forward4-look-<date>.md`; commit it. A pass makes the bunch a candidate (B1F) for the approval
   stages only with your approval; any failed criterion keeps real money in NO TRADE.
+- **Every January from 2028 to 2036** the health check warns until forward tests 2, 3 and 4 each have that January's
+  look written. Judge them exactly as pinned. If one fails, record why and design a new, independently testable
+  hypothesis with its own pre-registration; never weaken a criterion or change a pinned rule after seeing results.
+- **Between looks:** `state/trial1-status.md` (and each month's Telegram summary) shows forward test 4's running figures
+  after costs: win rate, net per trade, average win and loss, profit factor, drawdown in R, the random-pick comparison
+  and its p-value. They are informational; nothing is decided until a January look. Each random-pick comparison is
+  also sent on Telegram as its pool is recorded.
 - **Each January from 2027:** run `python -m trader.research.forward1` (forward test 1: H11 and H12 on
   sessions after 13 Oct 2026) and commit its status. January 2027's look only reports; from January
   2028 to 2036 each January look applies the decisions pinned in

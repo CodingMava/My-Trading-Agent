@@ -531,7 +531,45 @@ def account(trades: pd.DataFrame, events: dict | None = None) -> dict:
     return {"closed_r": closed_r, "open_r": open_r, "equity": CAPITAL * (1 + RISK * (closed_r + open_r))}
 
 
-def messages(events: dict, trades: pd.DataFrame, latest: date) -> list[tuple[str, str]]:
+def performance(verdict: dict | None) -> dict | None:
+    """Forward test 4's headline numbers so far, after costs (None before the first closed trade)."""
+    if not verdict or not verdict.get("stats"):
+        return None
+    s = verdict["stats"]
+    return {"trades": s["trades"], "win_rate": s["win_rate"], "mean_net": s["mean_net"], "avg_win": s["avg_win"],
+            "avg_loss": s["avg_loss"], "profit_factor": s["profit_factor"], "drawdown_r": s["max_drawdown_r"], "t": s["t"],
+            "t_clustered": s["t_clustered"], "random_mean": verdict["random_mean"], "p": verdict["raw_p"],
+            "covered": verdict["covered"], "passing": sum(c.passed for c in verdict["checks"]), "of": len(verdict["checks"]),
+            "decision": verdict["decision"]}
+
+
+def performance_text(perf: dict) -> str:
+    return (f"{perf['trades']} closed trade(s), {100 * perf['win_rate']:.1f}% winners, {_pct(perf['mean_net'], 2)} a trade after "
+            f"costs (average win {_pct(perf['avg_win'])}, average loss {_pct(perf['avg_loss'])}, profit factor "
+            f"{perf['profit_factor']:.2f}), drawdown {perf['drawdown_r']:.1f}R; random picks {_pct(perf['random_mean'], 2)} a "
+            f"trade, p {perf['p']:.4f} ({perf['covered']} trades compared); {perf['passing']} of {perf['of']} criteria passing")
+
+
+def comparison_messages(events: dict, trades: pd.DataFrame, pools: pd.DataFrame) -> list[tuple[str, str]]:
+    """("Ensure every random-pick comparison is logged") One message per random-pick pool recorded this run: the trial's
+    trades with that part, tier and entry open, against the pool's mean."""
+    out = []
+    for part, month_end, tier, entry, n in events.get("pools", []):
+        row = pools[(pools["part"] == part) & (pools["tier"] == tier) & (pools["entry_date"] == entry.isoformat())]
+        if row.empty:
+            continue
+        mean = float(np.mean(json.loads(row["pool"].iat[0])))
+        mine = trades[(trades["part"] == part) & (trades["tier"] == tier) & (trades["entry_date"] == entry.isoformat())]
+        names = "; ".join(f"{html.escape(s)} {_pct(net)}" for s, net in zip(mine["sid"], mine["net"]))
+        beat = float(mine["net"].mean()) - mean if len(mine) else np.nan
+        out.append((f"pool {part} {tier} {entry}", f"{TAG} Random-pick comparison, {part} bought {entry:%d %b %Y} ({tier}): {names}. "
+                    f"{n} random stocks from the same tier bought that open with the same rules: {_pct(mean)} on average "
+                    f"(the trial {'beat' if beat > 0 else 'trailed'} them by {_pct(abs(beat))}). After costs."))
+    return out
+
+
+def messages(events: dict, trades: pd.DataFrame, latest: date, pools: pd.DataFrame | None = None,
+             verdict: dict | None = None) -> list[tuple[str, str]]:
     out = []
     for part, sid, signal, strength, late in events["signals"]:
         if late or signal != latest:
@@ -554,8 +592,13 @@ def messages(events: dict, trades: pd.DataFrame, latest: date) -> list[tuple[str
         month = (latest.replace(day=1) - pd.Timedelta(days=1))
         done = trades[[d[:7] == f"{month:%Y-%m}" for d in trades["exit_date"]]]
         if len(done):
+            perf = performance(verdict)
             out.append((f"month {month:%Y-%m}", f"{TAG} {month:%B %Y}: {len(done)} closed trade(s), {done['r'].sum():+.2f}R; "
-                        f"the account {_pct(RISK * trades['r'].sum())} since the start on closed trades."))
+                        f"the account {_pct(RISK * trades['r'].sum())} since the start on closed trades."
+                        + (f" Forward test 4 so far: {performance_text(perf)}; decision {perf['decision']} (decisions only at "
+                           "the January looks from 2028)." if perf else "")))
+    if pools is not None and len(trades):
+        out += comparison_messages(events, trades, pools)
     return out
 
 
@@ -574,6 +617,17 @@ def write_status(ledger, events: dict | None, now: datetime, verdict: dict | Non
                   + (f", {sum(c.passed for c in verdict['checks'])} of {len(verdict['checks'])} criteria passing"
                      if verdict["checks"] else "")
                   + ". Real money stays NO TRADE unless every criterion passes and the approval stages follow.", ""]
+    perf = performance(verdict)
+    if perf:
+        lines += ["| Forward test 4 so far (after costs) | Value |", "|---|---:|",
+                  f"| Closed trades | {perf['trades']} |", f"| Win rate | {100 * perf['win_rate']:.1f}% |",
+                  f"| Net per trade | {_pct(perf['mean_net'], 2)} |",
+                  f"| Average win / average loss | {_pct(perf['avg_win'])} / {_pct(perf['avg_loss'])} |",
+                  f"| Profit factor | {perf['profit_factor']:.2f} |", f"| Drawdown | {perf['drawdown_r']:.1f}R |",
+                  f"| Random picks, same rules (trades compared) | {_pct(perf['random_mean'], 2)} ({perf['covered']}) |",
+                  f"| p against random (bar at a look: 0.05 / L) | {perf['p']:.4f} |",
+                  f"| t / month-clustered t | {perf['t']:.2f} / {perf['t_clustered']:.2f} |",
+                  f"| Criteria passing (informational until January 2028) | {perf['passing']} of {perf['of']} |", ""]
     if len(brakes):
         lines += ["Brakes: " + "; ".join(f"{b.scope} {b.kind} from after {b.effective_date} ({b.reason})"
                                          for b in brakes.itertuples(index=False)), ""]
@@ -621,8 +675,8 @@ def daily(now: datetime | None = None, notify: bool = True) -> int:
         events = update(ledger, sessions, secs, e2, v2, now)
         record_pools(ledger, sessions, secs, universe, now, events)
         trades = ledger.table("trades")
-        notes = messages(events, trades, sessions[-1])
         verdict = judge(ledger, now.astimezone(IST).date())
+        notes = messages(events, trades, sessions[-1], ledger.table("pools"), verdict)
         if verdict.get("stats") and verdict["stats"]["max_drawdown_r"] > KILL_R:  # forward test 4: "passes 20R"
             if not ledger.sent("forward 4 rejected: drawdown"):
                 save_evidence(evidence_for(verdict, check_forward4()))

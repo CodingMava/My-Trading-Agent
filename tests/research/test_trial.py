@@ -174,3 +174,25 @@ def test_forward_test_4_pools_are_recorded_once_closed_and_the_look_applies_the_
 
 def test_forward_4_preregistration_matches_its_pin():
     assert trial.check_forward4() == trial.FORWARD4_SHA256
+
+
+def test_every_random_pick_comparison_and_the_performance_figures_are_reported(tmp_path, monkeypatch):
+    sessions = _sessions()
+    secs = {s: _security(s, len(sessions)) for s in "ABCDEFGHIJ"}
+    oct30 = sessions.index(date(2026, 10, 30))
+    universe = round10.Universe(pd.DataFrame({"i": oct30, "sid": list("ABCDEFGHIJ"),
+                                              "rank": [1, 2, 3, 4, 5, 101, 102, 103, 104, 105]}))
+    ledger = trial.Ledger(":memory:")
+    events = trial.update(ledger, sessions, secs, _e2([("A", oct30 + 4, 0.3)]), _v2(sessions, date(2026, 10, 30), ["F", "G"]), NOW)
+    trial.record_pools(ledger, sessions, secs, universe, NOW, events)
+    verdict = trial.judge(ledger, date(2027, 6, 1))
+    notes = trial.messages(events, ledger.table("trades"), sessions[-1], ledger.table("pools"), verdict)
+    comparisons = [text for key, text in notes if key.startswith("pool ")]
+    assert len(comparisons) == 2 and all("Random-pick comparison" in c and "paper only" in c for c in comparisons)
+    assert any("F " in c and "G " in c for c in comparisons)  # both V2 trades of that open, against one pool
+    monkeypatch.setattr(trial, "STATUS", tmp_path / "status.md")
+    text = trial.write_status(ledger, events, NOW, verdict)
+    for label in ("Win rate", "Net per trade", "Average win / average loss", "Drawdown", "p against random", "Profit factor"):
+        assert label in text
+    perf = trial.performance(verdict)
+    assert perf["trades"] == 3 and perf["covered"] == 3 and perf["of"] == 12

@@ -295,3 +295,15 @@ def test_paper_trial_1_is_watched_and_shows_its_brakes(tmp_path, monkeypatch):
     check = health.trial_check(EVENING)[0]
     assert check.level == OK and "0 closed paper trade(s), +0.00R; brakes: V2 paused" in check.detail
     assert health.trial_check(EVENING + timedelta(days=3))[0].level == WARN
+
+
+def test_january_decision_looks_are_flagged_until_written(tmp_path, monkeypatch):
+    monkeypatch.setattr(health, "ROOT", tmp_path)
+    assert health.january_looks_check(date(2027, 1, 10)) == [] and health.january_looks_check(date(2028, 2, 1)) == []
+    check = health.january_looks_check(date(2028, 1, 5))[0]
+    assert check.level == WARN and "forward test 4" in check.detail and "never weaker criteria" in check.detail
+    looks = tmp_path / "docs" / "research"
+    looks.mkdir(parents=True)
+    for stem in ("forward2", "forward3", "forward4"):
+        (looks / f"{stem}-look-2028-01-05.md").write_text("x", encoding="utf-8")
+    assert health.january_looks_check(date(2028, 1, 9))[0].level == OK
