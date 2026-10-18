@@ -174,6 +174,25 @@ the fact its edge leans on a few very large winners and on the years since 2020.
 by more. Twenty-five hypotheses over eight rounds, none passed. What this suggests next, and what it would take, is in
 [the research review](docs/research/round8-research-review.md).
 
+## Research round 11: new return sources: value, dividend flows, option-implied information (2026-10-18)
+
+To find parts that could complement E2 and V2 (both buy strength; both lost in 2016 and 2018), ten variants from three
+families never tested here were screened on development years only (2006 or 2008 to May 2013), with total returns
+(dividends added for the strategy and the random picks alike): dividend yield (Y1a-c), long-term reversal (R1a-b), the
+dividend-month premium (DM1a-b), and option-implied signals from NSE's F&O files (O1-O3; data kept outside OneDrive, see
+`trader/research/nse_fo.py`). Only O2 (stocks whose options are cheap relative to their realized volatility) beat
+random picks, by +1.0% a trade (t 1.3). It was pre-registered unchanged ([pre-registration](docs/research/round11-preregistration.md),
+pinned 18 Oct 2026 23:45 IST; the bar is now 0.05 / 67), reproduced in [stage 1](docs/research/round11-stage1.md), and
+decided once ([results](docs/research/round11-results.md)):
+
+| Hypothesis | Span | Trades | Winners | Net per trade | Random picks | p vs random | Status |
+|---|---|---:|---:|---:|---:|---:|---|
+| O2: options cheapest relative to realized volatility | 2013-2026 | 795 | 49.6% | +0.72% | +0.81% | 0.61 | REJECTED |
+
+No edge on the decision years: the screening edge was the winner's curse (the best of ten). Dividend yield, the
+dividend month and long-term reversal showed no edge even on the development years (long-term losers kept losing).
+Thirty-two hypotheses decided and 38 variants screened; none passed.
+
 ## Research round 10: results drift, promoter buying, and the two combined (2026-10-17)
 
 Two kinds of new data: NSE's board-meeting notices (2009-2026, with the time each was filed) and SEBI insider-trading
@@ -577,6 +596,7 @@ python -m trader.risk.killswitch status
 | 3m | Forward test 3: E2, unchanged, in paper mode on results meetings from 19 Oct 2026 | Running: signals and paper trades recorded each evening, decisions each January, 2028 to 2036 |
 | 3n | Paper trial 1: the best bunch of near-misses (E2 x3 + V2 x2) in one paper account | Running from 22 Oct 2026: not evidence, changes no status; live stays locked |
 | 3o | Forward test 4: paper trial 1's trades judged against the mandatory criteria | Running: decisions each January, 2028 to 2036; any failed criterion keeps NO TRADE |
+| 3p | Research round 11: value, dividend flows, option-implied signals (new F&O data) | Done: 10 screened, O2 decided and REJECTED (no edge) |
 | 4 | Profitability gate enforced from evidence reports | Done |
 | 5-6 | Risk engine and portfolio limits | Done |
 | 7 | Paper trading (end-of-day, for swing strategies) | Done: India's account and, since 2026-10-12, a US one whose signals you place by hand. No strategy is eligible yet; the 60 unattended sessions are being counted (the health check shows how many) |

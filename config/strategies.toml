@@ -236,3 +236,8 @@ evidence = "230 trades 2018-2026, 50.0% winners, +1.333%/trade net vs +0.886% fo
 name = "Mix: E2 and Q in one account sharing 5 positions (E2 first)"
 status = "REJECTED"
 evidence = "288 trades 2018-2026, 53.8% winners, +1.881%/trade net vs +1.150% for random picks (p=0.18, Holm 0.36): passed 10 of 13 (PF 1.35, 75% of years, drawdown 15.4R) but no significant edge (criteria 5, 11, 12); Q diluted E2."
+
+[O2]
+name = "Monthly: the 5 stocks whose options are cheapest relative to realized volatility (NSE F&O), ranks 1-300, 15% stop"
+status = "REJECTED"
+evidence = "795 trades 2013-2026, 49.6% winners, +0.724%/trade net after costs (total return) vs +0.807% for random picks from the same F&O universe (p=0.61): no edge; its +1.0% edge on 2008-2013 (the best of 10 screened variants) did not hold. Passed the stability rules (71% of years, drawdown 16.7R) only through market drift."
