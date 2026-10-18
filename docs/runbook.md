@@ -128,6 +128,9 @@ Kill switch log (date, why it engaged, what changed before it was released):
   against the mandatory criteria). It applies `docs/research/forward4-preregistration.md` and writes
   `docs/research/forward4-look-<date>.md`; commit it. A pass makes the bunch a candidate (B1F) for the approval
   stages only with your approval; any failed criterion keeps real money in NO TRADE.
+- **Each January from 2028:** run `python -m trader.research.forward5 look` (forward test 5: paper trial 1's trades
+  hedged with short NIFTY futures, paper only) and commit `docs/research/forward5-look-<date>.md`. A pass needs your
+  F&O decision and a design that fits NIFTY lot sizes before anything else.
 - **Every January from 2028 to 2036** the health check warns until forward tests 2, 3 and 4 each have that January's
   look written. Judge them exactly as pinned. If one fails, record why and design a new, independently testable
   hypothesis with its own pre-registration; never weaken a criterion or change a pinned rule after seeing results.

@@ -71,6 +71,8 @@ Register-ScheduledTask -TaskName "Trading agent - news" -Force `
 #    records new results-reaction signals, paper entries and exits on forward test 2's rebuilt history.
 # 3. Paper trial 1, E2 x3 + V2 x2 in one paper account (docs/research/trial1-definition.md): entries, exits and brakes
 #    on the same rebuilt history. Not evidence; it changes no strategy's status.
+# 4. Forward test 5 (docs/research/forward5-preregistration.md): the trial's closed trades hedged with short NIFTY
+#    futures, from NSE's daily F&O file (kept outside OneDrive). Paper only; F&O stays paper.
 # All send messages labelled paper only. If the PC was asleep or off at 19:30, the task runs as soon as it is back and
 # each catches up every day it missed.
 $forwardSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew `
@@ -79,10 +81,11 @@ if (Get-ScheduledTask -TaskName "Trading agent - forward test 2" -ErrorAction Si
     Unregister-ScheduledTask -TaskName "Trading agent - forward test 2" -Confirm:$false  # now part of "forward tests"
 }
 Register-ScheduledTask -TaskName "Trading agent - forward tests" -Force `
-    -Description "Forward tests 2 (N2) and 3 (E2), then paper trial 1 (E2 x3 + V2 x2), in paper mode on new NSE sessions (python -m trader.research.forward2 daily, forward3 daily, trial daily). Research only; never trades." `
+    -Description "Forward tests 2 (N2) and 3 (E2), paper trial 1 (E2 x3 + V2 x2), then forward test 5 (the trial hedged with short NIFTY futures), in paper mode on new NSE sessions (python -m trader.research.forward2 daily, forward3 daily, trial daily, forward5 daily). Research only; never trades." `
     -Action @((New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.forward2 daily" -WorkingDirectory $root),
               (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.forward3 daily" -WorkingDirectory $root),
-              (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.trial daily" -WorkingDirectory $root)) `
+              (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.trial daily" -WorkingDirectory $root),
+              (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.forward5 daily" -WorkingDirectory $root)) `
     -Trigger (New-ScheduledTaskTrigger -Daily -At "19:30") -Settings $forwardSettings | Out-Null
 
 # Live trading through Zerodha Kite: 18:30 after the daily run (orders for the next open), 09:20 after the

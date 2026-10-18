@@ -308,7 +308,7 @@ def test_january_decision_looks_are_flagged_until_written(tmp_path, monkeypatch)
     assert check.level == WARN and "forward test 4" in check.detail and "never weaker criteria" in check.detail
     looks = tmp_path / "docs" / "research"
     looks.mkdir(parents=True)
-    for stem in ("forward2", "forward3", "forward4"):
+    for stem in ("forward2", "forward3", "forward4", "forward5"):
         (looks / f"{stem}-look-2028-01-05.md").write_text("x", encoding="utf-8")
     assert health.january_looks_check(date(2028, 1, 9))[0].level == OK
 
@@ -338,4 +338,17 @@ def test_a_failed_forward_test_or_trial_run_is_sent_on_telegram(tmp_path, monkey
         health.main(["--notify"])
     assert stopped.value.code == 1 and len(sent) == 1  # one Telegram message for every alert of the run
     assert "forward test 3" in sent[0] and "its last run failed" in sent[0] and "paper trial 1" not in sent[0]
+
+
+def test_forward_test_5_failures_and_staleness_are_alerts(tmp_path, monkeypatch):
+    from trader.research.forward5 import Ledger
+    monkeypatch.setattr(health, "ROOT", tmp_path)
+    assert health.forward5_check(EVENING) == []  # not started
+    ledger = Ledger(tmp_path / "state" / "forward5.db")
+    ledger.add_run(EVENING - timedelta(hours=1), "ok", "futures rows 3")
+    assert health.forward5_check(EVENING)[0].level == OK
+    assert health.forward5_check(EVENING + timedelta(days=3))[0].level == ALERT
+    ledger.add_run(EVENING - timedelta(minutes=30), "failed", "ConnectionError")
+    assert health.forward5_check(EVENING)[0].level == ALERT
+    ledger.close()
 

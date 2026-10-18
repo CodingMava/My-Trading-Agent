@@ -523,6 +523,8 @@ python -m trader.research.forward3 status                         # forward test
 python -m trader.research.forward3 look                           # its look: informational any time, a decision each January
 python -m trader.research.trial status                            # paper trial 1: E2 x3 + V2 x2 in one paper account, so far
 python -m trader.research.trial look                              # forward test 4 on its trades: informational; a decision each January
+python -m trader.research.forward5 status                         # forward test 5: the trial's trades hedged with short NIFTY futures
+python -m trader.research.forward5 look                           # its look: informational any time; a decision each January
 python -m trader.research.news status                             # the news history: counts, events, gaps, days seen whole
 python -m trader.research.news backfill --from 2026-10-01         # whole past days from NSE's announcement API
 pytest                                                            # fast tests
@@ -597,6 +599,7 @@ python -m trader.risk.killswitch status
 | 3n | Paper trial 1: the best bunch of near-misses (E2 x3 + V2 x2) in one paper account | Running from 22 Oct 2026: not evidence, changes no status; live stays locked |
 | 3o | Forward test 4: paper trial 1's trades judged against the mandatory criteria | Running: decisions each January, 2028 to 2036; any failed criterion keeps NO TRADE |
 | 3p | Research round 11: value, dividend flows, option-implied signals (new F&O data) | Done: 10 screened, O2 decided and REJECTED (no edge) |
+| 3q | Forward test 5: paper trial 1 hedged with short NIFTY futures (paper only) | Running from 22 Oct 2026; decisions each January 2028-2036 |
 | 4 | Profitability gate enforced from evidence reports | Done |
 | 5-6 | Risk engine and portfolio limits | Done |
 | 7 | Paper trading (end-of-day, for swing strategies) | Done: India's account and, since 2026-10-12, a US one whose signals you place by hand. No strategy is eligible yet; the 60 unattended sessions are being counted (the health check shows how many) |

@@ -387,10 +387,31 @@ def trial_check(now: datetime) -> list[Health]:
                    + (f"; brakes: {', '.join(brakes)}" if brakes else ""))]
 
 
+FORWARD5_LEDGER = Path("state") / "forward5.db"
+
+
+def forward5_check(now: datetime) -> list[Health]:
+    """Forward test 5 (paper trial 1 hedged with short NIFTY futures, paper only): still updating? An alert if not."""
+    path = ROOT / FORWARD5_LEDGER
+    if not path.exists():
+        return []
+    conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+    try:
+        problem = evening_update_alert(conn, "forward test 5", "forward5.log", now)
+        last_ok = conn.execute("SELECT MAX(at) FROM runs WHERE status = 'ok'").fetchone()[0]
+        hedged = conn.execute("SELECT COUNT(*) FROM hedged").fetchone()[0]
+    finally:
+        conn.close()
+    if problem:
+        return [problem]
+    return [Health("forward test 5", OK, f"updated {_when(last_ok)}; {hedged} hedged paper trade(s)")]
+
+
 LOOKS_DIR = Path("docs") / "research"
 JANUARY_LOOKS = {"forward test 2": ("forward2", "python -m trader.research.forward2 look"),
                  "forward test 3": ("forward3", "python -m trader.research.forward3 look"),
-                 "forward test 4": ("forward4", "python -m trader.research.trial look")}
+                 "forward test 4": ("forward4", "python -m trader.research.trial look"),
+                 "forward test 5": ("forward5", "python -m trader.research.forward5 look")}
 
 
 def january_looks_check(today: date) -> list[Health]:
@@ -466,7 +487,7 @@ def health_checks(store: PaperStore | None, calendar: MarketCalendar, registry: 
     """Every check, worst first. `store` is None before the first daily run."""
     checks = [*run_checks(store, calendar, now), *safety_checks(store, kill_switch), unattended_record(store, now),
               dry_run_check(store, now.date()), *backup_check(store, backup_dir, now.date()),
-              *integrity_check(store, live_store, backup_dir), *news_check(settings, now), *forward2_check(now), *forward3_check(now), *trial_check(now), *january_looks_check(now.date()),
+              *integrity_check(store, live_store, backup_dir), *news_check(settings, now), *forward2_check(now), *forward3_check(now), *trial_check(now), *forward5_check(now), *january_looks_check(now.date()),
               *us_checks(us_store, now, backup_dir),
               *strategy_checks(registry, now.date(), max_age_days, evidence_dir), calendar_checks(calendar, now.date()),
               data_checks(settings, now, session_file), *live_checks(settings, live_store, now, session_file)]
