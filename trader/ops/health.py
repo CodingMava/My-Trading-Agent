@@ -311,23 +311,35 @@ def news_check(settings, now: datetime) -> list[Health]:
 
 
 FORWARD2_LEDGER = Path("state") / "forward2.db"
-FORWARD2_STALE = timedelta(days=3)  # it updates every evening; three days without a good update means it has stopped
+FORWARD_STALE = timedelta(days=3)  # they update every evening; three days without a good update means one has stopped
+
+
+def evening_update_alert(conn: sqlite3.Connection, name: str, log_name: str, now: datetime) -> Health | None:
+    """A forward test's or the paper trial's evening update (research only): an ALERT, which the 21:00 check sends on
+    Telegram, when its latest run failed or it has had no good update for three days; None while it runs fine."""
+    latest = conn.execute("SELECT at, status, detail FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+    last_ok = conn.execute("SELECT MAX(at) FROM runs WHERE status = 'ok'").fetchone()[0]
+    if latest is not None and latest[1] != "ok":
+        return Health(name, ALERT, f"its last run failed ({_when(latest[0])}): {latest[2][:160]}; check logs/{log_name}")
+    if last_ok is None or now - datetime.fromisoformat(last_ok) > FORWARD_STALE:
+        return Health(name, ALERT, f"no good update since {_when(last_ok) if last_ok else 'it began'}: check logs/{log_name}")
+    return None
 
 
 def forward2_check(now: datetime) -> list[Health]:
-    """Forward test 2 (N2 in paper mode, research only): is its evening update still running? Never an alert."""
+    """Forward test 2 (N2 in paper mode, research only): is its evening update still running? An alert if not."""
     path = ROOT / FORWARD2_LEDGER
     if not path.exists():
         return []
     conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
     try:
+        problem = evening_update_alert(conn, "forward test 2", "forward2.log", now)
         last_ok = conn.execute("SELECT MAX(at) FROM runs WHERE status = 'ok'").fetchone()[0]
         closed = conn.execute("SELECT COUNT(*) FROM trades WHERE outcome != 'not bought'").fetchone()[0]
     finally:
         conn.close()
-    if last_ok is None or now - datetime.fromisoformat(last_ok) > FORWARD2_STALE:
-        return [Health("forward test 2", WARN, f"no good update since {_when(last_ok) if last_ok else 'it began'}: "
-                       "check logs/forward2.log")]
+    if problem:
+        return [problem]
     return [Health("forward test 2", OK, f"updated {_when(last_ok)}; {closed} closed paper trade(s)")]
 
 
@@ -335,20 +347,20 @@ FORWARD3_LEDGER = Path("state") / "forward3.db"
 
 
 def forward3_check(now: datetime) -> list[Health]:
-    """Forward test 3 (round 10's E2 in paper mode, research only): is its evening update still running? Never an alert."""
+    """Forward test 3 (round 10's E2 in paper mode, research only): is its evening update still running? An alert if not."""
     path = ROOT / FORWARD3_LEDGER
     if not path.exists():
         return []
     conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
     try:
+        problem = evening_update_alert(conn, "forward test 3", "forward3.log", now)
         last_ok = conn.execute("SELECT MAX(at) FROM runs WHERE status = 'ok'").fetchone()[0]
         closed = conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0]
         signals = conn.execute("SELECT COUNT(*) FROM signals WHERE late = 0").fetchone()[0]
     finally:
         conn.close()
-    if last_ok is None or now - datetime.fromisoformat(last_ok) > FORWARD2_STALE:
-        return [Health("forward test 3", WARN, f"no good update since {_when(last_ok) if last_ok else 'it began'}: "
-                       "check logs/forward3.log")]
+    if problem:
+        return [problem]
     return [Health("forward test 3", OK, f"updated {_when(last_ok)}; {signals} signal(s), {closed} closed paper trade(s)")]
 
 
@@ -356,20 +368,21 @@ TRIAL_LEDGER = Path("state") / "trial1.db"
 
 
 def trial_check(now: datetime) -> list[Health]:
-    """Paper trial 1 (E2 x3 + V2 x2 in one paper account, research only): still updating? Its brakes, if any. Never an alert."""
+    """Paper trial 1 (E2 x3 + V2 x2 in one paper account, research only): still updating (an alert if not)? Its brakes,
+    if any (as defined, not a failure)."""
     path = ROOT / TRIAL_LEDGER
     if not path.exists():
         return []
     conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
     try:
+        problem = evening_update_alert(conn, "paper trial 1", "trial1.log", now)
         last_ok = conn.execute("SELECT MAX(at) FROM runs WHERE status = 'ok'").fetchone()[0]
         closed, r = conn.execute("SELECT COUNT(*), COALESCE(SUM(r), 0) FROM trades").fetchone()
         brakes = [f"{scope} {kind}" for scope, kind in conn.execute("SELECT scope, kind FROM brakes ORDER BY id")]
     finally:
         conn.close()
-    if last_ok is None or now - datetime.fromisoformat(last_ok) > FORWARD2_STALE:
-        return [Health("paper trial 1", WARN, f"no good update since {_when(last_ok) if last_ok else 'it began'}: "
-                       "check logs/trial1.log")]
+    if problem:
+        return [problem]
     return [Health("paper trial 1", OK, f"updated {_when(last_ok)}; {closed} closed paper trade(s), {r:+.2f}R"
                    + (f"; brakes: {', '.join(brakes)}" if brakes else ""))]
 

@@ -259,16 +259,20 @@ def test_a_finished_day_never_fetched_whole_is_a_warning(tmp_path, monkeypatch):
     store.close()
 
 
-def test_forward_test_2_that_stops_updating_is_a_warning(tmp_path, monkeypatch):
+def test_forward_test_2_that_fails_or_stops_updating_is_an_alert(tmp_path, monkeypatch):
     from trader.research.forward2 import Ledger
     monkeypatch.setattr(health, "ROOT", tmp_path)
     assert health.forward2_check(EVENING) == []  # not started
     ledger = Ledger(tmp_path / "state" / "forward2.db")
     ledger.add_run(EVENING - timedelta(days=1), "ok", "saved 1 session(s)")
-    ledger.add_run(EVENING - timedelta(hours=1), "failed", "ConnectionError")
     check = health.forward2_check(EVENING)[0]
     assert check.level == OK and check.detail.startswith("updated 17 Aug 21:00 IST; 0 closed")
-    assert health.forward2_check(EVENING + timedelta(days=3))[0].level == WARN
+    assert health.forward2_check(EVENING + timedelta(days=3))[0].level == ALERT  # stale: three days without a good update
+    ledger.add_run(EVENING - timedelta(hours=1), "failed", "ConnectionError: NSE didn't answer")
+    check = health.forward2_check(EVENING)[0]
+    assert check.level == ALERT and "its last run failed" in check.detail and "ConnectionError" in check.detail
+    ledger.add_run(EVENING - timedelta(minutes=30), "ok", "saved 1 session(s)")  # a later good run clears it
+    assert health.forward2_check(EVENING)[0].level == OK
     ledger.close()
 
 
@@ -281,7 +285,7 @@ def test_forward_test_3_is_watched_but_never_alerts(tmp_path, monkeypatch):
     ledger.close()
     check = health.forward3_check(EVENING)[0]
     assert check.level == OK and "0 signal(s), 0 closed paper trade(s)" in check.detail
-    assert health.forward3_check(EVENING + timedelta(days=3))[0].level == WARN
+    assert health.forward3_check(EVENING + timedelta(days=3))[0].level == ALERT
 
 
 def test_paper_trial_1_is_watched_and_shows_its_brakes(tmp_path, monkeypatch):
@@ -294,7 +298,7 @@ def test_paper_trial_1_is_watched_and_shows_its_brakes(tmp_path, monkeypatch):
     ledger.close()
     check = health.trial_check(EVENING)[0]
     assert check.level == OK and "0 closed paper trade(s), +0.00R; brakes: V2 paused" in check.detail
-    assert health.trial_check(EVENING + timedelta(days=3))[0].level == WARN
+    assert health.trial_check(EVENING + timedelta(days=3))[0].level == ALERT
 
 
 def test_january_decision_looks_are_flagged_until_written(tmp_path, monkeypatch):
@@ -307,3 +311,31 @@ def test_january_decision_looks_are_flagged_until_written(tmp_path, monkeypatch)
     for stem in ("forward2", "forward3", "forward4"):
         (looks / f"{stem}-look-2028-01-05.md").write_text("x", encoding="utf-8")
     assert health.january_looks_check(date(2028, 1, 9))[0].level == OK
+
+
+def test_a_failed_forward_test_or_trial_run_is_sent_on_telegram(tmp_path, monkeypatch):
+    from trader.research.forward3 import Ledger as Forward3
+    from trader.research.trial import Ledger as Trial
+    monkeypatch.setattr(health, "ROOT", tmp_path)
+    monkeypatch.setattr(health, "configure_logging", lambda **kwargs: None)  # not into the real logs/
+    monkeypatch.setattr(health, "load_settings", lambda: load_settings(env={}))
+    now = datetime.now(health.IST)
+    f3 = Forward3(tmp_path / "state" / "forward3.db")
+    f3.add_run(now - timedelta(hours=2), "failed", "ConnectionError: board meetings")
+    f3.close()
+    trial = Trial(tmp_path / "state" / "trial1.db")
+    trial.add_run(now - timedelta(hours=2), "ok", "data to ...")
+    trial.close()
+    sent = []
+
+    class Notifier:
+        def send(self, text):
+            sent.append(text)
+            return True
+
+    monkeypatch.setattr(health, "notifier_from_settings", lambda settings: Notifier())
+    with pytest.raises(SystemExit) as stopped:
+        health.main(["--notify"])
+    assert stopped.value.code == 1 and len(sent) == 1  # one Telegram message for every alert of the run
+    assert "forward test 3" in sent[0] and "its last run failed" in sent[0] and "paper trial 1" not in sent[0]
+
