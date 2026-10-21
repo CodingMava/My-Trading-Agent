@@ -6,7 +6,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from tests.execution.fake_kite import FakeKite
+from tests.execution.fake_kite import FakeKite, ok
 from tests.execution.test_paper_trader import SIGNAL_DAY, SPEC, FakeNotifier, make_trader
 from trader.config import load_settings
 from trader.core.models import Position
@@ -297,6 +297,7 @@ def test_the_read_only_check_holds_kites_answers_to_what_the_code_relies_on(tmp_
     seen, problems = check(api)
     assert problems == [] and "Equity funds available: Rs 100,000.00" in seen
     assert "  NSE:INFY: 10 settled + 5 T+1 - 0 sold today = 15 held" in seen and "NIFTYBEES last price: 285.5" in seen
+    assert "NIFTYBEES today: open 285.5, high 285.5, low 285.5" in seen  # what a dry run fills at
     assert [call for call in kite.calls if call[0] != "GET"] == writes_before  # it wrote nothing
     counts, _ = check(api, detail=False)  # for Telegram: no funds, no holdings
     assert not any("funds" in line or "INFY" in line for line in counts) and "holdings: 1" in counts
@@ -414,3 +415,15 @@ def test_level_6_evidence_from_a_live_week(tmp_path):
     failed = {c["number"] for c in evidence.checks if not c["passed"]}
     assert failed == {1, 2, 6, 7} and evidence.decision == "LIVE_SMALL"  # too early to say more, and nothing wrong
     assert evidence.kind == "live" and live_evidence(paper.store, live.store, "T9", date(2026, 8, 18), 100_000) is None
+
+
+def test_the_read_only_check_finds_quotes_a_dry_run_cant_fill_at():
+    class NoOhlc(FakeKite):
+        def get(self, url, params=None, headers=None, timeout=None):
+            if url.endswith("/quote/ohlc"):
+                return ok({key: {"last_price": 285.5} for key in params["i"]})
+            return super().get(url, params, headers, timeout)
+    kite = NoOhlc()
+    kite.prices = {"NIFTYBEES": 285.5}
+    seen, problems = check(KiteOrders("key", "AT", http=kite, sleep=lambda s: None))
+    assert problems == ["quotes: the open, high and low a dry run relies on are missing"]

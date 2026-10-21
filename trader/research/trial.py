@@ -20,6 +20,7 @@ import html
 import json
 import logging
 import sqlite3
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -399,6 +400,64 @@ def update(ledger, sessions: list[date], secs: dict, e2: pd.DataFrame, v2: dict[
             ledger.add_brake(scope, kind, date.fromisoformat(when), reason, now)
             events["brakes"].append((scope, kind, when, reason))
     return events
+
+
+# -------------------------------------------------------------------------------------------- next open
+def _with_next_session(sec: round8.Security) -> round8.Security:
+    """`sec` with one more session: a quiet row at its latest close, so it can be bought, is sold by time, and touches
+    no stop. It stands in for the next open while the evening plans it (`next_open`); it is never recorded."""
+    last = int(sec.last_row[-1])
+    known = last >= 0
+    raw, adj = (float(sec.raw_close[last]), float(sec.adj_close[last])) if known else (np.nan, np.nan)
+
+    def more(values, value):
+        return np.r_[values, np.asarray([value], dtype=values.dtype)]
+
+    return replace(sec, present=more(sec.present, known), eq=more(sec.eq, bool(sec.eq[last]) if known else False),
+                   raw_close=more(sec.raw_close, raw), raw_open=more(sec.raw_open, raw), raw_high=more(sec.raw_high, raw),
+                   raw_low=more(sec.raw_low, raw), raw_prev=more(sec.raw_prev, raw), value=more(sec.value, 0.0),
+                   adj_open=more(sec.adj_open, adj), adj_low=more(sec.adj_low, adj), adj_close=more(sec.adj_close, adj),
+                   last_row=more(sec.last_row, len(sec.present) if known else -1))
+
+
+class _NextSession:
+    """The securities with the stand-in next session, made only for the stocks the plan looks at."""
+
+    def __init__(self, secs: dict):
+        self._secs, self._made = secs, {}
+
+    def get(self, sid, default=None):
+        if sid not in self._made:
+            sec = self._secs.get(sid)
+            self._made[sid] = None if sec is None else _with_next_session(sec)
+        return default if self._made[sid] is None else self._made[sid]
+
+
+def next_open(ledger, sessions: list[date], secs: dict, e2: pd.DataFrame, v2: dict[int, pd.DataFrame], next_session: date,
+              now: datetime) -> dict:
+    """What the trial will do at the open of `next_session`, planned the evening before from the ledger as recorded: the
+    entries it makes if the stock trades there and isn't locked at its upper band all day, the positions it sells by
+    time, and what it holds after that open. It runs the trial's own update on a stand-in session and records nothing.
+    Returns {"entries": [{part, sid, signal_date, tier, close}], "exits": [{part, sid, signal_date, entry_date}],
+    "passed": [(part, sid, status)], "held": {sid: part}}; `close` is the latest close, as NSE printed it."""
+    view = _ReadOnly(ledger)
+    stand_in = _NextSession(secs)
+    events = update(view, [*sessions, next_session], stand_in, e2, v2, now)
+    day = next_session.isoformat()
+    signals = view.table("signals")
+    tier = {(p, s, d): t for p, s, d, t in zip(signals["part"], signals["sid"], signals["signal_date"], signals["tier"])}
+    decisions, trades = view.table("decisions"), view.table("trades")
+    entries, passed = [], []
+    for row in decisions[decisions["entry_date"] == day].itertuples(index=False):
+        if row.status == "bought":
+            sec = secs[row.sid]
+            entries.append({"part": row.part, "sid": row.sid, "signal_date": row.signal_date,
+                            "tier": tier[(row.part, row.sid, row.signal_date)], "close": float(sec.raw_close[sec.last_row[-1]])})
+        else:
+            passed.append((row.part, row.sid, row.status))
+    exits = [{"part": t.part, "sid": t.sid, "signal_date": t.signal_date, "entry_date": t.entry_date}
+             for t in trades[trades["exit_date"] == day].itertuples(index=False)]
+    return {"entries": entries, "exits": exits, "passed": passed, "held": {sid: part for part, sid, _, _ in events["open"]}}
 
 
 def record_pools(ledger, sessions: list[date], secs: dict, universe: round10.Universe, now: datetime, events: dict) -> None:

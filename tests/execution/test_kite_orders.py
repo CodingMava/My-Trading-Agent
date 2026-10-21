@@ -121,3 +121,10 @@ def test_an_unreadable_answer():
         client(Garbled()).place_order("amo", ORDER)
     with pytest.raises(KiteError, match="HTTP 200"):
         client(Garbled()).orders()
+
+
+def test_quotes_for_no_stock_ask_kite_nothing():
+    from tests.execution.fake_kite import FakeKite
+    kite = FakeKite()
+    api = KiteOrders("key", "AT", http=kite, sleep=lambda s: None)
+    assert api.ohlc([]) == {} and kite.calls == []

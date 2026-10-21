@@ -168,7 +168,8 @@ def test_a_live_trading_morning_without_a_login_gets_one_reminder(tmp_path):
     off = load_settings(env={})
     on = replace(off, live_enabled=True)
     assert "Kite login needed" in login_reminder(on, nse, MONDAY_MORNING, session_file)
-    assert login_reminder(off, nse, MONDAY_MORNING, session_file) is None  # live trading off: no login needed
+    assert login_reminder(off, nse, MONDAY_MORNING, session_file, dry_run=lambda: False) is None  # off: none needed
+    assert "live dry run" in login_reminder(off, nse, MONDAY_MORNING, session_file, dry_run=lambda: True)
     for when in (MONDAY_MORNING.replace(hour=8, minute=0), MONDAY_MORNING.replace(hour=9, minute=30),
                  MONDAY_MORNING.replace(day=11)):  # too early, too late, a Sunday
         assert login_reminder(on, nse, when, session_file) is None

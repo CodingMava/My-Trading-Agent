@@ -9,7 +9,9 @@
 #
 # With -Live it also registers the three live-trading jobs (Phase 11). Do that only when going live
 # (docs/runbook.md, "Before the first real order"); they send nothing while live trading is locked.
-param([switch]$Live)
+# With -LiveDryRun it registers the same three jobs as a dry run for paper trial 1's bunch (B1F) on a simulated
+# account (state/live-dryrun/): real Kite prices with the day's login, nothing sent, messages labelled [LIVE DRY RUN].
+param([switch]$Live, [switch]$LiveDryRun)
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -73,36 +75,50 @@ Register-ScheduledTask -TaskName "Trading agent - news" -Force `
 #    on the same rebuilt history. Not evidence; it changes no strategy's status.
 # 4. Forward test 5 (docs/research/forward5-preregistration.md): the trial's closed trades hedged with short NIFTY
 #    futures, from NSE's daily F&O file (kept outside OneDrive). Paper only; F&O stays paper.
+# 5. With -Live or -LiveDryRun, the live evening job, right after the trial: it sends the next open's orders, and
+#    paper trial 1's (B1F's) are known only once the trial has processed the day.
 # All send messages labelled paper only. If the PC was asleep or off at 19:30, the task runs as soon as it is back and
 # each catches up every day it missed.
 $forwardSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes 60) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 90) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+$dryRun = "--dry-run --as-live B1F --notify"
+$forwardActions = @((New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.forward2 daily" -WorkingDirectory $root),
+                    (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.forward3 daily" -WorkingDirectory $root),
+                    (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.trial daily" -WorkingDirectory $root))
+if ($Live) {
+    $forwardActions += New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.execution.live evening" -WorkingDirectory $root
+}
+if ($LiveDryRun) {
+    $forwardActions += New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.execution.live evening $dryRun" -WorkingDirectory $root
+}
+$forwardActions += New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.forward5 daily" -WorkingDirectory $root
 if (Get-ScheduledTask -TaskName "Trading agent - forward test 2" -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName "Trading agent - forward test 2" -Confirm:$false  # now part of "forward tests"
 }
 Register-ScheduledTask -TaskName "Trading agent - forward tests" -Force `
     -Description "Forward tests 2 (N2) and 3 (E2), paper trial 1 (E2 x3 + V2 x2), then forward test 5 (the trial hedged with short NIFTY futures), in paper mode on new NSE sessions (python -m trader.research.forward2 daily, forward3 daily, trial daily, forward5 daily). Research only; never trades." `
-    -Action @((New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.forward2 daily" -WorkingDirectory $root),
-              (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.forward3 daily" -WorkingDirectory $root),
-              (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.trial daily" -WorkingDirectory $root),
-              (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.forward5 daily" -WorkingDirectory $root)) `
-    -Trigger (New-ScheduledTaskTrigger -Daily -At "19:30") -Settings $forwardSettings | Out-Null
+    -Action $forwardActions -Trigger (New-ScheduledTaskTrigger -Daily -At "19:30") -Settings $forwardSettings | Out-Null
 
-# Live trading through Zerodha Kite: 18:30 after the daily run (orders for the next open), 09:20 after the
-# open (stops), 15:15 before the close (time exits). The morning job may start late, since a stop placed late
-# beats none; the others don't, and each job refuses to send outside its own window anyway.
-if ($Live) {
-    $weekdays = "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"
+# Live trading through Zerodha Kite: the evening job in "forward tests" above (orders for the next open), 09:20
+# after the open (stops), 15:15 before the close (time exits). The morning job may start late, since a stop placed
+# late beats none; the pre-close job doesn't, and each job refuses to send outside its own window anyway.
+if (Get-ScheduledTask -TaskName "Trading agent - live evening" -ErrorAction SilentlyContinue) {
+    Unregister-ScheduledTask -TaskName "Trading agent - live evening" -Confirm:$false  # now after the trial, in "forward tests"
+}
+$weekdays = "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"
+$modes = @()
+if ($Live) { $modes += @{ Prefix = "live"; Arguments = ""; What = "Live trading through Zerodha Kite"; Sends = "Sends nothing while locked." } }
+if ($LiveDryRun) { $modes += @{ Prefix = "live dry run"; Arguments = " $dryRun"; What = "Dry run of live trading for B1F on a simulated account"; Sends = "Reads only Kite's prices; never sends an order." } }
+foreach ($mode in $modes) {
     $jobs = @(
-        @{ Name = "evening"; Trigger = (New-ScheduledTaskTrigger -Daily -At "18:30"); Late = $false },
         @{ Name = "morning"; Trigger = (New-ScheduledTaskTrigger -Weekly -DaysOfWeek $weekdays -At "09:20"); Late = $true },
         @{ Name = "preclose"; Trigger = (New-ScheduledTaskTrigger -Weekly -DaysOfWeek $weekdays -At "15:15"); Late = $false })
     foreach ($job in $jobs) {
         $jobSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 20) `
             -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable:$job.Late
-        Register-ScheduledTask -TaskName "Trading agent - live $($job.Name)" -Force `
-            -Description "Live trading through Zerodha Kite (python -m trader.execution.live $($job.Name)). Sends nothing while locked." `
-            -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.execution.live $($job.Name)" -WorkingDirectory $root) `
+        Register-ScheduledTask -TaskName "Trading agent - $($mode.Prefix) $($job.Name)" -Force `
+            -Description "$($mode.What) (python -m trader.execution.live $($job.Name)$($mode.Arguments)). $($mode.Sends)" `
+            -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.execution.live $($job.Name)$($mode.Arguments)" -WorkingDirectory $root) `
             -Trigger $job.Trigger -Settings $jobSettings | Out-Null
     }
 }

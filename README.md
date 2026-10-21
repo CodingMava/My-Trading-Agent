@@ -606,7 +606,7 @@ python -m trader.risk.killswitch status
 | 8 | Broker integration: Zerodha Kite orders, still on paper capital | Done: the dry run, and the order management system (orders and GTT stops, never sent twice, rejects, partial fills, reconciliation with the account), tested against an in-memory Kite (Kite has no sandbox) |
 | 9 | AI research layer: news to structured tags, advisory only | Built: NSE's announcements collected every 15 minutes into a history with every gap recorded, tagged by rules (optional AI tags, schema-checked, off until a new key); no trading code can read them. Kept only if a pre-registered research round shows the tags improve a strategy |
 | 10 | Observability: run records, alerts on failure and on silence, health checks, ops console | Done |
-| 11 | Controlled live trading | Built and locked: the live jobs (18:30, 09:20, 15:15) and their locks, live-against-paper tracking, the Level 6 evidence for `LIVE`, and Level 7's capital steps (at most double, 4 weeks apart, automatic step-down). Nothing is sent until a strategy earns `LIVE_SMALL` on paper-trading evidence and you turn it on |
+| 11 | Controlled live trading | Built and locked: the live jobs (after paper trial 1's evening run, 09:20, 15:15) and their locks, orders from each strategy's paper account (B1F's from paper trial 1), a dry run on a simulated account at real prices, live-against-paper tracking, the Level 6 evidence for `LIVE`, and Level 7's capital steps (at most double, 4 weeks apart, automatic step-down). Nothing is sent until a strategy earns `LIVE_SMALL` on paper-trading evidence and you turn it on |
 
 ## Data
 

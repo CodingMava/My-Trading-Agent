@@ -27,7 +27,7 @@ from trader.config import ROOT, load_settings
 from trader.data.kite import (LOGIN_URL, SESSION_FILE, KiteAuthError, KiteError, create_session, load_session,
                               request_token_from, save_session, session_secrets)
 from trader.execution.kite_orders import from_session
-from trader.execution.live import check as live_check
+from trader.execution.live import check as live_check, dry_run_waiting
 from trader.execution.store import PaperStore
 from trader.gate import load_gate_config
 from trader.logging_setup import configure_logging
@@ -200,13 +200,20 @@ def kite_check_text(settings, connect: Callable[[], object] | None = None) -> st
     return "<b>Kite check (read-only)</b>\n\n" + escape("\n".join(seen) + "\n\n" + verdict)
 
 
-def login_reminder(settings, calendar, now: datetime, session_file: Path = SESSION_FILE) -> str | None:
-    """While live trading is on: a trading morning between 08:30 and 09:15 without today's Kite login."""
-    if (not settings.live_enabled or not calendar.is_trading_day(now.date())
-            or not REMIND_FROM <= now.time() < REMIND_UNTIL or load_session(session_file, now) is not None):
+def login_reminder(settings, calendar, now: datetime, session_file: Path = SESSION_FILE,
+                   dry_run: Callable[[], bool] = dry_run_waiting) -> str | None:
+    """While live trading is on, or a live dry run holds simulated orders or shares: a trading morning between 08:30
+    and 09:15 without today's Kite login."""
+    if (not calendar.is_trading_day(now.date()) or not REMIND_FROM <= now.time() < REMIND_UNTIL
+            or load_session(session_file, now) is not None):
         return None
-    return ("<b>Kite login needed</b>\n\nLive trading is on, and today's jobs (09:20, 15:15, 18:30) need a Kite "
-            "login. Send /login.")
+    if settings.live_enabled:
+        return ("<b>Kite login needed</b>\n\nLive trading is on, and today's jobs (09:20, 15:15, and the evening one "
+                "after paper trial 1) need a Kite login. Send /login.")
+    if dry_run():
+        return ("<b>Kite login needed</b>\n\nThe live dry run holds simulated orders or shares: its 09:20 job needs "
+                "today's Kite prices. Send /login.")
+    return None
 
 
 class CommandBot:

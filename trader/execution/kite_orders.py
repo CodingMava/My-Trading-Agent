@@ -109,6 +109,15 @@ class KiteOrders:
         data = self._read("/quote/ltp", {"i": [f"{exchange}:{symbol}" for symbol in tradingsymbols]})
         return {key.split(":", 1)[1]: float(quote["last_price"]) for key, quote in data.items()}
 
+    def ohlc(self, tradingsymbols: list[str], exchange: str = "NSE") -> dict[str, dict]:
+        """The session's open, high and low so far and the last price (Kite's `close` here is the previous close)."""
+        if not tradingsymbols:
+            return {}
+        data = self._read("/quote/ohlc", {"i": [f"{exchange}:{symbol}" for symbol in tradingsymbols]})
+        return {key.split(":", 1)[1]: {"open": float(q["ohlc"]["open"]), "high": float(q["ohlc"]["high"]),
+                                       "low": float(q["ohlc"]["low"]), "last_price": float(q["last_price"])}
+                for key, q in data.items()}
+
 
 def held_quantity(holdings: list[dict], positions: dict, tradingsymbol: str, exchange: str = "NSE") -> int:
     """Shares of one stock in the account: settled and T+1 holdings less what was sold from them today, plus

@@ -196,3 +196,38 @@ def test_every_random_pick_comparison_and_the_performance_figures_are_reported(t
         assert label in text
     perf = trial.performance(verdict)
     assert perf["trades"] == 3 and perf["covered"] == 3 and perf["of"] == 12
+
+
+def test_the_next_open_planned_the_evening_before_is_what_the_trial_then_does():
+    """Live trading carries out the trial's next-open decisions the evening before (trader/execution/sources.py): each
+    evening's plan must be exactly the entries and time exits the trial records once that session is in the data."""
+    n = 160
+    sessions = _sessions(n)
+    lows = np.full(n, 100.0)
+    lows[30] = 80.0  # A's stop
+    secs = {s: _security(s, n) for s in "ABCDEFGHIJ"}
+    secs["A"] = _security("A", n, lows=lows)
+    oct30 = sessions.index(date(2026, 10, 30))
+    secs["E"] = _security("E", n, locked=(oct30 + 1,))  # V2's first pick can't be bought: its place stays in cash
+    e2 = _e2([("A", 10, 0.30), ("B", 10, 0.25), ("C", 12, 0.20), ("D", 12, 0.15), ("H", 31, 0.4), ("I", 40, 0.2)])
+    v2 = _v2(sessions, date(2026, 10, 30), ["E", "F", "G"])
+    ledger = trial.Ledger(":memory:")
+    planned_entries = planned_exits = 0
+    for k in range(5, n - 1):
+        cut = {s: _cut(sec, k) for s, sec in secs.items()}
+        signals = e2[e2["signal"] < k]
+        months = {i: f for i, f in v2.items() if i < k}
+        trial.update(ledger, sessions[:k], cut, signals, months, NOW)
+        plan = trial.next_open(ledger, sessions[:k], cut, signals, months, sessions[k], NOW)
+        before = len(ledger.table("decisions")), len(ledger.table("trades"))
+        trial.update(ledger, sessions[:k + 1], {s: _cut(sec, k + 1) for s, sec in secs.items()}, signals, months, NOW)
+        decided = ledger.table("decisions").iloc[before[0]:]
+        bought = {(r.part, r.sid) for r in decided.itertuples() if r.status == "bought"}
+        locked = {(r.part, r.sid) for r in decided.itertuples() if r.status == "not bought"}
+        assert {(e["part"], e["sid"]) for e in plan["entries"]} == bought | locked, sessions[k]
+        closed = ledger.table("trades").iloc[before[1]:]
+        by_time = {(t.part, t.sid) for t in closed.itertuples() if t.exit_date == sessions[k].isoformat() and t.outcome != "stop"}
+        assert {(x["part"], x["sid"]) for x in plan["exits"]} == by_time, sessions[k]
+        planned_entries += len(plan["entries"])
+        planned_exits += len(plan["exits"])
+    assert (planned_entries, planned_exits) == (6, 4)  # A B C H and V2's E (locked at the open) and F; B C F H by time

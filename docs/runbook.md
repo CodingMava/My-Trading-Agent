@@ -157,7 +157,12 @@ behind each paper step and when it would be sent. The live machinery (`python -m
 is built and locked. Before it sends anything for real:
 
 - **Evidence:** a strategy at `LIVE_SMALL`, earned by paper-trading evidence (see the README's safety
-  rules), and a dry run whose health check has stayed OK: Kite would have accepted every request.
+  rules), and a dry run whose health check has stayed OK: Kite would have accepted every request. The live
+  jobs take each strategy's orders from its own paper account (`trader/execution/sources.py`): the paper
+  engine's for H1 and H2, paper trial 1's ledger for its bunch, B1F. B1F's approval stages after a forward
+  test 4 pass (its paper-stage and small-live scoring, which `python -m trader.execution.report` does only for
+  the paper engine's account) are not built yet: they need your decision on which trial trades count.
+- **A live dry run** (below) of the strategy that is going live, for weeks, with its messages read.
 - **A static IP:** since April 2026 Kite rejects order requests from any address not registered in its
   developer console. Most home connections don't have a fixed address: ask the ISP for one, or send
   orders from a server that has one.
@@ -171,11 +176,18 @@ is built and locked. Before it sends anything for real:
   ends at 15:15, and their closing price is set by an auction from 15:15 to 15:35. The pre-close job's
   15:15 time exits were designed before it. Decide how a time exit meets the auction (a sale before
   15:15, or an order into the auction, whichever Kite supports), change the job and its dry run, and test
-  them before any real order ([docs/research/kite-minute-data.md](research/kite-minute-data.md)).
+  them before any real order ([docs/research/kite-minute-data.md](research/kite-minute-data.md)). B1F never
+  meets it: its exits are at the open (after-market orders), so its pre-close job has nothing to do.
 - **A Kite login every trading day before 09:15:** sessions expire at 06:00 IST, and the live jobs run at
-  09:20, 15:15 and 18:30. Send `/login` to the bot from your phone (or run `python -m trader.data.kite
-  login` on the PC). While live trading is on, the bot reminds you at 08:30 on a trading day without a
-  login, and the health check warns.
+  09:20, 15:15 and in the evening right after paper trial 1 (in the "forward tests" task, about 21:00). Send
+  `/login` to the bot from your phone (or run `python -m trader.data.kite login` on the PC). While live trading
+  is on, or a live dry run holds simulated orders or shares, the bot reminds you at 08:30 on a trading day
+  without a login, and the health check warns.
+- **Enough capital for whole shares:** a live entry is its paper position scaled to the live capital, rounded
+  down to whole shares, and one that rounds to none isn't sent. For B1F (E2 positions are 3.3% of the capital,
+  V2's 5%), at Rs 1,00,000 about 14% of E2's possible stocks cost more than one position; at Rs 3,00,000 about
+  4% (E2) and 3% (V2), inside Level 6's 95% fill rate. Below about Rs 3,00,000, live can't track the trial
+  (prices of liquidity ranks 1-300 at 30 Sep 2026).
 - **Turn it on, deliberately:** in `config/settings.toml` set `[live] enabled = true` and `capital` (the
   rupees the live strategies may use; start small). Then register the live jobs:
   `powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1 -Live`.
@@ -187,6 +199,35 @@ is its paper order scaled to the live capital and capped in size and number per 
 to send outside its window (so a late start can't send a time exit after the close). Before sending, every
 job checks that the account holds every share the system believes it holds; if not, the kill switch
 engages and nothing is sent. A request whose answer was lost is looked up at Kite, never sent twice.
+
+## The live dry run
+
+The live jobs, their locks and the order system, run unchanged against a simulated Zerodha account
+(`trader/execution/simkite.py`), on real Kite prices: only price quotes are read from Kite, with the day's
+login, and no order, GTT or deletion ever reaches it. It rehearses going live for a strategy before it has
+earned it, without touching `config/strategies.toml` or `[live]`:
+
+    python -m trader.execution.live evening --dry-run --as-live B1F      # after paper trial 1's evening run
+    python -m trader.execution.live morning --dry-run --as-live B1F      # 09:15-15:25: fills at the open, stops
+    python -m trader.execution.live preclose --dry-run --as-live B1F     # 15:00-15:28: time exits (none for B1F)
+    python -m trader.execution.live status --dry-run --as-live B1F
+
+- The simulated account starts with `--capital` rupees (default Rs 3,00,000) and is kept in
+  `state/live-dryrun/` (`kite.json` the account, `live.db` the order system's records). Delete the folder to
+  start again.
+- After-market orders fill at the next session's open as Kite's quotes give it, stops (GTTs) fire on the
+  session's low, a stop's LIMIT sell that the open gapped below waits for the morning job's gap exit, a buy the
+  cash can't pay for is rejected at the open. The morning job must run on the fill day (it is scheduled at
+  09:20 and catches up when the PC wakes): a day no job ran is seen only through the next call's prices. No
+  charges are taken from the simulated cash.
+- To run it every day: `powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1 -LiveDryRun`. It
+  adds the dry-run evening job to "Trading agent - forward tests", right after the trial, and registers
+  "Trading agent - live dry run morning" (09:20) and "... preclose" (15:15), all with `--notify`: their
+  messages come on Telegram labelled `[LIVE DRY RUN · nothing sent to Kite]`. Each trading morning needs a
+  Kite login before 09:20 while the dry run holds anything. To stop it, unregister the two dry-run tasks and
+  run the script again without `-LiveDryRun`.
+- It can't test what only a real order meets: the static IP, the DDPI, Kite's margin and market-protection
+  checks, partial fills, or a stock's GTT after a corporate action. Read the first real orders' messages.
 
 ## Growing the live capital
 

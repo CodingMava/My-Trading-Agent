@@ -213,7 +213,7 @@ def live_checks(settings, store: LiveStore | None, now: datetime, session_file: 
             checks.append(Health("live trading", OK, f"{len(held)} live holding(s), each with a stop at Kite; "
                                  "nothing unsettled"))
     if settings.live_enabled and load_session(session_file) is None:
-        checks.append(Health("live login", WARN, "no Kite login today: the 09:20, 15:15 and 18:30 live jobs need one "
+        checks.append(Health("live login", WARN, "no Kite login today: the 09:20, 15:15 and evening live jobs need one "
                              "(python -m trader.data.kite login)"))
     return checks or [Health("live trading", INFO, "off: no real order has been sent; Indian orders are a dry run")]
 

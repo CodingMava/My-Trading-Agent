@@ -3,15 +3,19 @@ with real shares, for the strategies that have earned it. Off by default, and lo
 
     python -m trader.execution.live status     # the locks, live holdings and unsettled requests (no Kite calls)
     python -m trader.execution.live check      # read-only: the account through Kite, and the fields relied on
-    python -m trader.execution.live evening    # 18:30, after the daily paper run: orders for the next open
+    python -m trader.execution.live evening    # after paper trial 1's evening run: orders for the next open
     python -m trader.execution.live morning    # 09:20: stops for new holdings, stale stops deleted, gap exits
     python -m trader.execution.live preclose   # 15:15: time exits
     python -m trader.execution.live track      # live fills beside the paper fills they mirror
 
+    python -m trader.execution.live evening --dry-run --as-live B1F   # the same jobs on a simulated account
+
 Nothing is sent unless every lock is open:
   1. [live] enabled = true and a live capital in config/settings.toml;
   2. a strategy whose status is LIVE_SMALL or LIVE, which the registry grants only on paper-trading evidence
-     (the audit's Level 5); only its orders go out, and only for NSE stocks (US trades are placed by hand);
+     (the audit's Level 5); only its orders go out, and only for NSE stocks (US trades are placed by hand). Its
+     orders come from its paper account (trader/execution/sources.py): the paper engine's for the catalogue's
+     strategies, paper trial 1's ledger for its bunch, B1F;
   3. today's Kite login, and an account holding every share the system believes it holds (if not, the kill
      switch engages and nothing is sent);
   4. for new entries: the kill switch off, at most [live] max_orders_per_day a day, and each order worth at
@@ -26,14 +30,22 @@ increase takes effect only when every live strategy has passed Level 6 (status L
 current step, and the step is at least min_step_weeks old (config/gate.toml [live]). A step that loses more
 than max_step_drawdown from its peak reverts to the previous one by itself; downward moves are automatic,
 upward ones deliberate.
+
+A dry run (--dry-run) runs the same jobs, interlocks and order system against a simulated Zerodha account
+(trader/execution/simkite.py, kept in state/live-dryrun/) on real Kite prices: only price quotes are read from Kite,
+with today's login, and nothing is sent. --as-live names the strategies it treats as live, without touching the
+registry, and --capital the simulated account's rupees. Its messages are labelled [LIVE DRY RUN].
 """
 from __future__ import annotations
 
 import argparse
+import html
 import logging
+import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -41,10 +53,11 @@ import pandas as pd
 from trader.config import ROOT, Settings, load_settings
 from trader.data.kite import KiteAuthError, session_secrets
 from trader.execution import broker
-from trader.execution.eod import market_of
 from trader.execution.kite_orders import KiteOrders, from_session, held_quantity
 from trader.execution.oms import OMS, LiveStore
 from trader.execution.records import from_fills
+from trader.execution.simkite import SimKite
+from trader.execution.sources import TRIAL, LiveOrder, Source, paper_orders, trial_orders
 from trader.execution.store import PaperStore
 from trader.gate import LiveThresholds, load_gate_config
 from trader.logging_setup import configure_logging, make_console_utf8, redact
@@ -58,6 +71,8 @@ from trader.strategies.catalog import CATALOG, StrategySpec
 log = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 ENTRY_PURPOSES = ("entry",)
+DRY_RUN_DIR = ROOT / "state" / "live-dryrun"
+DRY_RUN_CAPITAL = 300_000.0  # about the least at which B1F's positions are whole shares for 95% of its stocks
 # What the order system reads from Kite, and the fields it relies on (checked by `live check`).
 RELIED_ON = {"holdings": ("tradingsymbol", "exchange", "quantity", "t1_quantity", "used_quantity"),
              "net positions": ("tradingsymbol", "exchange", "product", "quantity"),
@@ -83,10 +98,22 @@ class Live:
     catalog: dict[str, StrategySpec] = field(default_factory=lambda: CATALOG)
     clock: Callable[[], datetime] = field(default=lambda: datetime.now(IST))
     steps: LiveThresholds = field(default_factory=LiveThresholds)
+    sources: dict[str, Source] = field(default_factory=dict)  # strategies whose orders come from their own paper account
+    as_live: frozenset[str] = frozenset()  # a dry run's strategies treated as live; never the registry's business
+    dry_run: bool = False
+
+    def __post_init__(self):
+        if self.as_live and not self.dry_run:
+            raise ValueError("only a dry run may treat a strategy as live")
 
 
 def live_strategies(live: Live) -> set[str]:
-    return {record.id for record in live.registry.live_strategies() if record.id in live.catalog}
+    known = set(live.catalog) | set(live.sources)
+    return {record.id for record in live.registry.live_strategies() if record.id in known} | (live.as_live & known)
+
+
+def say(live: Live, title: str, lines: list[str]) -> None:
+    live.notifier.send(templates.live_update(title=title, lines=lines, dry_run=live.dry_run))
 
 
 def locks(live: Live) -> list[str]:
@@ -115,24 +142,24 @@ def run(job: str, live: Live, backup_dir=None) -> int:
         problems = oms.reconcile()
         if problems:
             live.kill_switch.engage("live reconciliation failed: " + problems[0])
-            live.notifier.send(templates.live_update(title="Reconciliation failed: nothing was sent", lines=[
+            say(live, "Reconciliation failed: nothing was sent", [
                 *problems, "The kill switch is engaged. Compare the account with python -m trader.execution.live "
-                "status and find out why before releasing it."]))
+                "status and find out why before releasing it."])
             return 2
         start, end = WINDOWS[job]
         now = live.clock().time()
         news += (JOBS[job](live, oms, today) if start <= now <= end else
                  [f"Nothing sent: the {job} job runs between {start:%H:%M} and {end:%H:%M} IST, not at {now:%H:%M}."])
     except KiteAuthError as exc:
-        live.notifier.send(templates.live_update(title=f"Live {job} failed", lines=[str(exc)]))
+        say(live, f"Live {job} failed", [str(exc)])
         return 1
     except Exception as exc:  # recorded and reported, never swallowed
         detail = redact(f"{type(exc).__name__}: {exc}", live.settings.secret_values() + session_secrets())[:500]
         log.error("Live %s failed: %s", job, detail, exc_info=True)
-        live.notifier.send(templates.live_update(title=f"Live {job} failed", lines=[detail]))
+        say(live, f"Live {job} failed", [detail])
         return 1
     if news:
-        live.notifier.send(templates.live_update(title=f"Live {job}", lines=news))
+        say(live, f"Live {job}", news)
     if backup_dir is not None:
         live.store.backup(backup_dir, today)
     return 0
@@ -168,7 +195,8 @@ def capital_for_today(live: Live, today: date) -> tuple[float, list[str]]:
             return current, [f"Live capital stays at Rs {current:,.0f}: the revert is acknowledged."]
         return current, []
     weeks = (today - since).days / 7
-    unproven = sorted(i for i in live_strategies(live) if live.registry.get_by_id(i).status != "LIVE")
+    unproven = sorted(i for i in live_strategies(live)
+                      if (record := live.registry.get_by_id(i)) is None or record.status != "LIVE")
     refused = ("after a revert, lower [live] capital to the current step first, then raise it again"
                if steps[-1]["reason"].startswith("reverted") else
                f"{', '.join(unproven)} must first pass Level 6 (status LIVE)" if unproven else
@@ -181,18 +209,22 @@ def capital_for_today(live: Live, today: date) -> tuple[float, list[str]]:
 
 
 def evening(live: Live, oms: OMS, today: date) -> list[str]:
-    """After the daily paper run: tomorrow's entries and exits, as after-market orders for the open."""
+    """After the paper runs: tomorrow's entries and exits, as after-market orders for the open."""
     if not live.calendar.is_trading_day(today):
         return []
-    if live.paper.last_session() != today:
-        return [f"The paper run hasn't processed {today} yet, so nothing was sent for tomorrow's open."]
+    allowed, held = live_strategies(live), live.store.positions()
+    batches = []
+    if allowed & set(live.catalog):
+        batches.append(paper_orders(live.paper, today, allowed, live.catalog))
+    for strategy_id in sorted(allowed & set(live.sources)):
+        batches.append(live.sources[strategy_id](today, held))
+    notes = [note for _, found in batches for note in found]
+    if all(orders is None for orders, _ in batches):
+        return notes
     capital, news = capital_for_today(live, today)
-    allowed, held, paper_capital = live_strategies(live), live.store.positions(), live.paper.starting_capital
+    news += notes
     entries = sum(1 for row in live.store.orders() if row["session"] == today.isoformat() and row["purpose"] in ENTRY_PURPOSES)
-    for order in live.paper.pending_orders():
-        if order.created_session != today or order.strategy_id not in allowed or market_of(order.symbol) != "NSE":
-            continue
-        spec = live.catalog[order.strategy_id]
+    for order in (order for orders, _ in batches for order in orders or ()):
         if order.side == "sell":
             position = held.get(order.symbol)
             if position is None or position.strategy_id != order.strategy_id:
@@ -200,22 +232,29 @@ def evening(live: Live, oms: OMS, today: date) -> list[str]:
             request = broker.exit_order(order.key, order.symbol, position.quantity)
             news.append(f"{order.symbol}: sell {position.quantity} at the open ({oms.submit(today, order.strategy_id, request)})")
             continue
-        quantity = int(order.quantity * capital / paper_capital)
-        refused = ("the kill switch is engaged" if live.kill_switch.engaged
-                   else "the live account already holds it" if order.symbol in held
-                   else f"{order.quantity} paper shares scale to none" if quantity < 1
-                   else f"worth more than {live.settings.live_max_order_fraction:.0%} of the live capital"
-                   if quantity * order.reference_price > live.settings.live_max_order_fraction * capital
-                   else f"the day's limit of {live.settings.live_max_orders_per_day} entries is reached"
-                   if entries >= live.settings.live_max_orders_per_day else "")
+        refused, quantity = entry_refusal(live, order, capital, held, entries)
         if refused:
             news.append(f"{order.symbol}: entry not sent: {refused}")
             continue
         request = broker.entry_order(order.key, order.symbol, quantity)
-        status = oms.submit(today, order.strategy_id, request, order.stop_distance, spec.max_hold_days)
+        status = oms.submit(today, order.strategy_id, request, order.stop_distance, order.max_hold_days)
         entries += 1
         news.append(f"{order.symbol}: buy {quantity} at the open ({status})")
     return news
+
+
+def entry_refusal(live: Live, order: LiveOrder, capital: float, held: dict, entries: int) -> tuple[str, int]:
+    """Why an entry isn't sent (empty when it is), and its live quantity: the paper order scaled to the live capital."""
+    quantity = int(order.paper_quantity * capital / order.paper_capital + 1e-9)
+    refused = ("the kill switch is engaged" if live.kill_switch.engaged
+               else "the live account already holds it" if order.symbol in held
+               else f"{order.paper_quantity:.4g} paper shares scale to none (Rs {order.reference_price:,.2f} a share)"
+               if quantity < 1
+               else f"worth more than {live.settings.live_max_order_fraction:.0%} of the live capital"
+               if quantity * order.reference_price > live.settings.live_max_order_fraction * capital
+               else f"the day's limit of {live.settings.live_max_orders_per_day} entries is reached"
+               if entries >= live.settings.live_max_orders_per_day else "")
+    return refused, quantity
 
 
 def morning(live: Live, oms: OMS, today: date) -> list[str]:
@@ -315,6 +354,11 @@ def check(kite: KiteOrders, store: LiveStore | None = None, symbol: str = "NIFTY
         seen.append(f"  {exchange}:{symbol_held}: {h.get('quantity', 0)} settled + {h.get('t1_quantity', 0)} T+1 - "
                     f"{h.get('used_quantity', 0)} sold today = {held_quantity(holdings, positions, symbol_held, exchange)} held")
     seen.append(f"{symbol} last price: {kite.ltp([symbol]).get(symbol)}")
+    try:  # what a dry run fills at: the session's open, high and low
+        quote = kite.ohlc([symbol])[symbol]
+        seen.append(f"{symbol} today: open {quote['open']}, high {quote['high']}, low {quote['low']}")
+    except (KeyError, TypeError):
+        problems.append("quotes: the open, high and low a dry run relies on are missing")
     if store is not None:
         problems += OMS(store, kite, lambda: datetime.now(IST)).reconcile()
     return seen, problems
@@ -335,21 +379,86 @@ def status_text(live: Live) -> str:
     return "\n".join(lines)
 
 
+class Console:
+    """A dry run's messages, printed (and with --notify sent on, through `then`)."""
+
+    def __init__(self, then=None):
+        self.then = then
+
+    def send(self, text: str) -> bool:
+        print(html.unescape(re.sub(r"<[^>]+>", "", text)) + "\n")
+        return self.then.send(text) if self.then is not None else True
+
+
+def dry_run_waiting(directory: Path | None = None) -> bool:
+    """Whether a dry run's simulated account holds shares or has requests outstanding (its morning job needs prices)."""
+    path = (directory or DRY_RUN_DIR) / "live.db"
+    if not path.is_file():
+        return False
+    store = LiveStore(path)
+    try:
+        return bool(store.positions() or store.orders(("SENDING", "SENT", "TRIGGERED", "UNKNOWN")))
+    finally:
+        store.close()
+
+
+def dry_run(settings: Settings, paper: PaperStore, calendar: MarketCalendar, notifier, as_live: set[str],
+            capital: float, clock: Callable[[], datetime] | None = None, directory: Path | None = None,
+            prices=None) -> Live:
+    """The live jobs on a simulated account (trader/execution/simkite.py) in `directory`. Prices come from
+    `prices(tradingsymbols)`, by default the real Kite's quotes with today's login; nothing else reaches Kite."""
+    clock, directory = clock or (lambda: datetime.now(IST)), directory or DRY_RUN_DIR
+    real = []
+
+    def quotes(symbols: list[str]) -> dict[str, dict]:
+        if not real:
+            real.append(from_session(settings))
+        return real[0].ohlc(symbols)
+
+    account = SimKite(directory / "kite.json", prices or quotes, clock, calendar, capital)
+    return Live(replace(settings, live_enabled=True, live_capital=capital), paper, LiveStore(directory / "live.db"),
+                StrategyRegistry.load(), KillSwitch(directory / "KILL_SWITCH"), calendar, notifier,
+                connect=lambda: KiteOrders("dry-run", "dry-run", http=account), clock=clock,
+                steps=load_gate_config().live, sources={TRIAL: lambda today, held: trial_orders(today, held, calendar)},
+                as_live=frozenset(as_live), dry_run=True)
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Live trading through Zerodha Kite (locked until earned).")
     parser.add_argument("job", choices=["status", "check", "evening", "morning", "preclose", "track"])
+    parser.add_argument("--dry-run", action="store_true",
+                        help="run on a simulated account in state/live-dryrun/ (real Kite prices; nothing is sent)")
+    parser.add_argument("--as-live", action="append", default=[], metavar="STRATEGY",
+                        help="dry run only: treat this strategy as live, e.g. B1F (the registry is not changed)")
+    parser.add_argument("--capital", type=float, default=DRY_RUN_CAPITAL,
+                        help="dry run only: the simulated account's capital in rupees (default %(default)s)")
+    parser.add_argument("--notify", action="store_true", help="dry run only: also send its messages on Telegram")
     args = parser.parse_args(argv)
+    if not args.dry_run and (args.as_live or args.notify or args.capital != DRY_RUN_CAPITAL):
+        parser.error("--as-live, --capital and --notify are for dry runs only")
+    if args.dry_run and args.job == "check":
+        parser.error("check is already read-only: run it without --dry-run")
     make_console_utf8()
     settings = load_settings()
-    configure_logging(secrets=settings.secret_values() + session_secrets(), filename="live.log")
+    configure_logging(secrets=settings.secret_values() + session_secrets(),
+                      filename="live-dryrun.log" if args.dry_run else "live.log")
     paper_db, live_db = ROOT / settings.paper_database, ROOT / settings.live_database
     if not paper_db.exists():
         raise SystemExit("No paper records yet: the daily run creates them.")
-    # Looking (status, check, track) leaves no live records behind; only a job that may send creates them.
-    store = LiveStore(live_db if live_db.exists() or args.job in JOBS else ":memory:")
-    live = Live(settings, PaperStore(paper_db, settings.paper_starting_capital), store,
-                StrategyRegistry.load(), KillSwitch(), load_calendars()["NSE"], notifier_from_settings(settings),
-                connect=lambda: from_session(settings), steps=load_gate_config().live)
+    paper, calendar = PaperStore(paper_db, settings.paper_starting_capital), load_calendars()["NSE"]
+    if args.dry_run:
+        live_db = DRY_RUN_DIR / "live.db"
+        live = dry_run(settings, paper, calendar, Console(notifier_from_settings(settings) if args.notify else None),
+                       set(args.as_live), args.capital)
+        unknown = live.as_live - set(live.catalog) - set(live.sources)
+        if unknown:
+            raise SystemExit(f"No such strategy to treat as live: {', '.join(sorted(unknown))}")
+    else:
+        # Looking (status, check, track) leaves no live records behind; only a job that may send creates them.
+        store = LiveStore(live_db if live_db.exists() or args.job in JOBS else ":memory:")
+        live = Live(settings, paper, store, StrategyRegistry.load(), KillSwitch(), calendar, notifier_from_settings(settings),
+                    connect=lambda: from_session(settings), steps=load_gate_config().live,
+                    sources={TRIAL: lambda today, held: trial_orders(today, held, calendar)})
     if args.job == "status":
         print(status_text(live))
     elif args.job == "check":

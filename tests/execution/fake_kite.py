@@ -53,6 +53,9 @@ class FakeKite:
             return ok({"equity": {"net": self.cash, "available": {"cash": self.cash}}, "commodity": {}})
         if path == "/quote/ltp":
             return ok({key: {"last_price": self.prices[key.split(":", 1)[1]]} for key in params["i"]})
+        if path == "/quote/ohlc":
+            return ok({key: {"last_price": (p := self.prices[key.split(":", 1)[1]]),
+                             "ohlc": {"open": p, "high": p, "low": p, "close": p}} for key in params["i"]})
         return error(404, "GeneralException", f"no route {path}")
 
     def request(self, method, url, data=None, headers=None, timeout=None):
