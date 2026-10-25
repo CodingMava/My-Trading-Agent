@@ -11,9 +11,11 @@ trader/execution/live.py scales each order to the live capital and sends it only
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
+
+import pandas as pd
 
 from trader.core.models import Position
 from trader.execution.eod import market_of
@@ -22,6 +24,7 @@ from trader.strategies.catalog import StrategySpec
 
 IST = ZoneInfo("Asia/Kolkata")
 TRIAL = "B1F"  # forward test 4's name for paper trial 1's bunch
+RETURN_SESSIONS = 90  # daily returns handed to the risk engine's correlation check (it uses the last 60 in common)
 
 
 @dataclass(frozen=True)
@@ -36,6 +39,9 @@ class LiveOrder:
     reference_price: float  # the latest close
     stop_distance: float = 0.0
     max_hold_days: int | None = None  # None: the source decides the exit (no time exit before the close)
+    # Daily returns of the stock and of what the source holds, by symbol, for the live risk engine's correlation
+    # check; None leaves it out (the paper engine's orders: it doesn't check correlation either).
+    returns: dict[str, pd.Series] | None = field(default=None, compare=False, repr=False)
 
 
 Source = Callable[[date, dict[str, Position]], tuple[list[LiveOrder] | None, list[str]]]
@@ -69,7 +75,8 @@ def trial_orders(today: date, held: dict[str, Position], calendar, plan_for=None
     for e in plan["entries"]:
         value = trial.CAPITAL * trial.RISK / trial.STOPS[e["part"]]
         orders.append(LiveOrder(TRIAL, f"{TRIAL} {e['part']} {e['sid']} {e['signal_date']} entry", e["sid"] + ".NS", "buy",
-                                value / e["close"], trial.CAPITAL, e["close"], trial.STOPS[e["part"]]))
+                                value / e["close"], trial.CAPITAL, e["close"], trial.STOPS[e["part"]],
+                                returns=plan.get("returns")))
     for x in plan["exits"]:
         orders.append(LiveOrder(TRIAL, f"{TRIAL} {x['part']} {x['sid']} {x['signal_date']} exit {next_session}",
                                 x["sid"] + ".NS", "sell", 0, trial.CAPITAL, 0.0))
@@ -84,20 +91,35 @@ def trial_orders(today: date, held: dict[str, Position], calendar, plan_for=None
     return orders, notes
 
 
+def daily_returns(sessions: list[date], secs: dict, sids) -> dict[str, pd.Series]:
+    """The latest RETURN_SESSIONS daily returns of each stock's adjusted close, by paper trading's symbol."""
+    index = pd.Index(sessions[-RETURN_SESSIONS - 1:])
+    out = {}
+    for sid in sorted(set(sids) & set(secs)):
+        close = pd.Series(secs[sid].adj_close[-RETURN_SESSIONS - 1:], index=index)
+        out[sid + ".NS"] = (close / close.shift(1) - 1).dropna()
+    return out
+
+
 def trial_plan(today: date, next_session: date) -> dict | None:
     """Paper trial 1's plan for `next_session`, from its ledger and inputs; None unless its latest evening run was
-    good and had `today`'s data."""
+    good and had `today`'s data. Its "returns" are the daily returns of the stocks it enters and holds."""
     from trader.research import trial
 
-    trial.check_definition()
-    ledger = trial.Ledger()
     try:
-        runs = ledger.table("runs")
-        if runs.empty or runs["status"].iat[-1] != "ok" or not runs["detail"].iat[-1].startswith(f"data to {today};"):
-            return None
-        sessions, secs, _, e2, v2 = trial.inputs(None)
-        if sessions[-1] != today:
-            return None
-        return trial.next_open(ledger, sessions, secs, e2, v2, next_session, datetime.now(IST))
-    finally:
-        ledger.close()
+        trial.check_definition()
+        ledger = trial.Ledger()
+        try:
+            runs = ledger.table("runs")
+            if runs.empty or runs["status"].iat[-1] != "ok" or not runs["detail"].iat[-1].startswith(f"data to {today};"):
+                return None
+            sessions, secs, _, e2, v2 = trial.inputs(None)
+            if sessions[-1] != today:
+                return None
+            plan = trial.next_open(ledger, sessions, secs, e2, v2, next_session, datetime.now(IST))
+            plan["returns"] = daily_returns(sessions, secs, [e["sid"] for e in plan["entries"]] + list(plan["held"]))
+            return plan
+        finally:
+            ledger.close()
+    except SystemExit as exc:  # a pin or frozen-data check stops the trial; for a live job it is a failure to report
+        raise RuntimeError(f"paper trial 1 refused to run: {exc}") from None

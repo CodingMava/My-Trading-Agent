@@ -70,7 +70,37 @@ class RiskEngine:
     def evaluate(self, intent: TradeIntent, state: PortfolioState,
                  returns: dict[str, pd.Series] | None = None) -> RiskDecision:
         """Size and check one intent. `returns` (daily returns by symbol) enables the correlation check."""
-        limits, equity, price = self.limits, state.equity, intent.reference_price
+        limits, price = self.limits, intent.reference_price
+        checks, stop_ok = self._before_sizing(intent, state)
+        size = position_size(state.equity, state.cash, price, intent.stop_distance if stop_ok else 0.0, limits,
+                             intent.avg_traded_value, room=self._room(intent, state))
+        notional = size.quantity * price
+        checks.append(RiskCheck("size", size.quantity >= 1 and notional >= limits.min_notional,
+                                f"{size.quantity} shares = Rs {notional:,.0f}, set by {size.binding} "
+                                f"(minimum Rs {limits.min_notional:,.0f})"))
+        checks += self._after_sizing(intent, state, notional, returns)
+        approved = all(c.passed for c in checks)
+        return RiskDecision(approved, size.quantity if approved else 0, tuple(checks))
+
+    def review(self, intent: TradeIntent, state: PortfolioState, quantity: int,
+               returns: dict[str, pd.Series] | None = None) -> RiskDecision:
+        """Check an order sized elsewhere: a live order that mirrors a paper one. Every limit applies, but the
+        sizing limits (risk per trade, largest position, cash, sector and gross room) can only make it smaller;
+        the minimum position is the paper account's (the live order is its copy, scaled to the live capital).
+        Approved with the quantity it may have."""
+        checks, stop_ok = self._before_sizing(intent, state)
+        size = position_size(state.equity, state.cash, intent.reference_price, intent.stop_distance if stop_ok else 0.0,
+                             self.limits, room=self._room(intent, state))
+        allowed = min(quantity, size.quantity)
+        checks.append(RiskCheck("size", allowed >= 1, f"{allowed} of {quantity} shares"
+                                + (f" (capped by {size.binding})" if allowed < quantity else "")))
+        checks += self._after_sizing(intent, state, allowed * intent.reference_price, returns)
+        approved = all(c.passed for c in checks)
+        return RiskDecision(approved, allowed if approved else 0, tuple(checks))
+
+    def _before_sizing(self, intent: TradeIntent, state: PortfolioState) -> tuple[list[RiskCheck], bool]:
+        """The account's brakes, a sensible stop, one position per stock and room for another position."""
+        limits = self.limits
         checks = self.account_checks(state)
         stop_ok = bool(0 < intent.stop_distance <= limits.max_stop_distance)
         checks.append(RiskCheck("stop", stop_ok, f"stop {intent.stop_distance:.1%} below entry "
@@ -80,28 +110,29 @@ class RiskEngine:
                                 f"already holding {intent.symbol}" if held else "not held"))
         checks.append(RiskCheck("position count", len(state.positions) < limits.max_positions,
                                 f"{len(state.positions)} of {limits.max_positions} positions open"))
+        return checks, stop_ok
 
-        room = {"sector limit": limits.max_sector_exposure * equity - state.sector_value(intent.sector),
-                "gross exposure": limits.max_gross_exposure * equity - state.invested}
-        size = position_size(equity, state.cash, price, intent.stop_distance if stop_ok else 0.0, limits,
-                             intent.avg_traded_value, room=room)
-        notional = size.quantity * price
-        checks.append(RiskCheck("size", size.quantity >= 1 and notional >= limits.min_notional,
-                                f"{size.quantity} shares = Rs {notional:,.0f}, set by {size.binding} "
-                                f"(minimum Rs {limits.min_notional:,.0f})"))
+    def _room(self, intent: TradeIntent, state: PortfolioState) -> dict[str, float]:
+        equity = state.equity
+        return {"sector limit": self.limits.max_sector_exposure * equity - state.sector_value(intent.sector),
+                "gross exposure": self.limits.max_gross_exposure * equity - state.invested}
+
+    def _after_sizing(self, intent: TradeIntent, state: PortfolioState, notional: float,
+                      returns: dict[str, pd.Series] | None) -> list[RiskCheck]:
+        """The exposure the trade leaves, and how closely it moves with what is held."""
+        limits, equity = self.limits, state.equity
         sector_after = (state.sector_value(intent.sector) + notional) / equity if equity > 0 else np.inf
-        checks.append(RiskCheck("sector exposure", sector_after <= limits.max_sector_exposure + TOLERANCE,
-                                f"{intent.sector} at {sector_after:.0%} of equity after the trade "
-                                f"(limit {pct(limits.max_sector_exposure)})"))
         gross_after = (state.invested + notional) / equity if equity > 0 else np.inf
-        checks.append(RiskCheck("gross exposure", gross_after <= limits.max_gross_exposure + TOLERANCE,
-                                f"{gross_after:.0%} of equity invested after the trade "
-                                f"(limit {pct(limits.max_gross_exposure)})"))
+        checks = [RiskCheck("sector exposure", sector_after <= limits.max_sector_exposure + TOLERANCE,
+                            f"{intent.sector} at {sector_after:.0%} of equity after the trade "
+                            f"(limit {pct(limits.max_sector_exposure)})"),
+                  RiskCheck("gross exposure", gross_after <= limits.max_gross_exposure + TOLERANCE,
+                            f"{gross_after:.0%} of equity invested after the trade "
+                            f"(limit {pct(limits.max_gross_exposure)})")]
         if returns and intent.symbol in returns:
             holdings = {s: returns[s] for s in state.positions if s in returns}
             other, value = most_correlated(returns[intent.symbol], holdings)
             checks.append(RiskCheck("correlation", not value > limits.max_correlation,
                                     f"{value:.2f} with {other} (limit {limits.max_correlation})" if other
                                     else "no open position with enough shared history"))
-        approved = all(c.passed for c in checks)
-        return RiskDecision(approved, size.quantity if approved else 0, tuple(checks))
+        return checks

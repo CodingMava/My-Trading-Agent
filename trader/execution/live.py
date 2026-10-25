@@ -4,7 +4,7 @@ with real shares, for the strategies that have earned it. Off by default, and lo
     python -m trader.execution.live status     # the locks, live holdings and unsettled requests (no Kite calls)
     python -m trader.execution.live check      # read-only: the account through Kite, and the fields relied on
     python -m trader.execution.live evening    # after paper trial 1's evening run: orders for the next open
-    python -m trader.execution.live morning    # 09:20: stops for new holdings, stale stops deleted, gap exits
+    python -m trader.execution.live morning    # 09:20 and every 15 minutes to 15:00: stops, stale stops deleted, gap exits
     python -m trader.execution.live preclose   # 15:15: time exits
     python -m trader.execution.live track      # live fills beside the paper fills they mirror
 
@@ -18,8 +18,9 @@ Nothing is sent unless every lock is open:
      strategies, paper trial 1's ledger for its bunch, B1F;
   3. today's Kite login, and an account holding every share the system believes it holds (if not, the kill
      switch engages and nothing is sent);
-  4. for new entries: the kill switch off, at most [live] max_orders_per_day a day, and each order worth at
-     most max_order_fraction of the live capital.
+  4. for new entries: the kill switch off, at most [live] max_orders_per_day a day, each order worth at most
+     max_order_fraction of the live capital, and every check of the risk engine (config/risk.toml) on the live
+     account, which may cut an order but never enlarges it.
 Exits and stops go out even with the kill switch engaged: it blocks new trades, never the way out.
 
 A live entry is its paper order scaled by live capital / paper capital, so it risks the same share of the
@@ -51,6 +52,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from trader.config import ROOT, Settings, load_settings
+from trader.core.models import PortfolioState, Position, TradeIntent
 from trader.data.kite import KiteAuthError, session_secrets
 from trader.execution import broker
 from trader.execution.kite_orders import KiteOrders, from_session, held_quantity
@@ -64,8 +66,11 @@ from trader.logging_setup import configure_logging, make_console_utf8, redact
 from trader.markets.calendar import MarketCalendar, load_calendars
 from trader.notify import templates
 from trader.notify.telegram import notifier_from_settings
+from trader.portfolio.exposure import load_sectors, sector_of
 from trader.registry import StrategyRegistry
+from trader.risk.engine import RiskEngine
 from trader.risk.killswitch import KillSwitch
+from trader.risk.limits import RiskLimits, load_limits
 from trader.strategies.catalog import CATALOG, StrategySpec
 
 log = logging.getLogger(__name__)
@@ -81,8 +86,12 @@ RELIED_ON = {"holdings": ("tradingsymbol", "exchange", "quantity", "t1_quantity"
              "GTTs": ("id", "status", "condition", "orders")}
 # When each job may send (IST). A job run late, say after the PC was asleep, must not do something else
 # than paper trading assumes: a time exit after the close, or an "after-market" order into the open market.
-WINDOWS = {"evening": (time(16, 0), time(23, 59)), "morning": (time(9, 15), time(15, 25)),
+# The morning job hands over at 15:00, so it never finds a stop the pre-close job has just deleted.
+WINDOWS = {"evening": (time(16, 0), time(23, 59)), "morning": (time(9, 15), time(15, 0)),
            "preclose": (time(15, 0), time(15, 28))}
+# The scheduled morning job repeats (scripts/register_tasks.ps1), so a stop missed for want of a login goes in
+# soon after the login; each kind of failure is reported once a day and its repeats only logged.
+RETRIES = {"morning": "The scheduled morning job tries again every 15 minutes until 15:00; repeats of this are only logged today."}
 
 
 @dataclass
@@ -101,6 +110,8 @@ class Live:
     sources: dict[str, Source] = field(default_factory=dict)  # strategies whose orders come from their own paper account
     as_live: frozenset[str] = frozenset()  # a dry run's strategies treated as live; never the registry's business
     dry_run: bool = False
+    limits: RiskLimits = field(default_factory=load_limits)  # config/risk.toml: every live entry is checked against it
+    sectors: dict[str, str] = field(default_factory=load_sectors)
 
     def __post_init__(self):
         if self.as_live and not self.dry_run:
@@ -114,6 +125,14 @@ def live_strategies(live: Live) -> set[str]:
 
 def say(live: Live, title: str, lines: list[str]) -> None:
     live.notifier.send(templates.live_update(title=title, lines=lines, dry_run=live.dry_run))
+
+
+def failed(live: Live, job: str, today: date, kind: str, detail: str, trace: bool = False) -> int:
+    """A job that couldn't finish: reported the first time today for this kind of failure, logged every time."""
+    log.error("Live %s failed: %s", job, detail, exc_info=trace)
+    if live.store.first_notice(today, f"{job} {kind}"):
+        say(live, f"Live {job} failed", [detail, *([RETRIES[job]] if job in RETRIES else [])])
+    return 1
 
 
 def locks(live: Live) -> list[str]:
@@ -140,24 +159,23 @@ def run(job: str, live: Live, backup_dir=None) -> int:
         oms = OMS(live.store, live.connect(), live.clock)
         news = oms.refresh(today)
         problems = oms.reconcile()
-        if problems:
+        if problems:  # told when it engages the kill switch, and once a day while the switch stays engaged
+            first, engaging = live.store.first_notice(today, f"{job} reconciliation"), not live.kill_switch.engaged
             live.kill_switch.engage("live reconciliation failed: " + problems[0])
-            say(live, "Reconciliation failed: nothing was sent", [
-                *problems, "The kill switch is engaged. Compare the account with python -m trader.execution.live "
-                "status and find out why before releasing it."])
+            if first or engaging:
+                say(live, "Reconciliation failed: nothing was sent", [
+                    *problems, "The kill switch is engaged. Compare the account with python -m trader.execution.live "
+                    "status and find out why before releasing it."])
             return 2
         start, end = WINDOWS[job]
         now = live.clock().time()
         news += (JOBS[job](live, oms, today) if start <= now <= end else
                  [f"Nothing sent: the {job} job runs between {start:%H:%M} and {end:%H:%M} IST, not at {now:%H:%M}."])
     except KiteAuthError as exc:
-        say(live, f"Live {job} failed", [str(exc)])
-        return 1
+        return failed(live, job, today, "login", str(exc))
     except Exception as exc:  # recorded and reported, never swallowed
         detail = redact(f"{type(exc).__name__}: {exc}", live.settings.secret_values() + session_secrets())[:500]
-        log.error("Live %s failed: %s", job, detail, exc_info=True)
-        say(live, f"Live {job} failed", [detail])
-        return 1
+        return failed(live, job, today, "error", detail, trace=True)
     if news:
         say(live, f"Live {job}", news)
     if backup_dir is not None:
@@ -223,6 +241,7 @@ def evening(live: Live, oms: OMS, today: date) -> list[str]:
         return notes
     capital, news = capital_for_today(live, today)
     news += notes
+    state, risk = live_account(live, oms, today, capital, news), RiskEngine(live.limits, live.kill_switch, account="live")
     entries = sum(1 for row in live.store.orders() if row["session"] == today.isoformat() and row["purpose"] in ENTRY_PURPOSES)
     for order in (order for orders, _ in batches for order in orders or ()):
         if order.side == "sell":
@@ -233,6 +252,11 @@ def evening(live: Live, oms: OMS, today: date) -> list[str]:
             news.append(f"{order.symbol}: sell {position.quantity} at the open ({oms.submit(today, order.strategy_id, request)})")
             continue
         refused, quantity = entry_refusal(live, order, capital, held, entries)
+        if not refused:  # the risk engine on the live account: it may make the order smaller, never bigger
+            sector = sector_of(order.symbol, live.sectors)
+            decision = risk.review(TradeIntent(order.strategy_id, order.symbol, today, order.reference_price,
+                                               order.stop_distance, sector), state, quantity, order.returns)
+            refused, quantity = ("" if decision.approved else decision.reason), decision.quantity
         if refused:
             news.append(f"{order.symbol}: entry not sent: {refused}")
             continue
@@ -240,7 +264,37 @@ def evening(live: Live, oms: OMS, today: date) -> list[str]:
         status = oms.submit(today, order.strategy_id, request, order.stop_distance, order.max_hold_days)
         entries += 1
         news.append(f"{order.symbol}: buy {quantity} at the open ({status})")
+        # the rest of the evening's entries see it as held, whatever Kite answered (the stricter view)
+        state.positions[order.symbol] = Position(order.strategy_id, order.symbol, quantity, order.reference_price,
+                                                 order.reference_price * (1 - order.stop_distance), today, sector,
+                                                 last_price=order.reference_price)
+        state.cash -= quantity * order.reference_price
     return news
+
+
+def live_account(live: Live, oms: OMS, today: date, capital: float, news: list[str]) -> PortfolioState:
+    """The live account as the risk engine sees it: the capital step plus what the live trades made since it began,
+    the holdings marked at Kite's last prices. Each evening's equity is recorded: its best since the step began is
+    the drawdown limit's peak, and the previous evening's is where the daily-loss limit measures from."""
+    since = date.fromisoformat(live.store.capital_steps()[-1]["session"])
+    held = live.store.positions()
+    prices = oms.kite.ltp([symbol.removesuffix(".NS") for symbol in held])
+    positions = {}
+    for symbol, position in held.items():
+        price = prices.get(symbol.removesuffix(".NS"))
+        if price is None:
+            news.append(f"{symbol}: no price from Kite, so the risk checks value it at its entry price")
+        positions[symbol] = replace(position, sector=sector_of(symbol, live.sectors), last_price=price)
+    trips = from_fills(live.store.table("live_fills"))
+    made = float(trips.loc[[day >= since for day in trips["sell_date"]], "gain"].sum())
+    made += sum(p.market_value - p.quantity * p.entry_price for p in positions.values())
+    state = PortfolioState(cash=capital + made - sum(p.market_value for p in positions.values()), positions=positions)
+    live.store.record_equity(today, state.equity)
+    history = live.store.equity_history(since)
+    earlier = [equity for session, equity in history if session < today.isoformat()]
+    state.peak_equity = max([capital, state.equity, *(equity for _, equity in history)])
+    state.day_start_equity = earlier[-1] if earlier else state.equity
+    return state
 
 
 def entry_refusal(live: Live, order: LiveOrder, capital: float, held: dict, entries: int) -> tuple[str, int]:
@@ -273,13 +327,15 @@ def morning(live: Live, oms: OMS, today: date) -> list[str]:
             news.append(f"{symbol}: {request.purpose} ({oms.submit(today, position.strategy_id, request)})")
         elif stop["status"] == "TRIGGERED" and price < broker.stop_limit(position.stop_price):
             news.append(f"{symbol}: gap exit ({oms.submit(today, position.strategy_id, broker.gap_exit(position))})")
-        elif stop["status"] not in ("SENT", "TRIGGERED"):  # rejected, deleted, or it sold only part
+        elif stop["status"] not in ("SENT", "TRIGGERED") and live.store.first_notice(today, f"no stop {symbol}"):
+            # rejected, deleted, or it sold only part: told once a day, though the job repeats
             news.append(f"{symbol} has no stop at Kite ({stop['status'].lower()}: {stop['detail']}). Place one by hand.")
     current = {broker.stop_order(position).tag for position in held.values()}
     for row in live.store.orders(("SENT",)):
         if row["purpose"] == "stop" and row["tag"] not in current:  # its holding was sold at the open
             request = broker.cancel_stop_tagged(row["symbol"], row["tag"], broker.AFTER_OPEN)
-            news.append(f"{row['symbol']}: stop deleted ({oms.submit(today, row['strategy_id'], request)})")
+            if (deleted := live.store.order(request.tag)) is None or deleted["status"] != "DONE":  # not said twice
+                news.append(f"{row['symbol']}: stop deleted ({oms.submit(today, row['strategy_id'], request)})")
     return news
 
 

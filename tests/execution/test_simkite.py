@@ -3,8 +3,10 @@ order system runs unchanged against it, and nothing but price quotes is ever ask
 import html
 from dataclasses import replace
 from datetime import date, datetime
+from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import pytest
 
 from tests.execution.test_paper_trader import FakeNotifier
@@ -19,10 +21,12 @@ from trader.execution.sources import TRIAL, trial_orders
 from trader.execution.store import PaperStore
 from trader.markets.calendar import load_calendars
 from trader.registry import StrategyRegistry
+from trader.research.costs import ZERODHA_DELIVERY
 from trader.risk.killswitch import KillSwitch
 
 IST = ZoneInfo("Asia/Kolkata")
 NSE = load_calendars()["NSE"]
+CHARGES = ZERODHA_DELIVERY.with_slippage(0.0)  # what each simulated fill pays; slippage is in the price
 MON, TUE, WED, THU = date(2026, 8, 10), date(2026, 8, 11), date(2026, 8, 12), date(2026, 8, 13)
 
 
@@ -82,7 +86,8 @@ def test_after_market_orders_fill_at_the_next_open_and_holdings_settle(tmp_path)
     quotes.set("AAA", 100.0, 99.0, 100.5)
     filled = next(o for o in kite.orders() if o["order_id"] == buy)
     assert (filled["status"], filled["filled_quantity"], filled["average_price"]) == ("COMPLETE", 10, 100.0)
-    assert held_quantity(kite.holdings(), kite.positions(), "AAA") == 10 and kite.margins()["equity"]["net"] == 99_000.0
+    assert held_quantity(kite.holdings(), kite.positions(), "AAA") == 10
+    assert kite.margins()["equity"]["net"] == pytest.approx(100_000 - 1_000 - CHARGES.one_side(1_000, "buy"))
     with pytest.raises(OrderRejected, match="while the market is open"):
         kite.place_order("amo", order("AAA", "SELL", 10))
     clock.at(WED, 9, 20)
@@ -118,7 +123,8 @@ def test_a_stop_fires_on_a_later_low_and_a_gap_below_its_limit_waits_for_the_gap
     sold = next(o for o in kite.orders() if o["order_id"] == sells["BBB"]["order_id"])
     assert (sold["status"], sold["average_price"]) == ("COMPLETE", 86.0)
     assert held_quantity(kite.holdings(), kite.positions(), "AAA") == held_quantity(kite.holdings(), kite.positions(), "BBB") == 0
-    assert sim.state["cash"] == pytest.approx(100_000 - 2_000 + 950 + 860)
+    paid = 2 * CHARGES.one_side(1_000, "buy") + CHARGES.one_side(950, "sell") + CHARGES.one_side(860, "sell")
+    assert sim.state["cash"] == pytest.approx(100_000 - 2_000 + 950 + 860 - paid) and sim.state["charges"] == pytest.approx(paid)
 
 
 def test_what_kite_would_reject_at_the_open_is_rejected(tmp_path):
@@ -211,16 +217,19 @@ def test_the_trials_plan_needs_a_good_evening_run_on_the_days_data(tmp_path, mon
     ledger = real(tmp_path / "trial1.db")
     monkeypatch.setattr(trial, "Ledger", lambda: real(tmp_path / "trial1.db"))
     monkeypatch.setattr(trial, "check_definition", lambda: "pinned")
-    sessions = [MON, TUE]
-    monkeypatch.setattr(trial, "inputs", lambda notices: (sessions, {}, None, "e2", "v2"))
-    monkeypatch.setattr(trial, "next_open", lambda led, s, secs, e2, v2, nxt, now: {"next": nxt, "e2": e2})
+    sessions, secs = [MON, TUE], {"AAA": SimpleNamespace(adj_close=np.array([100.0, 101.0]))}
+    monkeypatch.setattr(trial, "inputs", lambda notices: (sessions, secs, None, "e2", "v2"))
+    monkeypatch.setattr(trial, "next_open", lambda led, s, secs, e2, v2, nxt, now: {
+        "next": nxt, "e2": e2, "entries": [{"sid": "AAA"}], "held": {"ZZZ": "V2"}})
     assert sources.trial_plan(TUE, WED) is None  # no run yet
     ledger.add_run(datetime(2026, 8, 11, 21, 0, tzinfo=IST), "failed", "ValueError: x")
     assert sources.trial_plan(TUE, WED) is None
     ledger.add_run(datetime(2026, 8, 11, 21, 5, tzinfo=IST), "ok", "data to 2026-08-10; signals 0")
     assert sources.trial_plan(TUE, WED) is None  # yesterday's data
     ledger.add_run(datetime(2026, 8, 11, 21, 9, tzinfo=IST), "ok", "data to 2026-08-11; signals 0")
-    assert sources.trial_plan(TUE, WED) == {"next": WED, "e2": "e2"}
+    plan = sources.trial_plan(TUE, WED)
+    assert (plan["next"], plan["e2"]) == (WED, "e2")
+    assert list(plan["returns"]) == ["AAA.NS"] and plan["returns"]["AAA.NS"].round(6).tolist() == [0.01]  # ZZZ: no data
     sessions.pop()
     assert sources.trial_plan(TUE, WED) is None  # the inputs lag the ledger
     ledger.close()
@@ -276,3 +285,73 @@ def test_the_dry_run_command_line(tmp_path, monkeypatch, capsys):
     assert finished.value.code == 0 and "the trial hasn't run" in capsys.readouterr().out
     assert telegram.sent and all("[LIVE DRY RUN" in text for text in telegram.sent)
     assert not (tmp_path / "state" / "live.db").exists()  # the real live records are untouched
+
+
+# --- failures on the dry-run path ----------------------------------------------------------------------------
+AAA = {"part": "E2", "sid": "AAA", "signal_date": "2026-08-07", "tier": "N1", "close": 100.0}
+
+
+def test_a_trial_that_refuses_to_run_is_a_reported_failure(tmp_path, monkeypatch):
+    from trader.research import trial
+
+    def changed():
+        raise SystemExit("trial1-definition.md changed after it was pinned (sha256 x); define a new trial instead.")
+    monkeypatch.setattr(trial, "check_definition", changed)
+    clock, quotes = Clock(), Quotes()
+    live = dry(tmp_path, {}, clock, quotes)
+    live.sources[TRIAL] = lambda today, held: trial_orders(today, held, NSE)  # the real plan, which checks the pin
+    code, messages = job(live, clock, "evening", MON, 21, 30)
+    assert code == 1 and "Live evening failed" in messages[0] and "paper trial 1 refused to run" in messages[0]
+
+
+def test_a_lost_answer_is_looked_up_and_a_restart_carries_on(tmp_path, monkeypatch):
+    import requests
+    lost = []
+
+    class Lossy(SimKite):
+        """Kite records the order, but the answer to the first write never arrives (a timeout after the fact)."""
+
+        def request(self, method, url, data=None, headers=None, timeout=None):
+            response = super().request(method, url, data, headers, timeout)
+            if not lost:
+                lost.append(url)
+                raise requests.Timeout("timed out")
+            return response
+    monkeypatch.setattr(live_jobs, "SimKite", Lossy)
+    clock, quotes = Clock(), Quotes()
+    plans = {MON: plan([AAA], held=["AAA"]), TUE: plan(held=["AAA"])}
+    live = dry(tmp_path, plans, clock, quotes)
+    code, messages = job(live, clock, "evening", MON, 21, 30)
+    assert code == 0 and "AAA.NS: buy 33 at the open (UNKNOWN)" in messages[0]
+    code, messages = job(live, clock, "evening", MON, 21, 45)  # run again: found at Kite by its tag, not sent twice
+    assert "AAA.NS: buy 33 at the open (SENT)" in messages[0]
+    assert len(SimKite(tmp_path / "dry" / "kite.json", quotes, clock, NSE, 0).state["orders"]) == 1
+    monkeypatch.setattr(live_jobs, "SimKite", SimKite)
+    restarted = dry(tmp_path, plans, clock, quotes)  # a new process: the account and the records come from disk
+    quotes.set("AAA", 100.0, 99.0, 100.5)
+    code, messages = job(restarted, clock, "morning", TUE, 9, 20)
+    assert "AAA.NS entry: buy 33 at 100.00" in messages[0] and "AAA.NS: stop (SENT)" in messages[0]
+
+
+def test_an_entry_with_no_trade_at_the_open_is_cancelled_and_leaves_nothing_held(tmp_path):
+    clock, quotes = Clock(), Quotes()
+    live = dry(tmp_path, {MON: plan([AAA], held=["AAA"])}, clock, quotes)
+    job(live, clock, "evening", MON, 21, 30)
+    quotes.set("AAA", 0.0, 0.0, 0.0)  # suspended: no trade, so no open
+    code, messages = job(live, clock, "morning", TUE, 9, 20)
+    assert code == 0 and "AAA.NS entry cancelled: no trade at the open (simulated)" in messages[0]
+    assert live.store.positions() == {} and "stop" not in messages[0]
+
+
+def test_the_kill_switch_stops_b1f_entries_but_never_its_exits(tmp_path):
+    clock, quotes = Clock(), Quotes()
+    bbb = {**AAA, "sid": "BBB", "signal_date": "2026-08-11"}
+    exit_aaa = {"part": "E2", "sid": "AAA", "signal_date": "2026-08-07", "entry_date": "2026-08-11"}
+    live = dry(tmp_path, {MON: plan([AAA], held=["AAA"]), TUE: plan([bbb], [exit_aaa], held=["BBB"])}, clock, quotes)
+    job(live, clock, "evening", MON, 21, 30)
+    quotes.set("AAA", 100.0, 99.0, 100.5)
+    job(live, clock, "morning", TUE, 9, 20)
+    live.kill_switch.engage("testing the kill switch")
+    code, messages = job(live, clock, "evening", TUE, 21, 30)
+    assert "BBB.NS: entry not sent: the kill switch is engaged" in messages[0]
+    assert "AAA.NS: sell 33 at the open (SENT)" in messages[0]  # the way out is never blocked

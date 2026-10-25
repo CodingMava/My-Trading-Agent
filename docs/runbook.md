@@ -182,7 +182,9 @@ is built and locked. Before it sends anything for real:
   09:20, 15:15 and in the evening right after paper trial 1 (in the "forward tests" task, about 21:00). Send
   `/login` to the bot from your phone (or run `python -m trader.data.kite login` on the PC). While live trading
   is on, or a live dry run holds simulated orders or shares, the bot reminds you at 08:30 on a trading day
-  without a login, and the health check warns.
+  without a login, and the health check warns. A late login still protects the holdings: the morning job
+  repeats every 15 minutes until 15:00, says once that it needs the login, and places the missing stops on
+  its first run after it.
 - **Enough capital for whole shares:** a live entry is its paper position scaled to the live capital, rounded
   down to whole shares, and one that rounds to none isn't sent. For B1F (E2 positions are 3.3% of the capital,
   V2's 5%), at Rs 1,00,000 about 14% of E2's possible stocks cost more than one position; at Rs 3,00,000 about
@@ -195,7 +197,9 @@ is built and locked. Before it sends anything for real:
   (`python -m trader.execution.live track`). Phase 11 is done when live tracks paper for three months.
 
 The locks stay on once it's running. Only `LIVE_SMALL` or `LIVE` strategies' NSE orders go out, each entry
-is its paper order scaled to the live capital and capped in size and number per day, and a job refuses
+is its paper order scaled to the live capital and capped in size and number per day, then checked by the risk
+engine on the live account (`config/risk.toml`: daily loss, drawdown, sector, gross exposure, positions, and
+correlation for B1F), which may cut it but never enlarges it, and a job refuses
 to send outside its window (so a late start can't send a time exit after the close). Before sending, every
 job checks that the account holds every share the system believes it holds; if not, the kill switch
 engages and nothing is sent. A request whose answer was lost is looked up at Kite, never sent twice.
@@ -208,7 +212,7 @@ login, and no order, GTT or deletion ever reaches it. It rehearses going live fo
 earned it, without touching `config/strategies.toml` or `[live]`:
 
     python -m trader.execution.live evening --dry-run --as-live B1F      # after paper trial 1's evening run
-    python -m trader.execution.live morning --dry-run --as-live B1F      # 09:15-15:25: fills at the open, stops
+    python -m trader.execution.live morning --dry-run --as-live B1F      # 09:15-15:00: fills at the open, stops
     python -m trader.execution.live preclose --dry-run --as-live B1F     # 15:00-15:28: time exits (none for B1F)
     python -m trader.execution.live status --dry-run --as-live B1F
 
@@ -218,11 +222,12 @@ earned it, without touching `config/strategies.toml` or `[live]`:
 - After-market orders fill at the next session's open as Kite's quotes give it, stops (GTTs) fire on the
   session's low, a stop's LIMIT sell that the open gapped below waits for the morning job's gap exit, a buy the
   cash can't pay for is rejected at the open. The morning job must run on the fill day (it is scheduled at
-  09:20 and catches up when the PC wakes): a day no job ran is seen only through the next call's prices. No
-  charges are taken from the simulated cash.
+  09:20, repeats every 15 minutes until 15:00 and catches up when the PC wakes): a day no job ran is seen only
+  through the next call's prices. Each simulated fill pays Zerodha's delivery charges from the simulated cash.
 - To run it every day: `powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1 -LiveDryRun`. It
   adds the dry-run evening job to "Trading agent - forward tests", right after the trial, and registers
-  "Trading agent - live dry run morning" (09:20) and "... preclose" (15:15), all with `--notify`: their
+  "Trading agent - live dry run morning" (09:20, then every 15 minutes until 15:00) and "... preclose" (15:15),
+  all with `--notify`: their
   messages come on Telegram labelled `[LIVE DRY RUN · nothing sent to Kite]`. Each trading morning needs a
   Kite login before 09:20 while the dry run holds anything. To stop it, unregister the two dry-run tasks and
   run the script again without `-LiveDryRun`.

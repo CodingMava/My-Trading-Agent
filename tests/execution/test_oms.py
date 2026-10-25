@@ -58,6 +58,7 @@ def test_a_lost_answer_is_looked_up_not_resent(tmp_path):
     kite.failures = [("timeout", False)]  # this one never reached Kite
     assert oms.submit(DAY, "T1", other) == "UNKNOWN"
     assert "Kite has no record of it yet" in oms.refresh(DAY)[0]
+    assert oms.refresh(DAY) == [] and "Kite has no record" in oms.refresh(NEXT)[0]  # said once a day
     assert oms.submit(DAY, "T1", other) == "SENT" and [o["tag"] for o in kite.orders].count(other.tag) == 1
 
 

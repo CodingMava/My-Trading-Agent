@@ -51,6 +51,7 @@ from trader.markets.calendar import load_calendars
 from trader.notify import templates
 from trader.notify.telegram import notifier_from_settings
 from trader.ops.health import UNATTENDED_TARGET, clean_sessions
+from trader.ops.provenance import provenance
 from trader.portfolio.exposure import load_sectors, sector_of
 from trader.registry import StrategyRegistry
 from trader.research.costs import ZERODHA_DELIVERY
@@ -493,15 +494,15 @@ def ping_heartbeat(url: str, http=requests) -> bool:
 
 def daily(store: PaperStore, notifier, build, until: date | None = None, start: date | None = None,
           heartbeat: str = "", secrets=(), http=requests, clock=None, backup_dir: Path | None = None,
-          label: str = "") -> int:
+          label: str = "", provenance: tuple[str, str] = ("", "")) -> int:
     """One unattended run, recorded in the store's runs table. `build()` makes the PaperTrader, so setup
     failures (a broken config, no Kite login) count as failed runs too. A failure sends an alert with
     every secret masked; a halt for missing data has queued its own alert. After a run that didn't fail,
     the records are backed up to `backup_dir` (one copy per day), and only a clean run pings the
-    heartbeat. `label` names the account in alerts and the log (US). Returns the process exit code: 0 ok,
-    1 failed, 2 halted."""
+    heartbeat. `label` names the account in alerts and the log (US); `provenance` the code and configuration that
+    process the run (trader/ops/provenance.py). Returns the process exit code: 0 ok, 1 failed, 2 halted."""
     clock = clock or (lambda: datetime.now(IST))
-    run_id = store.start_run(clock())
+    run_id = store.start_run(clock(), *provenance)
     try:
         trader = build()
         summary = trader.run(until, start)
@@ -561,13 +562,19 @@ def main(argv: list[str] | None = None) -> None:
                            market_check=US_MARKET_CHECK if us else MARKET_CHECK, market=market,
                            currency="$" if us else "₹", quiet_when_idle=us)
 
+    try:  # what processes this run, recorded with it
+        stamp = provenance()
+    except OSError as exc:
+        log.warning("Couldn't name the code and configuration of this run: %s", exc)
+        stamp = ("unknown", "")
     codes = []
     for market, path, capital, until, start in (("NSE", database, settings.paper_starting_capital, args.until, args.start),
                                                 ("US", us_database, settings.paper_us_starting_capital, None, None)):
         try:
             store = PaperStore(path, capital)
             codes.append(daily(store, notifier, lambda store=store, market=market: build(store, market), until, start,
-                               "", secrets, backup_dir=path.parent / "backups", label="US" if market == "US" else ""))
+                               "", secrets, backup_dir=path.parent / "backups", label="US" if market == "US" else "",
+                               provenance=stamp))
         except Exception:  # the run record itself failed (e.g. a locked database): log it, with secrets masked
             log.exception("The %s daily run could not be recorded", market)
             codes.append(1)

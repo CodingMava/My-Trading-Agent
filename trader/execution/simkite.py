@@ -16,8 +16,9 @@ How the simulated market behaves (IST, on NSE trading days):
                         later, and stays open when the open was below the limit (the morning job's gap exit).
   holdings              a delivery buy shows in the day's positions and becomes a T+1 holding the next trading day.
   the order book        cleared every trading day, except after-market orders still waiting for the open.
-No charges are taken from the cash. A day no job ran is seen only through the next call's quotes, so the dry run
-needs the scheduled jobs to run every trading day, like live trading does.
+Each fill pays Zerodha's delivery charges from the cash (STT, exchange and SEBI fees, GST, stamp duty, the DP charge;
+trader/research/costs.py); slippage is in the fill price itself. A day no job ran is seen only through the next call's
+quotes, so the dry run needs the scheduled jobs to run every trading day, like live trading does.
 """
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from trader.data.kite import API_ROOT
+from trader.research.costs import ZERODHA_DELIVERY, CostModel
 
 IST = ZoneInfo("Asia/Kolkata")
 OPEN, CLOSE = time(9, 15), time(15, 30)
@@ -57,13 +59,13 @@ class SimKite:
     "last_price"}} for the current session from the real Kite; it is called only when a price is needed."""
 
     def __init__(self, path: Path | str, quotes: Callable[[list[str]], dict[str, dict]], clock: Callable[[], datetime],
-                 calendar, cash: float):
-        self.path, self.quotes, self.clock, self.calendar = Path(path), quotes, clock, calendar
+                 calendar, cash: float, costs: CostModel = ZERODHA_DELIVERY.with_slippage(0.0)):
+        self.path, self.quotes, self.clock, self.calendar, self.costs = Path(path), quotes, clock, calendar, costs
         if self.path.is_file():
             self.state = json.loads(self.path.read_text(encoding="utf-8"))
         else:
             self.state = {"day": None, "cash": float(cash), "next_id": 1001, "orders": [], "gtts": [], "holdings": [],
-                          "positions": []}
+                          "positions": [], "charges": 0.0}
         self._prices: dict[str, dict] = {}
 
     def save(self) -> None:
@@ -197,19 +199,21 @@ class SimKite:
 
     def _execute(self, order: dict, price: float) -> None:
         quantity, symbol = order["quantity"], order["tradingsymbol"]
-        if order["transaction_type"] == "BUY":
-            if price * quantity > self.state["cash"]:
+        side = "buy" if order["transaction_type"] == "BUY" else "sell"
+        charges = self.costs.one_side(price * quantity, side)
+        if side == "buy":
+            if price * quantity + charges > self.state["cash"]:
                 order.update(status="REJECTED", pending_quantity=0,
-                             status_message=f"Insufficient funds: needs Rs {price * quantity:,.2f} (simulated)")
+                             status_message=f"Insufficient funds: needs Rs {price * quantity + charges:,.2f} (simulated)")
                 return
-            self.state["cash"] -= price * quantity
+            self.state["cash"] -= price * quantity + charges
             self._position(symbol)["quantity"] += quantity
         else:
             if self.held(symbol) < quantity:
                 order.update(status="REJECTED", pending_quantity=0,
                              status_message=f"Insufficient holdings: {self.held(symbol)} held (simulated)")
                 return
-            self.state["cash"] += price * quantity
+            self.state["cash"] += price * quantity - charges
             holding = next((h for h in self.state["holdings"] if h["tradingsymbol"] == symbol), None)
             from_holdings = min(quantity, 0 if holding is None else
                                 holding["quantity"] + holding["t1_quantity"] - holding["used_quantity"])
@@ -217,6 +221,7 @@ class SimKite:
                 holding["used_quantity"] += from_holdings
             if quantity > from_holdings:
                 self._position(symbol)["quantity"] -= quantity - from_holdings
+        self.state["charges"] = self.state.get("charges", 0.0) + charges
         order.update(status="COMPLETE", filled_quantity=quantity, pending_quantity=0, average_price=round(price, 2))
 
     def held(self, symbol: str) -> int:

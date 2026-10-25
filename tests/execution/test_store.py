@@ -73,3 +73,22 @@ def test_a_backup_is_a_complete_consistent_copy(tmp_path):
     store.add_fill(DAY, None, "T1", "BBB", "buy", 1, 50.0, 0.1, "Entry")
     store.backup(tmp_path / "backups", date(2026, 10, 12))  # the same day again: replaced, not duplicated
     assert len(list(path.parent.iterdir())) == 1
+
+
+def test_records_made_before_runs_named_their_code_gain_the_columns(tmp_path):
+    from datetime import datetime
+    path = tmp_path / "paper.db"
+    old = sqlite3.connect(path)
+    old.executescript("CREATE TABLE runs (id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT, "
+                      "status TEXT NOT NULL CHECK (status IN ('running', 'ok', 'halted', 'failed')), "
+                      "sessions INTEGER NOT NULL DEFAULT 0, detail TEXT NOT NULL DEFAULT ''); "
+                      "INSERT INTO runs (started_at, status, sessions) VALUES ('2026-10-12T18:00:00+05:30', 'ok', 1);")
+    old.commit()
+    old.close()
+    store = PaperStore(path, 1_000_000)
+    store.start_run(datetime(2026, 10, 22, 18, 0), "5d49ad758156 src 8b6d", "d144")
+    runs = store.runs()  # newest first
+    assert list(runs["code"]) == ["5d49ad758156 src 8b6d", ""] and list(runs["config"]) == ["d144", ""]
+    assert list(runs["sessions"]) == [0, 1]  # the old record is kept as it was
+    store.close()
+    assert PaperStore(path, 1_000_000).runs()["code"].iat[0] == "5d49ad758156 src 8b6d"  # opening again changes nothing

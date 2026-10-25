@@ -101,7 +101,9 @@ Register-ScheduledTask -TaskName "Trading agent - forward tests" -Force `
 
 # Live trading through Zerodha Kite: the evening job in "forward tests" above (orders for the next open), 09:20
 # after the open (stops), 15:15 before the close (time exits). The morning job may start late, since a stop placed
-# late beats none; the pre-close job doesn't, and each job refuses to send outside its own window anyway.
+# late beats none, and repeats every 15 minutes until 15:00: a morning without a Kite login left a holding without
+# a stop all day (23 Oct 2026), and a repeat places it soon after the login (it sends nothing twice, and tells a
+# failure once a day). The pre-close job doesn't start late, and each job refuses to send outside its own window.
 if (Get-ScheduledTask -TaskName "Trading agent - live evening" -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName "Trading agent - live evening" -Confirm:$false  # now after the trial, in "forward tests"
 }
@@ -110,8 +112,11 @@ $modes = @()
 if ($Live) { $modes += @{ Prefix = "live"; Arguments = ""; What = "Live trading through Zerodha Kite"; Sends = "Sends nothing while locked." } }
 if ($LiveDryRun) { $modes += @{ Prefix = "live dry run"; Arguments = " $dryRun"; What = "Dry run of live trading for B1F on a simulated account"; Sends = "Reads only Kite's prices; never sends an order." } }
 foreach ($mode in $modes) {
+    $morning = New-ScheduledTaskTrigger -Weekly -DaysOfWeek $weekdays -At "09:20"
+    $morning.Repetition = (New-ScheduledTaskTrigger -Once -At "09:20" -RepetitionInterval (New-TimeSpan -Minutes 15) `
+        -RepetitionDuration (New-TimeSpan -Hours 5 -Minutes 40)).Repetition  # the last start is 14:50
     $jobs = @(
-        @{ Name = "morning"; Trigger = (New-ScheduledTaskTrigger -Weekly -DaysOfWeek $weekdays -At "09:20"); Late = $true },
+        @{ Name = "morning"; Trigger = $morning; Late = $true },
         @{ Name = "preclose"; Trigger = (New-ScheduledTaskTrigger -Weekly -DaysOfWeek $weekdays -At "15:15"); Late = $false })
     foreach ($job in $jobs) {
         $jobSettings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 20) `

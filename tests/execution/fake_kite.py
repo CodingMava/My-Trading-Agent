@@ -51,8 +51,9 @@ class FakeKite:
             return ok(dict(self.positions))
         if path == "/user/margins":
             return ok({"equity": {"net": self.cash, "available": {"cash": self.cash}}, "commodity": {}})
-        if path == "/quote/ltp":
-            return ok({key: {"last_price": self.prices[key.split(":", 1)[1]]} for key in params["i"]})
+        if path == "/quote/ltp":  # like Kite, an instrument without a price is left out of the answer
+            return ok({key: {"last_price": self.prices[key.split(":", 1)[1]]} for key in params["i"]
+                       if key.split(":", 1)[1] in self.prices})
         if path == "/quote/ohlc":
             return ok({key: {"last_price": (p := self.prices[key.split(":", 1)[1]]),
                              "ohlc": {"open": p, "high": p, "low": p, "close": p}} for key in params["i"]})

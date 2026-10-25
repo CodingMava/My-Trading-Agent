@@ -47,7 +47,8 @@ CREATE TABLE IF NOT EXISTS outbox (id INTEGER PRIMARY KEY, session TEXT NOT NULL
 CREATE TABLE IF NOT EXISTS suspended (strategy_id TEXT PRIMARY KEY, session TEXT NOT NULL, reason TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS runs (id INTEGER PRIMARY KEY, started_at TEXT NOT NULL, finished_at TEXT,
     status TEXT NOT NULL CHECK (status IN ('running', 'ok', 'halted', 'failed')),
-    sessions INTEGER NOT NULL DEFAULT 0, detail TEXT NOT NULL DEFAULT '');
+    sessions INTEGER NOT NULL DEFAULT 0, detail TEXT NOT NULL DEFAULT '', code TEXT NOT NULL DEFAULT '',
+    config TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS dry_run_orders (id INTEGER PRIMARY KEY, session TEXT NOT NULL, tag TEXT UNIQUE NOT NULL,
     symbol TEXT NOT NULL, purpose TEXT NOT NULL, send_at TEXT NOT NULL, request TEXT NOT NULL,
     problems TEXT NOT NULL DEFAULT '');
@@ -101,6 +102,10 @@ class PaperStore:
         self.conn = sqlite3.connect(str(path), isolation_level=None)  # explicit transactions below
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        columns = {row["name"] for row in self.conn.execute("PRAGMA table_info(runs)")}
+        for column in ("code", "config"):  # records made before runs named their code and configuration
+            if column not in columns:
+                self.conn.execute(f"ALTER TABLE runs ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
         if self.conn.execute("SELECT COUNT(*) FROM account").fetchone()[0] == 0:
             self.conn.execute("INSERT INTO account (id, starting_capital, cash) VALUES (1, ?, ?)",
                               (starting_capital, starting_capital))
@@ -238,9 +243,10 @@ class PaperStore:
         return backup_copy(self.conn, Path(directory) / f"{self.path.stem}-{day.isoformat()}.db")
 
     # runs: one row per unattended run, for monitoring
-    def start_run(self, started_at: datetime) -> int:
-        return self.conn.execute("INSERT INTO runs (started_at, status) VALUES (?, 'running')",
-                                 (started_at.isoformat(),)).lastrowid
+    def start_run(self, started_at: datetime, code: str = "", config: str = "") -> int:
+        """`code` and `config` name what processes the run (trader/ops/provenance.py)."""
+        return self.conn.execute("INSERT INTO runs (started_at, status, code, config) VALUES (?, 'running', ?, ?)",
+                                 (started_at.isoformat(), code, config)).lastrowid
 
     def finish_run(self, run_id: int, status: str, finished_at: datetime, sessions: int = 0, detail: str = "") -> None:
         self.conn.execute("UPDATE runs SET status = ?, finished_at = ?, sessions = ?, detail = ? WHERE id = ?",

@@ -155,6 +155,28 @@ def test_the_live_account_is_watched(tmp_path):
     assert everything[0].name == "live unknown orders"  # worst first
 
 
+def test_the_live_dry_run_is_watched_with_warnings_only(tmp_path, monkeypatch):
+    from trader.execution import live as live_jobs
+    settings = replace(load_settings(env={}), live_enabled=True)  # the dry run never asks for the live login
+    assert health.dry_run_live_checks(None, settings, EVENING) == []  # no dry run has run
+    monkeypatch.setattr(live_jobs, "DRY_RUN_DIR", tmp_path / "dry")
+    assert health.open_dry_run_store() is None
+    store = LiveStore(tmp_path / "dry" / "live.db")
+    assert health.dry_run_live_checks(store, settings, EVENING) == []  # nothing held or outstanding
+    held = Position("B1F", "UNIONBANK.NS", 54, 185.0, 157.25, date(2026, 8, 17))
+    store.save_position(held)  # bought, but the morning job never placed its stop
+    store.record(EVENING - timedelta(days=2), date(2026, 8, 18), "B1F", broker.entry_order("k", "BBB.NS", 5), "SENT")
+    checks = health.dry_run_live_checks(health.open_dry_run_store(), settings, EVENING)
+    assert levels(checks) == {"dry run stops": WARN, "dry run stale orders": WARN}
+    fresh = LiveStore(tmp_path / "fresh.db")
+    fresh.record(EVENING, date(2026, 8, 18), "B1F", broker.entry_order("k", "BBB.NS", 5), "SENT")
+    assert health.dry_run_live_checks(fresh, settings, EVENING)[0].detail.endswith("1 order(s) waiting for Kite, none overdue")
+    assert all(c.detail.startswith("simulated account: ") for c in checks)
+    store.record(EVENING, date(2026, 8, 17), "B1F", broker.stop_order(held), "SENT")
+    store.record(EVENING, date(2026, 8, 18), "B1F", broker.entry_order("k", "BBB.NS", 5), "DONE")
+    assert levels(health.dry_run_live_checks(store, settings, EVENING)) == {"dry run trading": OK}
+
+
 
 def test_damaged_records_or_backups_are_caught(tmp_path):
     assert integrity_check(None, None, tmp_path) == []  # no records yet

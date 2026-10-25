@@ -131,6 +131,49 @@ def test_no_approved_trade_ever_breaks_a_limit(tmp_path):
     assert approvals > 50  # the cases exercise approvals, not just rejections
 
 
+def test_an_order_sized_elsewhere_is_checked_and_only_ever_made_smaller(tmp_path):
+    risk = engine(tmp_path)
+    decision = risk.review(intent(), account(cash=300_000), 10)  # a Rs 10,000 live copy of a paper order
+    assert decision.approved and decision.quantity == 10  # under the paper minimum, which is the paper account's
+    decision = risk.review(intent(), account(cash=300_000), 40)  # Rs 1,500 risk allowed: 30 shares at a Rs 50 stop
+    assert decision.approved and decision.quantity == 30
+    assert "30 of 40 shares (capped by risk per trade)" in next(c.detail for c in decision.checks if c.name == "size")
+    assert failed(risk.review(intent(stop=0.0), account(), 10)) == ["stop", "size"]
+    assert failed(risk.review(intent(), account(day_start=1_030_000), 10)) == ["daily loss"]
+    tech = held("BBB.NS", 400, 1000, sector="Tech")  # the sector is full
+    assert failed(risk.review(intent(), account(cash=600_000, positions=[tech]), 10)) == ["size"]
+
+
+def test_no_reviewed_order_ever_breaks_a_limit(tmp_path):
+    rng = np.random.default_rng(7)
+    risk, approvals = engine(tmp_path), 0
+    for case in range(500):
+        positions = [held(f"P{i}.NS", int(rng.integers(1, 300)), float(rng.uniform(100, 3000)),
+                          sector=f"Sector{rng.integers(0, 4)}") for i in range(int(rng.integers(0, 7)))]
+        state = account(cash=float(rng.uniform(0, 1_500_000)), positions=positions)
+        state.peak_equity = state.equity * float(rng.uniform(1.0, 1.15))
+        state.day_start_equity = state.equity * float(rng.uniform(0.97, 1.03))
+        idea = intent(symbol=f"N{case}.NS", price=float(rng.uniform(50, 5000)), stop=float(rng.uniform(0.0, 0.2)),
+                      sector=f"Sector{rng.integers(0, 4)}")
+        wanted = int(rng.integers(1, 500))
+        decision = risk.review(idea, state, wanted)
+        risk.kill_switch.release()
+        if not decision.approved:
+            assert decision.quantity == 0
+            continue
+        approvals += 1
+        q, p, e = decision.quantity, idea.reference_price, state.equity
+        assert 1 <= q <= wanted
+        assert q * p * idea.stop_distance <= e * LIMITS.risk_per_trade + 1e-6
+        assert q * p <= min(e * LIMITS.max_position, state.cash) + 1e-6
+        assert state.sector_value(idea.sector) + q * p <= e * LIMITS.max_sector_exposure + 1e-6
+        assert state.invested + q * p <= e * LIMITS.max_gross_exposure + 1e-6
+        assert len(state.positions) < LIMITS.max_positions
+        assert state.equity / state.peak_equity - 1 > -LIMITS.max_drawdown
+        assert state.equity / state.day_start_equity - 1 > -LIMITS.max_daily_loss
+    assert approvals > 50
+
+
 def test_limits_config():
     assert load_limits() == RiskLimits()
     with pytest.raises(ValueError):

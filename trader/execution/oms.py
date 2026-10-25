@@ -39,6 +39,10 @@ CREATE TABLE IF NOT EXISTS live_positions (symbol TEXT PRIMARY KEY, strategy_id 
     entry_session TEXT NOT NULL, entry_price REAL NOT NULL, stop_price REAL NOT NULL, max_hold_days INTEGER);
 CREATE TABLE IF NOT EXISTS capital_steps (id INTEGER PRIMARY KEY, session TEXT NOT NULL, capital REAL NOT NULL,
     reason TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS notices (session TEXT NOT NULL, kind TEXT NOT NULL, PRIMARY KEY (session, kind));
+CREATE TABLE IF NOT EXISTS live_equity (session TEXT PRIMARY KEY, equity REAL NOT NULL);
+CREATE TRIGGER IF NOT EXISTS equity_no_update BEFORE UPDATE ON live_equity BEGIN SELECT RAISE(ABORT, 'live equity is append-only'); END;
+CREATE TRIGGER IF NOT EXISTS equity_no_delete BEFORE DELETE ON live_equity BEGIN SELECT RAISE(ABORT, 'live equity is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS steps_no_update BEFORE UPDATE ON capital_steps BEGIN SELECT RAISE(ABORT, 'capital steps are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS steps_no_delete BEFORE DELETE ON capital_steps BEGIN SELECT RAISE(ABORT, 'capital steps are append-only'); END;
 CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON broker_events BEGIN SELECT RAISE(ABORT, 'broker events are append-only'); END;
@@ -120,6 +124,19 @@ class LiveStore:
     def capital_steps(self) -> list[sqlite3.Row]:
         return self.conn.execute("SELECT * FROM capital_steps ORDER BY id").fetchall()
 
+    def record_equity(self, session: date, equity: float) -> None:
+        """The live account's equity on a session's evening; the first record of the day stands."""
+        self.conn.execute("INSERT OR IGNORE INTO live_equity (session, equity) VALUES (?, ?)", (session.isoformat(), equity))
+
+    def equity_history(self, since: date) -> list[tuple[str, float]]:
+        return [(r["session"], r["equity"]) for r in self.conn.execute(
+            "SELECT * FROM live_equity WHERE session >= ? ORDER BY session", (since.isoformat(),))]
+
+    def first_notice(self, session: date, kind: str) -> bool:
+        """Whether this is the session's first notice of this kind (and records it): a job that repeats tells once."""
+        return self.conn.execute("INSERT OR IGNORE INTO notices (session, kind) VALUES (?, ?)",
+                                 (session.isoformat(), kind)).rowcount == 1
+
     def positions(self) -> dict[str, Position]:
         rows = self.conn.execute("SELECT * FROM live_positions ORDER BY symbol").fetchall()
         return {r["symbol"]: Position(r["strategy_id"], r["symbol"], r["quantity"], r["entry_price"], r["stop_price"],
@@ -135,7 +152,7 @@ class LiveStore:
         self.conn.execute("DELETE FROM live_positions WHERE symbol = ?", (symbol,))
 
     def table(self, name: str) -> pd.DataFrame:
-        if name not in {"broker_orders", "broker_events", "live_fills", "live_positions", "capital_steps"}:
+        if name not in {"broker_orders", "broker_events", "live_fills", "live_positions", "capital_steps", "live_equity"}:
             raise ValueError(name)
         return pd.read_sql_query(f"SELECT * FROM {name} ORDER BY rowid", self.conn)
 
@@ -242,7 +259,8 @@ class OMS:
         gtts = {str(g["id"]): g for g in self.kite.gtts()} if any(r["purpose"] == "stop" for r in pending) else {}
         for row in pending:
             if row["status"] in ("SENDING", "UNKNOWN") and not self._found(row):
-                news.append(f"{row['symbol']} {row['purpose']}: Kite has no record of it yet, so it may be sent again")
+                if self.store.first_notice(session, f"no record {row['tag']}"):  # once a day: the morning job repeats
+                    news.append(f"{row['symbol']} {row['purpose']}: Kite has no record of it yet, so it may be sent again")
                 continue
             row = self.store.order(row["tag"])
             if row["purpose"] in ORDER_PURPOSES and row["kite_id"] in orders:

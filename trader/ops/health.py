@@ -184,6 +184,23 @@ def open_live_store(settings) -> LiveStore | None:
     return LiveStore(path) if path.exists() else None
 
 
+def open_dry_run_store() -> LiveStore | None:
+    """The live dry run's records (python -m trader.execution.live <job> --dry-run), if a dry-run job has ever run."""
+    from trader.execution.live import DRY_RUN_DIR  # here: the live jobs import the daily run, which imports this module
+    path = DRY_RUN_DIR / "live.db"
+    return LiveStore(path) if path.exists() else None
+
+
+def dry_run_live_checks(store: LiveStore | None, settings, now: datetime) -> list[Health]:
+    """The live dry run's simulated account, held to the live account's checks below: as warnings, since nothing in it
+    is real, but a dry-run job that didn't run or went wrong shows here."""
+    if store is None:
+        return []
+    found = live_checks(replace(settings, live_enabled=False), store, now)
+    return [Health("dry run" + c.name[len("live"):], WARN if c.level in (ALERT, WARN) else c.level,
+                   "simulated account: " + c.detail) for c in found if c.level != INFO]
+
+
 def live_checks(settings, store: LiveStore | None, now: datetime, session_file: Path = SESSION_FILE) -> list[Health]:
     """Phase 11: what the live account needs from a person (python -m trader.execution.live status)."""
     checks = []
@@ -210,8 +227,9 @@ def live_checks(settings, store: LiveStore | None, now: datetime, session_file: 
             checks.append(Health("live refusals", WARN, f"Kite refused {len(refused)} request(s) in the last 7 days, "
                                  f"e.g. {last['symbol']} {last['purpose']}: {last['detail']}"))
         if not checks:
+            waiting = sum(1 for r in store.orders(("SENT",)) if r["purpose"] in ORDER_PURPOSES)
             checks.append(Health("live trading", OK, f"{len(held)} live holding(s), each with a stop at Kite; "
-                                 "nothing unsettled"))
+                                 + (f"{waiting} order(s) waiting for Kite, none overdue" if waiting else "nothing unsettled")))
     if settings.live_enabled and load_session(session_file) is None:
         checks.append(Health("live login", WARN, "no Kite login today: the 09:20, 15:15 and evening live jobs need one "
                              "(python -m trader.data.kite login)"))
@@ -483,14 +501,15 @@ def health_checks(store: PaperStore | None, calendar: MarketCalendar, registry: 
                   kill_switch: KillSwitch, settings, now: datetime, max_age_days: int = 365,
                   evidence_dir: Path = EVIDENCE_DIR, session_file: Path = SESSION_FILE,
                   backup_dir: Path | None = None, live_store: LiveStore | None = None,
-                  us_store: PaperStore | None = None) -> list[Health]:
+                  us_store: PaperStore | None = None, dry_run_store: LiveStore | None = None) -> list[Health]:
     """Every check, worst first. `store` is None before the first daily run."""
     checks = [*run_checks(store, calendar, now), *safety_checks(store, kill_switch), unattended_record(store, now),
               dry_run_check(store, now.date()), *backup_check(store, backup_dir, now.date()),
               *integrity_check(store, live_store, backup_dir), *news_check(settings, now), *forward2_check(now), *forward3_check(now), *trial_check(now), *forward5_check(now), *january_looks_check(now.date()),
               *us_checks(us_store, now, backup_dir),
               *strategy_checks(registry, now.date(), max_age_days, evidence_dir), calendar_checks(calendar, now.date()),
-              data_checks(settings, now, session_file), *live_checks(settings, live_store, now, session_file)]
+              data_checks(settings, now, session_file), *live_checks(settings, live_store, now, session_file),
+              *dry_run_live_checks(dry_run_store, settings, now)]
     order = (ALERT, WARN, INFO, OK)
     return sorted(checks, key=lambda c: order.index(c.level))
 
@@ -522,7 +541,8 @@ def main(argv: list[str] | None = None, sleep=_sleep) -> None:
     now = datetime.now(IST)
     checks = health_checks(store, load_calendars()["NSE"], StrategyRegistry.load(), KillSwitch(), settings, now,
                            load_gate_config().max_evidence_age_days, backup_dir=database.parent / "backups",
-                           live_store=open_live_store(settings), us_store=open_us_store(settings))
+                           live_store=open_live_store(settings), us_store=open_us_store(settings),
+                           dry_run_store=open_dry_run_store())
     print(f"Health at {now:%Y-%m-%d %H:%M} IST")
     width = max(len(c.name) for c in checks)
     for check in checks:

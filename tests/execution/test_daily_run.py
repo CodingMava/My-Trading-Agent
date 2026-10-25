@@ -87,6 +87,13 @@ def test_heartbeat_failures_never_raise_or_log_the_url(caplog):
     assert "SECRETUUID" not in caplog.text and "ConnectionError" in caplog.text and "HTTP 404" in caplog.text
 
 
+def test_each_run_names_the_code_and_configuration_that_processed_it(tmp_path):
+    trader = make_trader(tmp_path)
+    assert run_daily(trader, until=date(2026, 8, 18), start=SIGNAL_DAY, provenance=("5d49ad758156 src 8b6d", "d144")) == 0
+    run = trader.store.runs().iloc[0]
+    assert (run["status"], run["code"], run["config"]) == ("ok", "5d49ad758156 src 8b6d", "d144")
+
+
 def test_every_run_that_did_not_fail_leaves_a_dated_backup(tmp_path):
     trader = make_trader(tmp_path)
     assert run_daily(trader, until=date(2026, 8, 18), start=SIGNAL_DAY, backup_dir=tmp_path / "backups") == 0
@@ -129,11 +136,14 @@ def test_the_daily_run_does_india_then_the_us_and_pings_only_when_both_were_clea
     settings = replace(load_settings(env={}), heartbeat_url=Secret("https://hc.example/ping"))
     calls, pings, results = [], [], [0, 0]
 
-    def fake_daily(store, notifier, build, until, start, heartbeat, secrets, backup_dir, label):
+    stamps = []
+
+    def fake_daily(store, notifier, build, until, start, heartbeat, secrets, backup_dir, label, provenance):
         trader = build()
         calls.append((store.path.name, trader.market, trader.calendar.name, trader.currency,
                       type(trader.provider).__name__, trader.market_check, until, start, heartbeat, label,
                       trader.risk.account, trader.risk.limits.min_notional))
+        stamps.append(provenance)
         return results[len(calls) - 1]
     monkeypatch.setattr(eod, "ROOT", tmp_path)
     monkeypatch.setattr(eod, "load_settings", lambda: settings)
@@ -147,6 +157,7 @@ def test_the_daily_run_does_india_then_the_us_and_pings_only_when_both_were_clea
     assert calls == [("paper.db", "NSE", "NSE", "₹", "YahooProvider", ("NIFTYBEES.NS",), None, date(2026, 10, 1), "",
                       "", "", 25_000),
                      ("paper-us.db", "US", "NYSE", "$", "YahooProvider", ("SPY",), None, None, "", "US", "US", 250)]
+    assert stamps[0] == stamps[1] and " src " in stamps[0][0] and len(stamps[0][1]) == 16  # what processed both runs
     calls.clear()
     results[:] = [0, 2]  # the US run halted
     with pytest.raises(SystemExit) as done:

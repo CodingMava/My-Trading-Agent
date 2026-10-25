@@ -1,9 +1,12 @@
 """Live trading's jobs and locks: the paper engine decides, the live jobs carry it out at an in-memory Kite."""
 import html
+import re
 from dataclasses import replace
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from tests.execution.fake_kite import FakeKite, ok
@@ -15,6 +18,7 @@ from trader.execution import broker, live as live_jobs
 from trader.execution.kite_orders import KiteOrders
 from trader.execution.live import Live, capital_for_today, check, locks, run, status_text, step_drawdown, track
 from trader.execution.oms import LiveStore
+from trader.execution.sources import LiveOrder
 from trader.execution.store import PaperStore
 from trader.markets.calendar import load_calendars
 from trader.registry import StrategyRecord, StrategyRegistry
@@ -82,6 +86,9 @@ def test_a_week_of_live_trading_mirrors_paper(tmp_path):
     kite.fill(kite.by_tag(broker.exit_order("T1:BBB.NS:2026-08-14:sell", "BBB.NS", 100).tag), 104.0)
     code, messages = job(live, clock, "morning", date(2026, 8, 17), 9, 20)
     assert "BBB.NS exit: sell 100 at 104.00" in messages[0] and "BBB.NS: stop deleted (DONE)" in messages[0]
+    bbb_stop = next(g for g in kite.gtts.values() if g["condition"]["tradingsymbol"] == "BBB")
+    del kite.gtts[bbb_stop["id"]]  # should Kite stop listing a deleted GTT, the repeat doesn't say it again
+    assert job(live, clock, "morning", date(2026, 8, 17), 9, 35) == (0, [])
     code, messages = job(live, clock, "preclose", date(2026, 8, 17), 15, 15)
     assert "CCC.NS: time exit, sell 100 (SENT)" in messages[0]
     ccc_stop = next(g for g in kite.gtts.values() if g["condition"]["tradingsymbol"] == "CCC")
@@ -140,6 +147,12 @@ def test_a_mismatch_with_the_account_engages_the_kill_switch(tmp_path):
     code, messages = job(live, clock, "morning", date(2026, 8, 12), 9, 20)  # the account holds none of it
     assert code == 2 and live.kill_switch.engaged and "AAA.NS: the system holds 100 shares" in messages[0]
     assert not any(call[0] in ("POST", "PUT", "DELETE") for call in kite.calls)
+    assert job(live, clock, "morning", date(2026, 8, 12), 9, 35) == (2, [])  # the repeat is only logged
+    live.kill_switch.release()  # released too soon: engaging it again is news
+    code, messages = job(live, clock, "morning", date(2026, 8, 12), 9, 50)
+    assert code == 2 and live.kill_switch.engaged and "Reconciliation failed" in messages[0]
+    code, messages = job(live, clock, "morning", date(2026, 8, 13), 9, 20)
+    assert code == 2 and "Reconciliation failed" in messages[0]  # and again each day it stays engaged
 
 
 def test_failures_are_reported(tmp_path):
@@ -150,9 +163,81 @@ def test_failures_are_reported(tmp_path):
     live.connect = no_login
     code, messages = job(live, clock, "morning", date(2026, 8, 11), 9, 20)
     assert code == 1 and "[LIVE] Live morning failed" in messages[0] and "login" in messages[0]
+    assert "tries again every 15 minutes" in messages[0]
     live.connect = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
     code, messages = job(live, clock, "morning", date(2026, 8, 11), 9, 20)
-    assert code == 1 and "RuntimeError: boom" in messages[0]
+    assert code == 1 and "RuntimeError: boom" in messages[0]  # another kind of failure: told too
+    assert job(live, clock, "morning", date(2026, 8, 11), 9, 35) == (1, [])  # its repeat: only logged
+    code, messages = job(live, clock, "preclose", date(2026, 8, 11), 15, 15)
+    assert code == 1 and "Live preclose failed" in messages[0] and "tries again" not in messages[0]  # runs once
+
+
+def test_a_stop_missed_for_want_of_a_login_goes_in_after_the_login(tmp_path):
+    paper, live, kite, clock = setup(tmp_path)
+    today = date(2026, 8, 11)
+    live.store.save_position(Position("T1", "AAA.NS", 10, 100.0, 95.0, today))
+    live.store.add_fill(today, "Eaaa", "T1", "AAA.NS", "buy", 10, 100.0)
+    kite.positions["net"].append({"tradingsymbol": "AAA", "exchange": "NSE", "product": "CNC", "quantity": 10})
+    kite.prices = {"AAA": 100.0}
+    logged_in, live.connect = live.connect, lambda: (_ for _ in ()).throw(KiteAuthError("no valid Kite session today"))
+    code, messages = job(live, clock, "morning", today, 9, 20)  # nobody logged in before 09:20
+    assert code == 1 and len(messages) == 1 and kite.gtts == {}
+    assert job(live, clock, "morning", today, 9, 35) == (1, [])  # still no login: told once, not every 15 minutes
+    live.connect = logged_in  # the login at 11:07
+    code, messages = job(live, clock, "morning", today, 11, 20)
+    assert code == 0 and "AAA.NS: stop (SENT)" in messages[0] and len(kite.gtts) == 1
+    assert job(live, clock, "morning", today, 11, 35) == (0, [])  # nothing new: nothing said
+    code, messages = job(live, clock, "morning", today, 15, 5)  # the pre-close job's turn
+    assert "Nothing sent: the morning job runs between 09:15 and 15:00" in messages[0]
+
+
+def from_source(tmp_path, orders_on, capital=100_000):
+    """A live strategy (TS) whose orders come from its own paper account, as B1F's come from paper trial 1."""
+    paper, live, kite, clock = setup(tmp_path, capital=capital)
+    live.registry, live.catalog = StrategyRegistry([StrategyRecord("TS", "Source strategy", "LIVE_SMALL")]), {}
+    live.sources = {"TS": lambda today, held: (orders_on.get(today, []), [])}
+    return live, kite, clock
+
+
+def entry(symbol, returns=None, paper_quantity=1000):
+    """A paper entry of Rs 1,00,000 in a Rs 10,00,000 account with a 5% stop: 100 shares at Rs 1,00,000 live."""
+    return LiveOrder("TS", f"TS {symbol} entry", symbol, "buy", paper_quantity, 1_000_000, 100.0, 0.05, returns=returns)
+
+
+def test_live_entries_pass_the_risk_engine_on_the_live_account(tmp_path):
+    rng = np.random.default_rng(1)
+    base = pd.Series(rng.normal(0, 0.01, 90), index=pd.bdate_range("2026-04-01", periods=90))
+    returns = {"AAA.NS": base, "BBB.NS": base + rng.normal(0, 0.001, 90),  # BBB moves with AAA
+               "CCC.NS": pd.Series(rng.normal(0, 0.01, 90), index=base.index)}
+    live, kite, clock = from_source(tmp_path, {SIGNAL_DAY: [entry(s, returns) for s in ("AAA.NS", "BBB.NS", "CCC.NS")]})
+    code, messages = job(live, clock, "evening", SIGNAL_DAY, 18, 30)
+    assert "AAA.NS: buy 100 at the open (SENT)" in messages[0] and "CCC.NS: buy 100 at the open (SENT)" in messages[0]
+    assert re.search(r"BBB\.NS: entry not sent: 0\.9\d with AAA\.NS \(limit 0\.8\)", messages[0])
+    assert [o["tradingsymbol"] for o in kite.orders] == ["AAA", "CCC"]
+
+
+def test_a_bad_day_stops_new_live_entries_and_a_smaller_account_buys_less(tmp_path):
+    tue, wed, thu = date(2026, 8, 11), date(2026, 8, 12), date(2026, 8, 13)
+    live, kite, clock = from_source(tmp_path, {SIGNAL_DAY: [entry("AAA.NS")], wed: [entry("BBB.NS")],
+                                               thu: [entry("CCC.NS")]})
+    job(live, clock, "evening", SIGNAL_DAY, 18, 30)
+    kite.new_day()
+    kite.fill(kite.orders[0], 100.0)
+    kite.prices = {"AAA": 100.0}
+    job(live, clock, "morning", tue, 9, 20)
+    assert job(live, clock, "evening", tue, 18, 30) == (0, [])  # nothing to send; the evening's equity is recorded
+    kite.prices = {"AAA": 70.0}  # AAA closes 30% down, below its stop: the account is down 3% today
+    code, messages = job(live, clock, "evening", wed, 18, 30)
+    assert "BBB.NS: entry not sent: today -3.0% (no new entries below -2%)" in messages[0]
+    kite.prices = {}  # Kite has no price for AAA: valued at its entry price, the account is Rs 97,000 again...
+    code, messages = job(live, clock, "evening", thu, 18, 30)
+    assert "AAA.NS: no price from Kite, so the risk checks value it at its entry price" in messages[0]
+    assert "CCC.NS: buy 100 at the open (SENT)" in messages[0]  # ...up 3% on the day, Rs 500 of risk is 100 shares
+    assert [(r["session"], r["equity"]) for _, r in live.store.table("live_equity").iterrows()] == [
+        ("2026-08-10", 100_000.0), ("2026-08-11", 100_000.0), ("2026-08-12", 97_000.0), ("2026-08-13", 100_000.0)]
+    live, kite, clock = from_source(tmp_path / "smaller", {SIGNAL_DAY: [entry("AAA.NS", paper_quantity=2000)]})
+    code, messages = job(live, clock, "evening", SIGNAL_DAY, 18, 30)  # 20% of the account at a 5% stop risks 1%
+    assert "AAA.NS: buy 100 at the open (SENT)" in messages[0]  # 200 scaled, cut to 100 by the 0.5% risk limit
 
 
 def test_the_morning_job_handles_stops_that_cant_wait(tmp_path):
@@ -175,6 +260,10 @@ def test_the_morning_job_handles_stops_that_cant_wait(tmp_path):
     code, messages = job(live, clock, "morning", today, 9, 25)
     assert "BBB.NS: gap exit (DONE)" in messages[0] and sell["order_type"] == "MARKET"
     assert "CCC.NS has no stop at Kite (cancelled: GTT rejected). Place one by hand." in messages[0]
+    code, messages = job(live, clock, "morning", today, 9, 40)
+    assert not any("CCC.NS has no stop" in text for text in messages)  # said once a day, though the job repeats
+    code, messages = job(live, clock, "morning", date(2026, 8, 12), 9, 20)
+    assert "CCC.NS has no stop at Kite" in messages[0]  # and again the next day, until it's fixed
 
 
 def test_the_evening_job_waits_for_the_paper_run(tmp_path):
