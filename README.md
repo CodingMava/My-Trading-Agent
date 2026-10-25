@@ -547,7 +547,8 @@ summarize(trades, ZERODHA_DELIVERY.round_trip(100_000), session_dates)
 ## Safety rules
 
 - Only a strategy whose status in `config/strategies.toml` is `PAPER` is paper traded, and only
-  `LIVE_SMALL` or `LIVE` could ever trade real money (Phase 11). A strategy missing from the registry is
+  `LIVE_SMALL` or `LIVE` could ever trade real money (Phase 11), apart from a real-money trial you decide on
+  in writing without the evidence (`config/overrides.toml`, below). A strategy missing from the registry is
   blocked (fail closed).
 - A status must be earned, not typed: when the registry loads, `PAPER` needs passing research evidence
   in `docs/research/evidence/` with a backtest drawdown no deeper than 20R, `LIVE_SMALL` also needs
@@ -571,7 +572,9 @@ python -m trader.risk.killswitch status
   sends a US order. Each paper step for an NSE stock records the exact Zerodha Kite request
   that would carry it out (a dry run: `python -m trader.execution.broker`, or the dashboard's Decisions
   tab). Live trading (`python -m trader.execution.live`) is built and locked: it sends those orders only
-  for a strategy at `LIVE_SMALL` or `LIVE` on paper-trading evidence, after you turn it on, within limits
+  for a strategy at `LIVE_SMALL` or `LIVE` on paper-trading evidence, or for a real-money trial you decide
+  on in writing without that evidence (`config/overrides.toml`: at most 92 days, a capital cap, every risk
+  limit still on; not evidence), after you turn it on, within limits
   on size and count, and only while the account holds every share the system believes it holds. Never
   the same order twice, even after a crash or a lost answer. Going live also needs a static IP
   registered with Kite and a DDPI with Zerodha ([docs/runbook.md](docs/runbook.md#before-the-first-real-order)).
@@ -606,7 +609,7 @@ python -m trader.risk.killswitch status
 | 8 | Broker integration: Zerodha Kite orders, still on paper capital | Done: the dry run, and the order management system (orders and GTT stops, never sent twice, rejects, partial fills, reconciliation with the account), tested against an in-memory Kite (Kite has no sandbox) |
 | 9 | AI research layer: news to structured tags, advisory only | Built: NSE's announcements collected every 15 minutes into a history with every gap recorded, tagged by rules (optional AI tags, schema-checked, off until a new key); no trading code can read them. Kept only if a pre-registered research round shows the tags improve a strategy |
 | 10 | Observability: run records, alerts on failure and on silence, health checks, ops console | Done |
-| 11 | Controlled live trading | Built and locked: the live jobs (after paper trial 1's evening run, 09:20, 15:15) and their locks, orders from each strategy's paper account (B1F's from paper trial 1), a dry run on a simulated account at real prices, live-against-paper tracking, the Level 6 evidence for `LIVE`, and Level 7's capital steps (at most double, 4 weeks apart, automatic step-down). Nothing is sent until a strategy earns `LIVE_SMALL` on paper-trading evidence and you turn it on |
+| 11 | Controlled live trading | Built and locked: the live jobs (after paper trial 1's evening run, 09:20, 15:15) and their locks, orders from each strategy's paper account (B1F's from paper trial 1), a dry run on a simulated account at real prices, live-against-paper tracking, the Level 6 evidence for `LIVE`, and Level 7's capital steps (at most double, 4 weeks apart, automatic step-down). Nothing is sent until a strategy earns `LIVE_SMALL` on paper-trading evidence and you turn it on, or you decide on a capped, time-limited real-money trial in writing (`config/overrides.toml`, 25 Oct 2026; not evidence) and turn it on |
 
 ## Data
 

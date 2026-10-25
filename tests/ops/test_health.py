@@ -155,6 +155,24 @@ def test_the_live_account_is_watched(tmp_path):
     assert everything[0].name == "live unknown orders"  # worst first
 
 
+def test_a_real_money_trial_is_watched_while_live_trading_is_on():
+    from trader.execution.live import Override
+    settings = replace(load_settings(env={}), live_enabled=True, live_capital=300_000)
+    trial = Override("B1F", date(2026, 10, 26), date(2027, 1, 24), 300_000.0, "I chose to trade it before it passed.")
+
+    def on(day):
+        return datetime(day.year, day.month, day.day, 21, 0, tzinfo=IST)
+    assert health.trial_money_checks(replace(settings, live_enabled=False), on(date(2026, 11, 2)), [trial]) == []
+    assert levels(health.trial_money_checks(settings, on(date(2026, 11, 2)), [trial])) == {"real-money trial": INFO}
+    soon = health.trial_money_checks(settings, on(date(2027, 1, 15)), [trial])
+    assert levels(soon) == {"real-money trial": WARN} and "renew it in writing" in soon[0].detail
+    ended = health.trial_money_checks(settings, on(date(2027, 1, 25)), [trial])
+    assert levels(ended) == {"real-money trial": WARN} and "ended on 2027-01-24" in ended[0].detail
+    broken = replace(trial, problem="config/overrides.toml [B1F]: max_capital must be an amount above zero")
+    assert levels(health.trial_money_checks(settings, on(date(2026, 11, 2)), [broken])) == {"real-money trial": ALERT}
+    assert health.trial_money_checks(settings, on(date(2026, 11, 2))) == []  # the repository's file: no trial
+
+
 def test_the_live_dry_run_is_watched_with_warnings_only(tmp_path, monkeypatch):
     from trader.execution import live as live_jobs
     settings = replace(load_settings(env={}), live_enabled=True)  # the dry run never asks for the live login

@@ -13,9 +13,12 @@ with real shares, for the strategies that have earned it. Off by default, and lo
 Nothing is sent unless every lock is open:
   1. [live] enabled = true and a live capital in config/settings.toml;
   2. a strategy whose status is LIVE_SMALL or LIVE, which the registry grants only on paper-trading evidence
-     (the audit's Level 5); only its orders go out, and only for NSE stocks (US trades are placed by hand). Its
-     orders come from its paper account (trader/execution/sources.py): the paper engine's for the catalogue's
-     strategies, paper trial 1's ledger for its bunch, B1F;
+     (the audit's Level 5), or a real-money trial you decided on without that evidence (config/overrides.toml:
+     your reason in writing, at most MAX_TRIAL_DAYS long, under a capital cap); only its orders go out, and only
+     for NSE stocks (US trades are placed by hand). Its orders come from its paper account
+     (trader/execution/sources.py): the paper engine's for the catalogue's strategies, paper trial 1's ledger for
+     its bunch, B1F. A strategy that may no longer open trades (its trial ended, its status fell) still has its
+     live trades closed: exits and stops, never entries;
   3. today's Kite login, and an account holding every share the system believes it holds (if not, the kill
      switch engages and nothing is sent);
   4. for new entries: the kill switch off, at most [live] max_orders_per_day a day, each order worth at most
@@ -43,6 +46,7 @@ import argparse
 import html
 import logging
 import re
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time
@@ -51,7 +55,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from trader.config import ROOT, Settings, load_settings
+from trader.config import CONFIG_DIR, ROOT, Settings, load_settings
 from trader.core.models import PortfolioState, Position, TradeIntent
 from trader.data.kite import KiteAuthError, session_secrets
 from trader.execution import broker
@@ -92,6 +96,56 @@ WINDOWS = {"evening": (time(16, 0), time(23, 59)), "morning": (time(9, 15), time
 # The scheduled morning job repeats (scripts/register_tasks.ps1), so a stop missed for want of a login goes in
 # soon after the login; each kind of failure is reported once a day and its repeats only logged.
 RETRIES = {"morning": "The scheduled morning job tries again every 15 minutes until 15:00; repeats of this are only logged today."}
+OVERRIDES_FILE = CONFIG_DIR / "overrides.toml"
+MAX_TRIAL_DAYS = 92  # a real-money trial is decided for about three months at most, then renewed in writing or ended
+
+
+@dataclass(frozen=True)
+class Override:
+    """A real-money trial you decided on without the evidence the gate asks for (config/overrides.toml): small,
+    capped and time-limited. It is not evidence: no strategy's status changes, every risk limit still applies,
+    and the live capital can't grow under it. `problem` says why it is invalid (empty when it isn't)."""
+    strategy_id: str
+    decided: date | None
+    until: date | None
+    max_capital: float
+    reason: str
+    problem: str = ""
+
+
+def load_overrides(path: Path = OVERRIDES_FILE) -> tuple[Override, ...]:
+    """config/overrides.toml's real-money trials. One that is open-ended, uncapped or unexplained is kept with its
+    problem, and can't trade: the live jobs say why instead."""
+    if not path.is_file():
+        return ()
+    with open(path, "rb") as fh:
+        raw = tomllib.load(fh)
+    found = []
+    for strategy_id, entry in raw.items():
+        decided, until, reason = entry.get("decided"), entry.get("until"), str(entry.get("reason", "")).strip()
+        try:
+            cap = float(entry.get("max_capital", 0))
+        except (TypeError, ValueError):
+            cap = 0.0
+        dated = isinstance(decided, date) and isinstance(until, date)
+        problem = ("decided and until must be dates (YYYY-MM-DD)" if not dated
+                   else f"until must be on or after decided, and at most {MAX_TRIAL_DAYS} days later"
+                   if not 0 <= (until - decided).days <= MAX_TRIAL_DAYS
+                   else "max_capital must be an amount above zero" if not cap > 0
+                   else "reason must say in your own words why it trades without the evidence" if len(reason) < 20 else "")
+        found.append(Override(strategy_id, decided if dated else None, until if dated else None, cap, reason,
+                              f"config/overrides.toml [{strategy_id}]: {problem}" if problem else ""))
+    return tuple(found)
+
+
+def override_problem(override: Override, today: date, known: set[str], capital: float) -> str:
+    """Why a real-money trial can't open new trades today; empty when it can."""
+    return (override.problem
+            or (f"{override.strategy_id} has no paper account for the live jobs to follow" if override.strategy_id not in known
+                else f"the real-money trial of {override.strategy_id} starts on {override.decided}" if today < override.decided
+                else f"the real-money trial of {override.strategy_id} ended on {override.until}" if today > override.until
+                else f"[live] capital Rs {capital:,.0f} is above the real-money trial's cap of Rs {override.max_capital:,.0f}"
+                if capital > override.max_capital else ""))
 
 
 @dataclass
@@ -112,19 +166,41 @@ class Live:
     dry_run: bool = False
     limits: RiskLimits = field(default_factory=load_limits)  # config/risk.toml: every live entry is checked against it
     sectors: dict[str, str] = field(default_factory=load_sectors)
+    overrides: tuple[Override, ...] = ()  # real-money trials you decided on (config/overrides.toml); never a dry run's
 
     def __post_init__(self):
         if self.as_live and not self.dry_run:
             raise ValueError("only a dry run may treat a strategy as live")
+        if self.overrides and self.dry_run:
+            raise ValueError("a dry run treats strategies as live with --as-live, not with a real-money override")
+
+
+def known_strategies(live: Live) -> set[str]:
+    return set(live.catalog) | set(live.sources)
+
+
+def trials(live: Live) -> dict[str, Override]:
+    """The real-money trials that may open trades today."""
+    today, known = live.clock().date(), known_strategies(live)
+    return {o.strategy_id: o for o in live.overrides
+            if not override_problem(o, today, known, live.settings.live_capital)}
 
 
 def live_strategies(live: Live) -> set[str]:
-    known = set(live.catalog) | set(live.sources)
-    return {record.id for record in live.registry.live_strategies() if record.id in known} | (live.as_live & known)
+    """The strategies that may open live trades: LIVE_SMALL or LIVE on evidence, a dry run's, and real-money trials."""
+    known = known_strategies(live)
+    return ({record.id for record in live.registry.live_strategies() if record.id in known} | (live.as_live & known)
+            | set(trials(live)))
+
+
+def managed_strategies(live: Live) -> set[str]:
+    """The strategies whose live trades the jobs carry on: those that may open trades, and any whose holdings are
+    still live after it lost that (a trial that ended, a strategy whose status fell): exits, never entries."""
+    return live_strategies(live) | ({p.strategy_id for p in live.store.positions().values()} & known_strategies(live))
 
 
 def say(live: Live, title: str, lines: list[str]) -> None:
-    live.notifier.send(templates.live_update(title=title, lines=lines, dry_run=live.dry_run))
+    live.notifier.send(templates.live_update(title=title, lines=lines, dry_run=live.dry_run, trial=bool(live.overrides)))
 
 
 def failed(live: Live, job: str, today: date, kind: str, detail: str, trace: bool = False) -> int:
@@ -142,8 +218,10 @@ def locks(live: Live) -> list[str]:
         reasons.append("live trading is off ([live] enabled = false in config/settings.toml)")
     if live.settings.live_capital <= 0:
         reasons.append("no live capital is set ([live] capital)")
-    if not live_strategies(live):
+    if not managed_strategies(live):
         reasons.append("no strategy has earned live money (LIVE_SMALL or LIVE on paper-trading evidence)")
+        today, known = live.clock().date(), known_strategies(live)
+        reasons += [override_problem(o, today, known, live.settings.live_capital) for o in live.overrides]
     return reasons
 
 
@@ -230,11 +308,11 @@ def evening(live: Live, oms: OMS, today: date) -> list[str]:
     """After the paper runs: tomorrow's entries and exits, as after-market orders for the open."""
     if not live.calendar.is_trading_day(today):
         return []
-    allowed, held = live_strategies(live), live.store.positions()
+    allowed, managed, held = live_strategies(live), managed_strategies(live), live.store.positions()
     batches = []
-    if allowed & set(live.catalog):
-        batches.append(paper_orders(live.paper, today, allowed, live.catalog))
-    for strategy_id in sorted(allowed & set(live.sources)):
+    if managed & set(live.catalog):
+        batches.append(paper_orders(live.paper, today, managed, live.catalog))
+    for strategy_id in sorted(managed & set(live.sources)):
         batches.append(live.sources[strategy_id](today, held))
     notes = [note for _, found in batches for note in found]
     if all(orders is None for orders, _ in batches):
@@ -251,7 +329,7 @@ def evening(live: Live, oms: OMS, today: date) -> list[str]:
             request = broker.exit_order(order.key, order.symbol, position.quantity)
             news.append(f"{order.symbol}: sell {position.quantity} at the open ({oms.submit(today, order.strategy_id, request)})")
             continue
-        refused, quantity = entry_refusal(live, order, capital, held, entries)
+        refused, quantity = entry_refusal(live, order, capital, held, entries, allowed)
         if not refused:  # the risk engine on the live account: it may make the order smaller, never bigger
             sector = sector_of(order.symbol, live.sectors)
             decision = risk.review(TradeIntent(order.strategy_id, order.symbol, today, order.reference_price,
@@ -297,10 +375,12 @@ def live_account(live: Live, oms: OMS, today: date, capital: float, news: list[s
     return state
 
 
-def entry_refusal(live: Live, order: LiveOrder, capital: float, held: dict, entries: int) -> tuple[str, int]:
+def entry_refusal(live: Live, order: LiveOrder, capital: float, held: dict, entries: int,
+                  allowed: set[str]) -> tuple[str, int]:
     """Why an entry isn't sent (empty when it is), and its live quantity: the paper order scaled to the live capital."""
     quantity = int(order.paper_quantity * capital / order.paper_capital + 1e-9)
-    refused = ("the kill switch is engaged" if live.kill_switch.engaged
+    refused = (exits_only(live, order.strategy_id) if order.strategy_id not in allowed
+               else "the kill switch is engaged" if live.kill_switch.engaged
                else "the live account already holds it" if order.symbol in held
                else f"{order.paper_quantity:.4g} paper shares scale to none (Rs {order.reference_price:,.2f} a share)"
                if quantity < 1
@@ -309,6 +389,13 @@ def entry_refusal(live: Live, order: LiveOrder, capital: float, held: dict, entr
                else f"the day's limit of {live.settings.live_max_orders_per_day} entries is reached"
                if entries >= live.settings.live_max_orders_per_day else "")
     return refused, quantity
+
+
+def exits_only(live: Live, strategy_id: str) -> str:
+    """Why a strategy whose live trades are carried on may not open new ones."""
+    today, known = live.clock().date(), known_strategies(live)
+    why = [override_problem(o, today, known, live.settings.live_capital) for o in live.overrides if o.strategy_id == strategy_id]
+    return f"{why[0] if why else strategy_id + ' is no longer LIVE_SMALL or LIVE'}: its live trades only exit"
 
 
 def morning(live: Live, oms: OMS, today: date) -> list[str]:
@@ -422,9 +509,18 @@ def check(kite: KiteOrders, store: LiveStore | None = None, symbol: str = "NIFTY
 
 def status_text(live: Live) -> str:
     """The locks, the live holdings and anything unsettled, from the records alone (no Kite calls)."""
-    blocked = locks(live)
+    blocked, opening = locks(live), sorted(live_strategies(live))
+    closing = sorted(managed_strategies(live) - set(opening))
     lines = ["Live trading: " + ("LOCKED: " + "; ".join(blocked) if blocked else
-                                 f"on for {', '.join(sorted(live_strategies(live)))} with Rs {live.settings.live_capital:,.0f}")]
+                                 "on" + (f" for {', '.join(opening)}" if opening else "")
+                                 + (f", exits only for {', '.join(closing)}" if closing else "")
+                                 + f" with Rs {live.settings.live_capital:,.0f}")]
+    in_force = trials(live)
+    for o in live.overrides:
+        lines.append(f"Real-money trial of {o.strategy_id}, decided {o.decided}, until {o.until}, at most "
+                     f"Rs {o.max_capital:,.0f}: NOT approved by evidence; you chose to trade it (config/overrides.toml)"
+                     if o.strategy_id in in_force else
+                     f"Real-money trial not opening trades: {override_problem(o, live.clock().date(), known_strategies(live), live.settings.live_capital)}")
     if live.kill_switch.engaged:
         lines.append(f"Kill switch ENGAGED: {live.kill_switch.reason}")
     held = live.store.positions()
@@ -514,7 +610,7 @@ def main(argv: list[str] | None = None) -> None:
         store = LiveStore(live_db if live_db.exists() or args.job in JOBS else ":memory:")
         live = Live(settings, paper, store, StrategyRegistry.load(), KillSwitch(), calendar, notifier_from_settings(settings),
                     connect=lambda: from_session(settings), steps=load_gate_config().live,
-                    sources={TRIAL: lambda today, held: trial_orders(today, held, calendar)})
+                    sources={TRIAL: lambda today, held: trial_orders(today, held, calendar)}, overrides=load_overrides())
     if args.job == "status":
         print(status_text(live))
     elif args.job == "check":

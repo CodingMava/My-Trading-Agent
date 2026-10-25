@@ -236,6 +236,29 @@ def live_checks(settings, store: LiveStore | None, now: datetime, session_file: 
     return checks or [Health("live trading", INFO, "off: no real order has been sent; Indian orders are a dry run")]
 
 
+def trial_money_checks(settings, now: datetime, overrides=None) -> list[Health]:
+    """Real-money trials (config/overrides.toml) while live trading is on: one that can't open trades, and one whose
+    end is two weeks away or less (renew it in writing, or let it end)."""
+    from trader.execution.live import load_overrides, override_problem
+    from trader.execution.sources import TRIAL
+    from trader.strategies.catalog import CATALOG
+
+    if not settings.live_enabled:
+        return []
+    checks, today = [], now.astimezone(IST).date()
+    for o in load_overrides() if overrides is None else overrides:
+        problem = override_problem(o, today, {*CATALOG, TRIAL}, settings.live_capital)
+        if problem:
+            checks.append(Health("real-money trial", ALERT if o.problem else WARN, problem))
+        elif (o.until - today).days <= 14:
+            checks.append(Health("real-money trial", WARN, f"the real-money trial of {o.strategy_id} ends on {o.until}: "
+                                 "renew it in writing (a new decided date) or let it end; its trades then only exit"))
+        else:
+            checks.append(Health("real-money trial", INFO, f"{o.strategy_id} trades real money until {o.until}, "
+                                 "without the evidence the rules ask for (config/overrides.toml)"))
+    return checks
+
+
 def _quick_check(conn: sqlite3.Connection) -> str:
     try:
         rows = [row[0] for row in conn.execute("PRAGMA quick_check").fetchall()]
@@ -509,7 +532,7 @@ def health_checks(store: PaperStore | None, calendar: MarketCalendar, registry: 
               *us_checks(us_store, now, backup_dir),
               *strategy_checks(registry, now.date(), max_age_days, evidence_dir), calendar_checks(calendar, now.date()),
               data_checks(settings, now, session_file), *live_checks(settings, live_store, now, session_file),
-              *dry_run_live_checks(dry_run_store, settings, now)]
+              *trial_money_checks(settings, now), *dry_run_live_checks(dry_run_store, settings, now)]
     order = (ALERT, WARN, INFO, OK)
     return sorted(checks, key=lambda c: order.index(c.level))
 

@@ -204,6 +204,50 @@ to send outside its window (so a late start can't send a time exit after the clo
 job checks that the account holds every share the system believes it holds; if not, the kill switch
 engages and nothing is sent. A request whose answer was lost is looked up at Kite, never sent twice.
 
+## A real-money trial (your override)
+
+On 25 Oct 2026 you chose to trade paper trial 1's bunch (B1F: E2 x3 + V2 x2) with a small amount of real money
+before it has passed its criteria, at your own risk, rather than wait for forward test 4's January looks (your
+18 Oct rule said to wait). The trial bends one rule: the live jobs may open trades for a strategy that isn't
+`LIVE_SMALL`. Everything else stays: every risk limit, the kill switch, the paper trial and the forward tests
+(unchanged; they still decide whether the bunch is any good), and the live capital can't be raised under a trial.
+It is not evidence: what it earns or loses in a few months says little (docs/live-readiness.md, part B).
+
+What to expect, from the bunch's backtest on the very years it was chosen from, so on the optimistic side: about
+40 trades a year, 48.7% winners, +3.4% a year on the capital at 0.5% risk a trade, a worst year of -5.2% and a
+deepest fall of -9.2%. At Rs 3,00,000 that is about +Rs 10,000 in an average year, -Rs 15,600 in its worst, and
+falls of up to about Rs 27,600 along the way. The future can be worse; it is not a forecast. The 10% drawdown
+limit below is close to that deepest fall, so a normal bad stretch can stop the trial.
+
+To start it, in this order:
+
+1. **A static IP**, registered in the Kite developer console (your app's settings): Kite refuses orders from
+   any other address.
+2. **DDPI with Zerodha** (Console, with an e-sign), so the system can sell without a TPIN every time.
+3. **The money in your Zerodha account**: at least the capital you'll write down (about Rs 3,00,000 for B1F's
+   positions to be whole shares).
+4. **Your decision, written:** in `config/overrides.toml` remove the `# ` from the `[B1F]` lines and fill them
+   in: `decided` (the day), `until` (at most 92 days later), `max_capital`, and `reason` in your own words.
+5. **Turn it on:** `config/settings.toml` `[live]` `enabled = true` and `capital` (at most `max_capital`).
+6. **Check:** `python -m trader.execution.live status` says "on for B1F" with the trial's line; after a
+   login, `python -m trader.execution.live check` (read-only) finds every field and no mismatch.
+7. **Register the live jobs:** `powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1 -Live -LiveDryRun`
+   (the dry run can carry on beside it).
+8. **Commit** `config/overrides.toml` and `config/settings.toml`: the commit dates your decision.
+
+While it runs: a Kite login every trading day (`/login`, before 09:20 if you can; the morning job retries until
+15:00), and read every `[LIVE · real-money trial, not approved by evidence]` message. The 21:00 health check
+alerts if the override is malformed and warns two weeks before `until`.
+
+How it stops:
+
+- **By itself:** a day 2% down stops that evening's entries; a 10% fall from its best engages the kill switch,
+  which only you release; a capital step whose closed trades lose 10% falls back to Rs 0. Exits and stops carry on.
+- **At `until`:** no new entries; its open trades still exit as the trial plans and at their stops. Renew it
+  only in writing (a new `decided` and `until`), or let it end.
+- **By you:** `/kill` from the phone: entries stop, exits carry on. Set `[live] enabled = false` only once the
+  account holds nothing of it: with live trading off no job runs, and its holdings keep only their GTT stops.
+
 ## The live dry run
 
 The live jobs, their locks and the order system, run unchanged against a simulated Zerodha account

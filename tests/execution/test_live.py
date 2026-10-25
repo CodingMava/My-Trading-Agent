@@ -16,7 +16,8 @@ from trader.core.models import Position
 from trader.data.kite import KiteAuthError
 from trader.execution import broker, live as live_jobs
 from trader.execution.kite_orders import KiteOrders
-from trader.execution.live import Live, capital_for_today, check, locks, run, status_text, step_drawdown, track
+from trader.execution.live import (Live, Override, capital_for_today, check, load_overrides, locks, run, status_text,
+                                   step_drawdown, track)
 from trader.execution.oms import LiveStore
 from trader.execution.sources import LiveOrder
 from trader.execution.store import PaperStore
@@ -238,6 +239,86 @@ def test_a_bad_day_stops_new_live_entries_and_a_smaller_account_buys_less(tmp_pa
     live, kite, clock = from_source(tmp_path / "smaller", {SIGNAL_DAY: [entry("AAA.NS", paper_quantity=2000)]})
     code, messages = job(live, clock, "evening", SIGNAL_DAY, 18, 30)  # 20% of the account at a 5% stop risks 1%
     assert "AAA.NS: buy 100 at the open (SENT)" in messages[0]  # 200 scaled, cut to 100 by the 0.5% risk limit
+
+
+REASON = "I chose to trade it with real money before it has passed its criteria."
+
+
+def test_a_real_money_trial_must_be_dated_capped_and_explained(tmp_path):
+    path = tmp_path / "overrides.toml"
+    assert load_overrides(path) == ()
+    good = 'max_capital = 300000\nreason = "' + REASON + '"\n'
+    path.write_text("[B1F]\ndecided = 2026-10-25\nuntil = 2027-01-24\n" + good
+                    + "[LONG]\ndecided = 2026-10-25\nuntil = 2027-06-30\n" + good
+                    + "[UNDATED]\ndecided = \"soon\"\nuntil = 2027-01-24\n" + good
+                    + "[UNCAPPED]\ndecided = 2026-10-25\nuntil = 2027-01-24\nmax_capital = \"lots\"\nreason = \"" + REASON + "\"\n"
+                    + "[TERSE]\ndecided = 2026-10-25\nuntil = 2027-01-24\nmax_capital = 300000\nreason = \"why not\"\n",
+                    encoding="utf-8")
+    found = {o.strategy_id: o for o in load_overrides(path)}
+    assert found["B1F"] == Override("B1F", date(2026, 10, 25), date(2027, 1, 24), 300_000.0, REASON)
+    assert "until must be on or after decided, and at most 92 days later" in found["LONG"].problem
+    assert "must be dates" in found["UNDATED"].problem and found["UNDATED"].decided is None
+    assert "max_capital must be an amount above zero" in found["UNCAPPED"].problem
+    assert "reason must say in your own words" in found["TERSE"].problem
+    paper, live, kite, clock = setup(tmp_path)  # T1 is LIVE_SMALL on evidence
+    live.overrides = (found["TERSE"], Override("XX", SIGNAL_DAY, SIGNAL_DAY, 1.0, REASON))
+    text = status_text(live)
+    assert "Real-money trial not opening trades: config/overrides.toml [TERSE]: reason must say" in text
+    assert "XX has no paper account for the live jobs to follow" in text and "on for T1" in text
+    with pytest.raises(ValueError, match="not with a real-money override"):
+        replace(live, dry_run=True)
+
+
+def test_a_real_money_trial_opens_trades_only_within_its_limits(tmp_path):
+    live, kite, clock = from_source(tmp_path, {SIGNAL_DAY: [entry("AAA.NS")]})
+    live.registry = StrategyRegistry([])  # TS has passed nothing
+    assert job(live, clock, "evening", SIGNAL_DAY, 18, 30) == (0, [])
+    live.overrides = (Override("TS", SIGNAL_DAY, date(2026, 8, 31), 150_000.0, REASON),)
+    code, messages = job(live, clock, "evening", SIGNAL_DAY, 18, 30)
+    assert messages[0].startswith("<b>[LIVE · real-money trial, not approved by evidence] Live evening</b>")
+    assert "AAA.NS: buy 100 at the open (SENT)" in messages[0]
+    assert "on for TS with Rs 100,000" in status_text(live)
+    assert "Real-money trial of TS, decided 2026-08-10, until 2026-08-31, at most Rs 150,000: NOT approved" in status_text(live)
+    live.settings = replace(live.settings, live_capital=150_000)
+    assert "TS must first pass Level 6 (status LIVE)" in capital_for_today(live, date(2026, 8, 28))[1][0]  # can't grow
+    live.settings = replace(live.settings, live_capital=200_000)
+    assert "capital Rs 200,000 is above the real-money trial's cap of Rs 150,000" in status_text(live)
+    live.settings = replace(live.settings, live_capital=100_000)
+    clock.at(date(2026, 8, 7), 18, 30)
+    assert "the real-money trial of TS starts on 2026-08-10" in status_text(live)
+
+
+def holding_aaa(tmp_path, orders_on):
+    """A live strategy (TS) that bought AAA at Tuesday's open and protected it with a stop."""
+    live, kite, clock = from_source(tmp_path, {SIGNAL_DAY: [entry("AAA.NS")], **orders_on})
+    job(live, clock, "evening", SIGNAL_DAY, 18, 30)
+    kite.new_day()
+    kite.fill(kite.orders[0], 100.0)
+    kite.prices = {"AAA": 100.0}
+    job(live, clock, "morning", date(2026, 8, 11), 9, 20)
+    return live, kite, clock
+
+
+def test_when_a_trial_ends_or_a_status_falls_its_live_trades_only_exit(tmp_path):
+    wed, thu = date(2026, 8, 12), date(2026, 8, 13)
+    sell = LiveOrder("TS", "TS AAA.NS exit", "AAA.NS", "sell", 0, 1_000_000, 0.0)
+    live, kite, clock = holding_aaa(tmp_path / "trial", {wed: [entry("BBB.NS"), sell]})
+    live.registry = StrategyRegistry([])
+    live.overrides = (Override("TS", SIGNAL_DAY, date(2026, 8, 11), 100_000.0, REASON),)  # its last session: Tuesday
+    code, messages = job(live, clock, "evening", wed, 18, 30)
+    assert "BBB.NS: entry not sent: the real-money trial of TS ended on 2026-08-11: its live trades only exit" in messages[0]
+    assert "AAA.NS: sell 100 at the open (SENT)" in messages[0] and "exits only for TS" in status_text(live)
+    kite.new_day()
+    kite.fill(kite.by_tag(broker.exit_order("TS AAA.NS exit", "AAA.NS", 100).tag), 101.0)
+    code, messages = job(live, clock, "morning", thu, 9, 20)
+    assert "AAA.NS exit: sell 100 at 101.00" in messages[0] and "AAA.NS: stop deleted (DONE)" in messages[0]
+    assert "LOCKED" in status_text(live) and "the real-money trial of TS ended on 2026-08-11" in status_text(live)
+
+    live, kite, clock = holding_aaa(tmp_path / "fell", {wed: [entry("BBB.NS"), sell]})
+    live.registry = StrategyRegistry([StrategyRecord("TS", "Source strategy", "PAPER")])  # its evidence decayed
+    code, messages = job(live, clock, "evening", wed, 18, 30)
+    assert "BBB.NS: entry not sent: TS is no longer LIVE_SMALL or LIVE: its live trades only exit" in messages[0]
+    assert "AAA.NS: sell 100 at the open (SENT)" in messages[0]
 
 
 def test_the_morning_job_handles_stops_that_cant_wait(tmp_path):

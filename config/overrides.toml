@@ -1,0 +1,21 @@
+# Real-money trials: a strategy traded with real money WITHOUT the evidence the rules ask for, because you
+# decided so, in writing. Read docs/runbook.md, "A real-money trial", first.
+#
+# What a trial changes: the live jobs may open trades for this strategy although it hasn't passed its criteria.
+# What it doesn't change: every risk limit in config/risk.toml (2% daily loss, 10% drawdown -> kill switch, stops,
+# sector and position limits), the kill switch, the paper trial and the forward tests (they go on unchanged and
+# still decide whether the strategy is any good), the registry (nothing becomes LIVE_SMALL), and the live capital
+# can't be raised under a trial. It is not evidence, whatever it earns or loses.
+#
+# Its limits: `until` at most 92 days after `decided` (then renew it in writing with a new `decided`, or let it
+# end); [live] capital in config/settings.toml at most `max_capital`; `reason` in your own words. When a trial
+# ends, its live trades are closed (exits and stops go on), and no new one opens.
+#
+# To start one, remove the leading "# " from the five lines below, fill them in, then turn on live trading
+# ([live] enabled = true and capital in config/settings.toml). Nothing here trades until you do.
+
+# [B1F]                              # paper trial 1's bunch: E2 x3 + V2 x2, orders from state/trial1.db
+# decided = 2026-10-25               # the day you decided
+# until = 2027-01-24                 # the last session it may open trades (at most 92 days after decided)
+# max_capital = 300000               # rupees; about the least at which B1F's positions are whole shares
+# reason = "In your own words: why you trade it with real money before it has passed its criteria."

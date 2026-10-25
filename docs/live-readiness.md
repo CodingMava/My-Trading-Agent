@@ -106,6 +106,13 @@ bunch, B1F), 5 (B1F hedged with futures, paper only). What they can be expected 
 
 ## G. Limited live deployment
 
-**NOT APPROVED, and not requested.** It needs B and D, the static IP and DDPI, the capital written down (at least about
+**NOT APPROVED by evidence.** Approval needs B and D, the static IP and DDPI, the capital written down (at least about
 Rs 3,00,000 for B1F to track the trial, more for its cost assumptions), F, and your explicit approval of a reviewed
 deployment.
+
+**A real-money trial instead, by your decision (25 Oct 2026):** you chose to trade B1F with a small amount of real
+money without B and D, at your own risk. It is built, off until you write the override in `config/overrides.toml`
+and turn live trading on, and limited: at most 92 days at a time, a capital cap, every risk limit (2% daily loss,
+10% drawdown kill switch), no capital increase, and when it ends its trades only exit (`test_a_real_money_trial_*`,
+`test_when_a_trial_ends_or_a_status_falls_its_live_trades_only_exit`). It still needs the static IP and DDPI. Its
+results are not evidence: B and D are unchanged. Steps: docs/runbook.md, "A real-money trial".

@@ -78,10 +78,11 @@ def risk_alert(*, title: str, detail: str, paper: bool = True) -> str:
     return _message(f"RISK ALERT: {title}", [("Detail", detail)], paper)
 
 
-def live_update(*, title: str, lines: list[str], dry_run: bool = False) -> str:
+def live_update(*, title: str, lines: list[str], dry_run: bool = False, trial: bool = False) -> str:
     """A message about real orders (Phase 11): labelled [LIVE], never [PAPER]; a dry run's [LIVE DRY RUN], since none
-    of its orders reached Kite."""
-    label = "[LIVE DRY RUN · nothing sent to Kite]" if dry_run else "[LIVE]"
+    of its orders reached Kite; a real-money trial's says it trades without the evidence the rules ask for."""
+    label = ("[LIVE DRY RUN · nothing sent to Kite]" if dry_run else
+             "[LIVE · real-money trial, not approved by evidence]" if trial else "[LIVE]")
     return "\n".join([f"<b>{label} {escape(title)}</b>", "", *(escape(line) for line in lines)])
 
 
