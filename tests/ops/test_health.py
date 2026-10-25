@@ -166,7 +166,8 @@ def test_a_changed_internet_address_is_an_alert_while_live_trading_is_on():
     assert levels(health.address_checks(settings, lambda: None)) == {"internet address": INFO}
 
 
-def test_a_real_money_trial_is_watched_while_live_trading_is_on():
+def test_a_real_money_trial_is_watched_while_live_trading_is_on(monkeypatch):
+    from trader.execution import live as live_jobs
     from trader.execution.live import Override
     settings = replace(load_settings(env={}), live_enabled=True, live_capital=300_000)
     trial = Override("B1F", date(2026, 10, 26), date(2027, 1, 24), 300_000.0, "I chose to trade it before it passed.")
@@ -181,7 +182,8 @@ def test_a_real_money_trial_is_watched_while_live_trading_is_on():
     assert levels(ended) == {"real-money trial": WARN} and "ended on 2027-01-24" in ended[0].detail
     broken = replace(trial, problem="config/overrides.toml [B1F]: max_capital must be an amount above zero")
     assert levels(health.trial_money_checks(settings, on(date(2026, 11, 2)), [broken])) == {"real-money trial": ALERT}
-    assert health.trial_money_checks(settings, on(date(2026, 11, 2))) == []  # the repository's file: no trial
+    monkeypatch.setattr(live_jobs, "load_overrides", lambda: (trial,))  # what config/overrides.toml holds, read by default
+    assert levels(health.trial_money_checks(settings, on(date(2026, 11, 2)))) == {"real-money trial": INFO}
 
 
 def test_the_live_dry_run_is_watched_with_warnings_only(tmp_path, monkeypatch):

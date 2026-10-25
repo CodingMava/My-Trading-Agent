@@ -6,7 +6,12 @@ materiality.
     python -m trader.research.news collect     # fetch NSE's feeds; scheduled every 15 minutes
     python -m trader.research.news status      # what was collected, and every gap in it
     python -m trader.research.news backfill --from 2026-10-01 --to 2026-10-14   # whole days from NSE's API
-    python -m trader.research.news tag-ai      # optional: AI tags for untagged announcements ([ai] in settings)
+    python -m trader.research.news tag-ai      # optional: AI tags for the news about your trades' stocks ([ai] in settings)
+    python -m trader.research.news tag-ai --all   # AI tags for any untagged announcement, oldest first
+    python -m trader.research.news trades      # the last 30 days' news about the stocks in your trades, with its tags
+
+The stocks in your trades are paper trial 1's entries of the last 60 days and what the live account and its dry run
+hold, read from their records; nothing here goes back to them, and no tag changes a trade or a trade message.
 
 NSE's announcement feed keeps only its latest items, so it is read every 15 minutes, as a feed reader
 would. A gap can't hide: when the feed's oldest item is newer than the newest one stored, items in
@@ -32,6 +37,7 @@ import re
 import sqlite3
 import time
 import xml.etree.ElementTree as ET
+from contextlib import closing
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -56,6 +62,10 @@ API_HOME = "https://www.nseindia.com/"
 API_PAGE = "https://www.nseindia.com/companies-listing/corporate-filings-announcements"
 API_URL = "https://www.nseindia.com/api/corporate-announcements?index=equities&from_date={day}&to_date={day}"
 BACKFILL_DAYS = 14  # each collection checks this many days back for days not yet seen whole
+TRADE_WINDOW = timedelta(days=60)  # a trial entry's news stays of interest this long (E2 holds 40 sessions)
+TRADE_NEWS_DAYS = 30  # how far back `trades` shows the news
+# Where your trades are recorded (read-only here): paper trial 1's ledger, the live account and its dry run.
+TRADE_RECORDS = {"trial": "state/trial1.db", "live": "state/live.db", "dry run": "state/live-dryrun/live.db"}
 RULES_TAGGER = "rules-v2"
 EVENTS = ("results", "dividend", "corporate action", "deal", "fund raising", "order win", "rating", "management",
           "regulatory", "investor meeting", "board meeting", "routine", "other")
@@ -293,9 +303,14 @@ class NewsStore:
                               [(name, symbol, at.isoformat()) for name, symbol in mapping.items()])
         self.conn.execute("COMMIT")
 
-    def untagged(self, tagger: str, limit: int) -> list[sqlite3.Row]:
-        return self.conn.execute("SELECT * FROM announcements WHERE id NOT IN (SELECT announcement FROM tags WHERE tagger = ?) "
-                                 "ORDER BY id LIMIT ?", (tagger, limit)).fetchall()
+    def untagged(self, tagger: str, limit: int, symbols: list[str] | None = None) -> list[sqlite3.Row]:
+        """Announcements this tagger hasn't tagged: the oldest first, or only `symbols`' and the newest first."""
+        if symbols is None:
+            return self.conn.execute("SELECT * FROM announcements WHERE id NOT IN (SELECT announcement FROM tags "
+                                     "WHERE tagger = ?) ORDER BY id LIMIT ?", (tagger, limit)).fetchall()
+        return self.conn.execute(f"SELECT * FROM announcements WHERE symbol IN ({','.join('?' * len(symbols))}) AND id NOT IN "
+                                 "(SELECT announcement FROM tags WHERE tagger = ?) ORDER BY published DESC, id DESC LIMIT ?",
+                                 (*symbols, tagger, limit)).fetchall()
 
     def table(self, name: str) -> pd.DataFrame:
         if name not in {"announcements", "fetches", "tags", "companies", "coverage"}:
@@ -432,11 +447,34 @@ class GeminiTagger:
         return json.loads(response.json()["candidates"][0]["content"]["parts"][0]["text"])
 
 
-def tag_with_ai(store: NewsStore, tagger, now: datetime, limit: int = 50) -> tuple[int, int]:
-    """AI tags for up to `limit` announcements this tagger hasn't tagged; returns (tagged, refused). A refused
-    answer stores nothing, so the announcement stays untagged rather than tagged wrongly."""
+def trade_symbols(today: date, root: Path = ROOT) -> list[str]:
+    """The stocks in your trades (NSE symbols): paper trial 1's entries of the last TRADE_WINDOW, and what the live
+    account and its dry run hold. Their records are only read; a record not there yet adds nothing."""
+    queries = {"trial": ("SELECT sid FROM decisions WHERE status = 'bought' AND entry_date >= ?",
+                         ((today - TRADE_WINDOW).isoformat(),)),
+               "live": ("SELECT symbol FROM live_positions", ()), "dry run": ("SELECT symbol FROM live_positions", ())}
+    found = set()
+    for name, (query, args) in queries.items():
+        path = root / TRADE_RECORDS[name]
+        if not path.is_file():
+            continue
+        try:
+            with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as conn:
+                found |= {row[0].removesuffix(".NS") for row in conn.execute(query, args)}
+        except sqlite3.DatabaseError as exc:  # e.g. a ledger made before that table existed
+            log.warning("Couldn't read the %s records for the trades' news: %s", name, exc)
+    return sorted(found)
+
+
+def tag_with_ai(store: NewsStore, tagger, now: datetime, limit: int = 50,
+                symbols: list[str] | None = None) -> tuple[int, int]:
+    """AI tags for up to `limit` announcements this tagger hasn't tagged (only `symbols`' when given, the newest
+    first); returns (tagged, refused). A refused answer stores nothing, so the announcement stays untagged rather
+    than tagged wrongly."""
     tagged = refused = 0
-    for row in store.untagged(tagger.name, limit):
+    if symbols == []:  # no trades, so no news of theirs to tag
+        return tagged, refused
+    for row in store.untagged(tagger.name, limit, symbols):
         try:
             tags = validate_tags(tagger.ask(row["company"], row["subject"]))
         except (TagError, ValueError, KeyError, IndexError, TypeError, requests.RequestException) as exc:
@@ -446,6 +484,33 @@ def tag_with_ai(store: NewsStore, tagger, now: datetime, limit: int = 50) -> tup
         store.add_tag(row["id"], tagger.name, tags.event, tags.sentiment, tags.materiality, now)
         tagged += 1
     return tagged, refused
+
+
+MOOD = {-1: "negative", 0: "neutral", 1: "positive"}
+
+
+def trades_text(store: NewsStore, symbols: list[str], now: datetime, ai_tagger: str) -> str:
+    """The last TRADE_NEWS_DAYS of announcements about the stocks in your trades, each with its rules tag and, once
+    `ai_tagger` has tagged it, the AI's event, likely effect and materiality. For research: it changes no trade."""
+    head = "News about the stocks in your trades (research only: it never changes a trade or a trade message)"
+    if not symbols:
+        return head + "\nNo stocks in your trades right now."
+    since = (now - timedelta(days=TRADE_NEWS_DAYS)).isoformat()
+    rows = store.conn.execute(
+        "SELECT a.published, a.symbol, a.subject, r.event AS rule, ai.event AS ai_event, ai.sentiment, ai.materiality "
+        "FROM announcements a LEFT JOIN tags r ON r.announcement = a.id AND r.tagger = ? "
+        "LEFT JOIN tags ai ON ai.announcement = a.id AND ai.tagger = ? "
+        f"WHERE a.symbol IN ({','.join('?' * len(symbols))}) AND a.published >= ? ORDER BY a.published DESC",
+        (RULES_TAGGER, ai_tagger, *symbols, since)).fetchall()
+    lines = [head, f"Stocks: {', '.join(symbols)}"]
+    if not rows:
+        return "\n".join(lines + [f"No announcements about them in the last {TRADE_NEWS_DAYS} days."])
+    for row in rows:
+        ai = (f"AI: {row['ai_event']}, {MOOD[row['sentiment']]}, {row['materiality']} materiality" if row["ai_event"]
+              else "AI: not tagged yet (python -m trader.research.news tag-ai)")
+        lines.append(f"{row['published'][:16].replace('T', ' ')}  {row['symbol']}  {row['subject'][:100]}\n"
+                     f"    rules: {row['rule']} | {ai}")
+    return "\n".join(lines)
 
 
 def news_events(store: NewsStore, start: date, end: date, tagger: str = RULES_TAGGER) -> pd.DataFrame:
@@ -481,7 +546,8 @@ def status_text(store: NewsStore, now: datetime) -> str:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="NSE announcements: collect, tag, and report coverage (research only).")
-    parser.add_argument("command", choices=["collect", "status", "tag-ai", "backfill"])
+    parser.add_argument("command", choices=["collect", "status", "tag-ai", "trades", "backfill"])
+    parser.add_argument("--all", action="store_true", help="tag-ai: any untagged announcement, not only your trades' news")
     parser.add_argument("--from", dest="start", type=date.fromisoformat, help="backfill: first day (YYYY-MM-DD)")
     parser.add_argument("--to", dest="end", type=date.fromisoformat, help="backfill: last day (default: today)")
     args = parser.parse_args(argv)
@@ -517,9 +583,14 @@ def main(argv: list[str] | None = None) -> None:
     if args.command == "tag-ai":
         if not settings.ai_enabled:
             raise SystemExit("AI tagging is off: set [ai] enabled = true and a new GEMINI_API_KEY in .env first.")
+        symbols = None if args.all else trade_symbols(now.date(), ROOT)
         tagged, refused = tag_with_ai(store, GeminiTagger(settings.gemini_api_key.reveal(), settings.ai_model,
-                                                          timeout=settings.ai_timeout_seconds), now)
-        print(f"{tagged} tagged, {refused} refused")
+                                                          timeout=settings.ai_timeout_seconds), now, symbols=symbols)
+        print(f"{tagged} tagged, {refused} refused"
+              + ("" if symbols is None else f" (the news of your trades' stocks: {', '.join(symbols) or 'none'})"))
+        return
+    if args.command == "trades":
+        print(trades_text(store, trade_symbols(now.date(), ROOT), now, f"gemini:{settings.ai_model}"))
         return
     print(status_text(store, now))
 

@@ -141,6 +141,49 @@ def test_ai_tags_are_stored_once_and_bad_answers_are_refused(tmp_path):
     assert len(ai) == 3 and list(by_time["event"]) == ["dividend", "fund raising", "dividend"]
 
 
+def records(root, trial=(), live=(), dry_run=(), broken=False):
+    """Trade records as the trial and the live jobs keep them, with only the columns the news layer reads."""
+    for path, table, rows in ((root / "state" / "trial1.db", "decisions (sid TEXT, entry_date TEXT, status TEXT)", trial),
+                              (root / "state" / "live.db", "live_positions (symbol TEXT)", live),
+                              (root / "state" / "live-dryrun" / "live.db", "live_positions (symbol TEXT)", dry_run)):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(path) as conn:
+            if not (broken and path.name == "trial1.db"):
+                conn.execute(f"CREATE TABLE {table}")
+            if rows:
+                conn.executemany(f"INSERT INTO {table.split()[0]} VALUES ({','.join('?' * len(rows[0]))})", rows)
+        conn.close()
+
+
+def test_the_stocks_in_your_trades_come_from_their_records(tmp_path, caplog):
+    assert news.trade_symbols(NOW.date(), tmp_path) == []  # no records yet
+    records(tmp_path, trial=[("INFY", "2026-10-01", "bought"), ("WIPRO", "2026-07-01", "bought"),
+                             ("HDFCBANK", "2026-10-09", "locked at its upper band")],
+            live=[("TCS.NS",)], dry_run=[("INFY.NS",), ("M&M.NS",)])
+    assert news.trade_symbols(NOW.date(), tmp_path) == ["INFY", "M&M", "TCS"]  # WIPRO's entry is too old
+    records(tmp_path / "older", live=[("TCS.NS",)], broken=True)  # a ledger without the table yet
+    with caplog.at_level(logging.WARNING):
+        assert news.trade_symbols(NOW.date(), tmp_path / "older") == ["TCS"]
+    assert "Couldn't read the trial records" in caplog.text
+
+
+def test_ai_tags_only_your_trades_news_newest_first_and_the_report_shows_them(tmp_path):
+    store = NewsStore(tmp_path / "news.db")
+    collect(store, FakeNSE(rss(announcement("TCS", "12-Oct-2026 09:15:00"), announcement("INFY", "12-Oct-2026 09:30:00"),
+                               announcement("WIPRO", "12-Oct-2026 09:45:00"))), NOW)
+    model = FakeModel([{"event": "fund raising", "sentiment": 1, "materiality": "high"}] * 3)
+    assert tag_with_ai(store, model, NOW, symbols=[]) == (0, 0) and model.asked == []  # no trades: nothing asked
+    assert tag_with_ai(store, model, NOW, symbols=["INFY", "TCS"]) == (3, 0)
+    assert model.asked == ["INFY Limited", "TCS Limited", "Tata Consultancy Services Limited"]  # newest first; not WIPRO
+    assert news.trades_text(store, [], NOW, "fake:model").endswith("No stocks in your trades right now.")
+    text = news.trades_text(store, ["INFY", "WIPRO"], NOW, "fake:model")
+    assert "Stocks: INFY, WIPRO" in text and "research only" in text
+    assert "INFY  has informed the Exchange about Board Meeting" in text
+    assert "rules: fund raising | AI: fund raising, positive, high materiality" in text  # INFY: tagged
+    assert "rules: fund raising | AI: not tagged yet" in text  # WIPRO: not one of the trades when the AI was asked
+    assert "No announcements about them" in news.trades_text(store, ["HDFCBANK"], NOW, "fake:model")
+
+
 def test_the_gemini_request_keeps_the_key_out_of_the_url():
     class FakeGoogle:
         def post(self, url, json=None, timeout=None, headers=None):
@@ -196,6 +239,14 @@ def test_the_command(tmp_path, monkeypatch, capsys):
     assert "0 announcements" in capsys.readouterr().out
     with pytest.raises(SystemExit, match="AI tagging is off"):
         news.main(["tag-ai"])
+    news.main(["trades"])
+    assert "No stocks in your trades right now." in capsys.readouterr().out
+    monkeypatch.setattr(news, "load_settings", lambda: replace(off, ai_enabled=True))
+    monkeypatch.setattr(news, "GeminiTagger", lambda key, model, timeout: FakeModel([]))
+    news.main(["tag-ai"])
+    assert "0 tagged, 0 refused (the news of your trades' stocks: none)" in capsys.readouterr().out
+    news.main(["tag-ai", "--all"])
+    assert capsys.readouterr().out.strip() == "0 tagged, 0 refused"
     assert Path(news.__file__).name == "news.py"
 
 

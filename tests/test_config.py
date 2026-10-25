@@ -34,8 +34,17 @@ def test_ai_needs_the_flag_and_a_key(tmp_path):
     assert enabled.ai_enabled and enabled.ai_model == "some-model"
 
 
-def test_ai_is_off_in_the_repository_config():
-    assert not load_settings(env={"GEMINI_API_KEY": "k"}).ai_enabled
+def test_ai_stays_off_unless_turned_on_with_a_key_and_a_supported_provider(tmp_path):
+    """The AI rules, whatever this PC's own config/settings.toml says. (AI only tags news for research; a test in
+    tests/research keeps trading code from reading it.)"""
+    config = tmp_path / "settings.toml"
+    config.write_text("", encoding="utf-8")
+    assert not load_settings(env={"GEMINI_API_KEY": "k"}, settings_file=config).ai_enabled  # off by default
+    config.write_text("[ai]\nenabled = false\n", encoding="utf-8")
+    assert not load_settings(env={"GEMINI_API_KEY": "k"}, settings_file=config).ai_enabled
+    config.write_text('[ai]\nenabled = true\nprovider = "someone-else"\n', encoding="utf-8")
+    unsupported = load_settings(env={"GEMINI_API_KEY": "k"}, settings_file=config)
+    assert not unsupported.ai_enabled and any("not supported" in w for w in unsupported.warnings)
 
 
 def test_data_provider_settings(tmp_path):
