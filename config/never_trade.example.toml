@@ -1,0 +1,7 @@
+# Stocks you hold yourself, which the live jobs (and the live dry run) never buy. Copy this file to
+# config/never_trade.toml (git-ignored: your holdings stay off GitHub) and list NSE symbols as Kite shows them.
+# Paper trading and the forward tests are unchanged: paper trial 1 may still pick these stocks on paper, and
+# the live account then skips them. The bot never sells your own shares either way: it sells only what it
+# bought itself.
+
+stocks = ["EXAMPLE1", "EXAMPLE2"]

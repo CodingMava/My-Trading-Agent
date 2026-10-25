@@ -13,6 +13,8 @@ __pycache__/
 !.env.example
 /.kite_session.json
 .streamlit/secrets.toml
+# Private: the stocks you hold yourself, which the live jobs never trade (copy config/never_trade.example.toml)
+/config/never_trade.toml
 
 # Local market data (Yahoo data must not be redistributed), logs, generated reports.
 # Anchored to the repo root so packages such as trader/data/ are still tracked.

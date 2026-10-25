@@ -98,6 +98,16 @@ WINDOWS = {"evening": (time(16, 0), time(23, 59)), "morning": (time(9, 15), time
 RETRIES = {"morning": "The scheduled morning job tries again every 15 minutes until 15:00; repeats of this are only logged today."}
 OVERRIDES_FILE = CONFIG_DIR / "overrides.toml"
 MAX_TRIAL_DAYS = 92  # a real-money trial is decided for about three months at most, then renewed in writing or ended
+NEVER_TRADE_FILE = CONFIG_DIR / "never_trade.toml"  # git-ignored: the stocks you hold yourself
+
+
+def load_never_trade(path: Path = NEVER_TRADE_FILE) -> frozenset[str]:
+    """The stocks you hold yourself (config/never_trade.toml), named as paper trading names them: never bought live."""
+    if not path.is_file():
+        return frozenset()
+    with open(path, "rb") as fh:
+        names = [str(stock).strip().upper() for stock in tomllib.load(fh).get("stocks", [])]
+    return frozenset(name.removesuffix(".NS") + ".NS" for name in names if name)
 
 
 @dataclass(frozen=True)
@@ -167,6 +177,7 @@ class Live:
     limits: RiskLimits = field(default_factory=load_limits)  # config/risk.toml: every live entry is checked against it
     sectors: dict[str, str] = field(default_factory=load_sectors)
     overrides: tuple[Override, ...] = ()  # real-money trials you decided on (config/overrides.toml); never a dry run's
+    never_trade: frozenset[str] = frozenset()  # the stocks you hold yourself (config/never_trade.toml): never bought
 
     def __post_init__(self):
         if self.as_live and not self.dry_run:
@@ -380,6 +391,8 @@ def entry_refusal(live: Live, order: LiveOrder, capital: float, held: dict, entr
     """Why an entry isn't sent (empty when it is), and its live quantity: the paper order scaled to the live capital."""
     quantity = int(order.paper_quantity * capital / order.paper_capital + 1e-9)
     refused = (exits_only(live, order.strategy_id) if order.strategy_id not in allowed
+               else "you hold it yourself, so the bot never buys it (config/never_trade.toml)"
+               if order.symbol in live.never_trade
                else "the kill switch is engaged" if live.kill_switch.engaged
                else "the live account already holds it" if order.symbol in held
                else f"{order.paper_quantity:.4g} paper shares scale to none (Rs {order.reference_price:,.2f} a share)"
@@ -521,6 +534,9 @@ def status_text(live: Live) -> str:
                      f"Rs {o.max_capital:,.0f}: NOT approved by evidence; you chose to trade it (config/overrides.toml)"
                      if o.strategy_id in in_force else
                      f"Real-money trial not opening trades: {override_problem(o, live.clock().date(), known_strategies(live), live.settings.live_capital)}")
+    if live.never_trade:
+        lines.append("Never bought (you hold them yourself): "
+                     + ", ".join(sorted(symbol.removesuffix(".NS") for symbol in live.never_trade)))
     if live.kill_switch.engaged:
         lines.append(f"Kill switch ENGAGED: {live.kill_switch.reason}")
     held = live.store.positions()
@@ -556,7 +572,7 @@ def dry_run_waiting(directory: Path | None = None) -> bool:
 
 def dry_run(settings: Settings, paper: PaperStore, calendar: MarketCalendar, notifier, as_live: set[str],
             capital: float, clock: Callable[[], datetime] | None = None, directory: Path | None = None,
-            prices=None) -> Live:
+            prices=None, never_trade: frozenset[str] = frozenset()) -> Live:
     """The live jobs on a simulated account (trader/execution/simkite.py) in `directory`. Prices come from
     `prices(tradingsymbols)`, by default the real Kite's quotes with today's login; nothing else reaches Kite."""
     clock, directory = clock or (lambda: datetime.now(IST)), directory or DRY_RUN_DIR
@@ -572,7 +588,7 @@ def dry_run(settings: Settings, paper: PaperStore, calendar: MarketCalendar, not
                 StrategyRegistry.load(), KillSwitch(directory / "KILL_SWITCH"), calendar, notifier,
                 connect=lambda: KiteOrders("dry-run", "dry-run", http=account), clock=clock,
                 steps=load_gate_config().live, sources={TRIAL: lambda today, held: trial_orders(today, held, calendar)},
-                as_live=frozenset(as_live), dry_run=True)
+                as_live=frozenset(as_live), dry_run=True, never_trade=never_trade)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -601,7 +617,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.dry_run:
         live_db = DRY_RUN_DIR / "live.db"
         live = dry_run(settings, paper, calendar, Console(notifier_from_settings(settings) if args.notify else None),
-                       set(args.as_live), args.capital)
+                       set(args.as_live), args.capital, never_trade=load_never_trade())
         unknown = live.as_live - set(live.catalog) - set(live.sources)
         if unknown:
             raise SystemExit(f"No such strategy to treat as live: {', '.join(sorted(unknown))}")
@@ -610,7 +626,8 @@ def main(argv: list[str] | None = None) -> None:
         store = LiveStore(live_db if live_db.exists() or args.job in JOBS else ":memory:")
         live = Live(settings, paper, store, StrategyRegistry.load(), KillSwitch(), calendar, notifier_from_settings(settings),
                     connect=lambda: from_session(settings), steps=load_gate_config().live,
-                    sources={TRIAL: lambda today, held: trial_orders(today, held, calendar)}, overrides=load_overrides())
+                    sources={TRIAL: lambda today, held: trial_orders(today, held, calendar)}, overrides=load_overrides(),
+                    never_trade=load_never_trade())
     if args.job == "status":
         print(status_text(live))
     elif args.job == "check":

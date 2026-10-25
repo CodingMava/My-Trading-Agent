@@ -239,6 +239,12 @@ While it runs: a Kite login every trading day (`/login`, before 09:20 if you can
 15:00), and read every `[LIVE · real-money trial, not approved by evidence]` message. The 21:00 health check
 alerts if the override is malformed and warns two weeks before `until`.
 
+Your own stocks: the live jobs (and the dry run) never buy a stock listed in `config/never_trade.toml`
+(git-ignored, so your holdings stay off GitHub; format in `config/never_trade.example.toml`). The bot never sells
+your own shares anyway, only what it bought, but a stock it never buys can't mix with yours (a sale of shares you
+both hold counts your oldest shares as sold, for tax). Paper trial 1 may still pick them on paper; the live
+account then skips them, which is a difference from paper.
+
 How it stops:
 
 - **By itself:** a day 2% down stops that evening's entries; a 10% fall from its best engages the kill switch,

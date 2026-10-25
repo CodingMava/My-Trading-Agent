@@ -16,8 +16,8 @@ from trader.core.models import Position
 from trader.data.kite import KiteAuthError
 from trader.execution import broker, live as live_jobs
 from trader.execution.kite_orders import KiteOrders
-from trader.execution.live import (Live, Override, capital_for_today, check, load_overrides, locks, run, status_text,
-                                   step_drawdown, track)
+from trader.execution.live import (Live, Override, capital_for_today, check, load_never_trade, load_overrides, locks, run,
+                                   status_text, step_drawdown, track)
 from trader.execution.oms import LiveStore
 from trader.execution.sources import LiveOrder
 from trader.execution.store import PaperStore
@@ -319,6 +319,20 @@ def test_when_a_trial_ends_or_a_status_falls_its_live_trades_only_exit(tmp_path)
     code, messages = job(live, clock, "evening", wed, 18, 30)
     assert "BBB.NS: entry not sent: TS is no longer LIVE_SMALL or LIVE: its live trades only exit" in messages[0]
     assert "AAA.NS: sell 100 at the open (SENT)" in messages[0]
+
+
+def test_the_stocks_you_hold_yourself_are_never_bought(tmp_path):
+    path = tmp_path / "never_trade.toml"
+    assert load_never_trade(path) == frozenset()
+    path.write_text('stocks = ["mine", "OWNED.NS", " KEPT ", ""]\n', encoding="utf-8")
+    assert load_never_trade(path) == {"MINE.NS", "OWNED.NS", "KEPT.NS"}
+    sell = LiveOrder("TS", "TS AAA.NS exit", "AAA.NS", "sell", 0, 1_000_000, 0.0)
+    live, kite, clock = holding_aaa(tmp_path / "live", {date(2026, 8, 12): [entry("BBB.NS"), entry("CCC.NS"), sell]})
+    live.never_trade = frozenset({"AAA.NS", "BBB.NS"})  # AAA was bought before it was listed: its exit still goes
+    code, messages = job(live, clock, "evening", date(2026, 8, 12), 18, 30)
+    assert "BBB.NS: entry not sent: you hold it yourself, so the bot never buys it" in messages[0]
+    assert "CCC.NS: buy 100 at the open (SENT)" in messages[0] and "AAA.NS: sell 100 at the open (SENT)" in messages[0]
+    assert "Never bought (you hold them yourself): AAA, BBB" in status_text(live)
 
 
 def test_the_morning_job_handles_stops_that_cant_wait(tmp_path):
