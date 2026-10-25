@@ -54,6 +54,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import requests
 
 from trader.config import CONFIG_DIR, ROOT, Settings, load_settings
 from trader.core.models import PortfolioState, Position, TradeIntent
@@ -99,6 +100,22 @@ RETRIES = {"morning": "The scheduled morning job tries again every 15 minutes un
 OVERRIDES_FILE = CONFIG_DIR / "overrides.toml"
 MAX_TRIAL_DAYS = 92  # a real-money trial is decided for about three months at most, then renewed in writing or ended
 NEVER_TRADE_FILE = CONFIG_DIR / "never_trade.toml"  # git-ignored: the stocks you hold yourself
+# Two independent services that answer with the caller's internet address as plain text.
+ADDRESS_SERVICES = ("https://api.ipify.org", "https://checkip.amazonaws.com")
+ADDRESS = re.compile(r"[0-9]{1,3}(\.[0-9]{1,3}){3}|[0-9a-fA-F:]*:[0-9a-fA-F:]+")
+
+
+def public_ip(http=requests, timeout: float = 10) -> str | None:
+    """This PC's address on the internet, as the first service that answers sees it; None if none does."""
+    for url in ADDRESS_SERVICES:
+        try:
+            answer = http.get(url, timeout=timeout)
+        except requests.RequestException:
+            continue
+        text = answer.text.strip()
+        if answer.status_code == 200 and ADDRESS.fullmatch(text):
+            return text
+    return None
 
 
 def load_never_trade(path: Path = NEVER_TRADE_FILE) -> frozenset[str]:
@@ -178,6 +195,7 @@ class Live:
     sectors: dict[str, str] = field(default_factory=load_sectors)
     overrides: tuple[Override, ...] = ()  # real-money trials you decided on (config/overrides.toml); never a dry run's
     never_trade: frozenset[str] = frozenset()  # the stocks you hold yourself (config/never_trade.toml): never bought
+    address: Callable[[], str | None] | None = None  # this PC's internet address (public_ip); None: not checked
 
     def __post_init__(self):
         if self.as_live and not self.dry_run:
@@ -214,6 +232,18 @@ def say(live: Live, title: str, lines: list[str]) -> None:
     live.notifier.send(templates.live_update(title=title, lines=lines, dry_run=live.dry_run, trial=bool(live.overrides)))
 
 
+def address_moved(live: Live) -> str:
+    """Why nothing may be sent from this PC's internet address (empty when it may, or when it can't be told): Kite
+    takes orders only from the address registered in its developer console (KITE_STATIC_IP in .env)."""
+    registered = live.settings.kite_static_ip
+    seen = live.address() if live.address is not None and registered else None
+    if seen is None or seen == registered:
+        return ""
+    return (f"This PC's internet address is now {seen}, but Kite has {registered} registered, and it refuses orders "
+            "from any other address. Nothing was sent, stops included. Put the new address in Kite's developer "
+            "console and in KITE_STATIC_IP in .env; the next job then sends what is waiting.")
+
+
 def failed(live: Live, job: str, today: date, kind: str, detail: str, trace: bool = False) -> int:
     """A job that couldn't finish: reported the first time today for this kind of failure, logged every time."""
     log.error("Live %s failed: %s", job, detail, exc_info=trace)
@@ -245,6 +275,9 @@ def run(job: str, live: Live, backup_dir=None) -> int:
         return 0
     today = live.clock().date()
     try:
+        moved = address_moved(live)
+        if moved:  # Kite would refuse every request, and a refused stop isn't sent again: send nothing yet
+            return failed(live, job, today, "address", moved)
         oms = OMS(live.store, live.connect(), live.clock)
         news = oms.refresh(today)
         problems = oms.reconcile()
@@ -627,7 +660,7 @@ def main(argv: list[str] | None = None) -> None:
         live = Live(settings, paper, store, StrategyRegistry.load(), KillSwitch(), calendar, notifier_from_settings(settings),
                     connect=lambda: from_session(settings), steps=load_gate_config().live,
                     sources={TRIAL: lambda today, held: trial_orders(today, held, calendar)}, overrides=load_overrides(),
-                    never_trade=load_never_trade())
+                    never_trade=load_never_trade(), address=public_ip)
     if args.job == "status":
         print(status_text(live))
     elif args.job == "check":
@@ -635,6 +668,7 @@ def main(argv: list[str] | None = None) -> None:
             seen, problems = check(live.connect(), live.store)
         except KiteAuthError as exc:
             raise SystemExit(f"Kite: {exc}") from None
+        problems += [moved] if (moved := address_moved(live)) else []
         print("\n".join(seen))
         print("\n".join(f"PROBLEM: {p}" for p in problems) or "Every field the order system relies on is there; "
               "the account holds every share the system believes it holds.")

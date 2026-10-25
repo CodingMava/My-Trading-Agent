@@ -222,7 +222,10 @@ limit below is close to that deepest fall, so a normal bad stretch can stop the 
 To start it, in this order:
 
 1. **A static IP**, registered in the Kite developer console (your app's settings): Kite refuses orders from
-   any other address.
+   any other address. Put the same address in `KITE_STATIC_IP` in `.env`. While live trading is on, every
+   live job first checks this PC's internet address: if it differs, it sends nothing (stops included, so none is
+   refused for good), says so once a day, and the 21:00 health check alerts. Update both places and the next
+   job sends what is waiting. With an address that changes now and then, this alarm is what keeps you safe.
 2. **DDPI with Zerodha** (Console, with an e-sign), so the system can sell without a TPIN every time.
 3. **The money in your Zerodha account**: at least the capital you'll write down (about Rs 3,00,000 for B1F's
    positions to be whole shares).

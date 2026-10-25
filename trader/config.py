@@ -85,6 +85,7 @@ class Settings:
     live_database: str = "state/live.db"
     live_max_orders_per_day: int = 10
     live_max_order_fraction: float = 0.25
+    kite_static_ip: str = ""  # the address registered in Kite's developer console: live orders go out only from it
     news_enabled: bool = False  # collect NSE announcements for research (Phase 9)
     news_database: str = "state/news.db"
     warnings: tuple[str, ...] = ()
@@ -157,6 +158,7 @@ def load_settings(env: dict[str, str] | None = None, settings_file: Path = SETTI
         live_database=str(live.get("database", "state/live.db")),
         live_max_orders_per_day=int(live.get("max_orders_per_day", 10)),
         live_max_order_fraction=float(live.get("max_order_fraction", 0.25)),
+        kite_static_ip=(env.get("KITE_STATIC_IP") or "").strip(),
         news_enabled=bool(news.get("enabled", False)),
         news_database=str(news.get("database", "state/news.db")),
         warnings=tuple(warnings),

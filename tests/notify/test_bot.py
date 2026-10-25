@@ -165,7 +165,7 @@ def test_login_is_answered_even_when_the_records_cant_be_read(tmp_path):
 
 def test_a_live_trading_morning_without_a_login_gets_one_reminder(tmp_path):
     nse, session_file = load_calendars()["NSE"], tmp_path / "s.json"
-    off = load_settings(env={})
+    off = replace(load_settings(env={}), live_enabled=False)  # whatever this PC's config/settings.toml says
     on = replace(off, live_enabled=True)
     assert "Kite login needed" in login_reminder(on, nse, MONDAY_MORNING, session_file)
     assert login_reminder(off, nse, MONDAY_MORNING, session_file, dry_run=lambda: False) is None  # off: none needed

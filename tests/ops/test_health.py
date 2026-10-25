@@ -132,7 +132,7 @@ def test_dry_run_orders_kite_would_refuse_are_a_warning(tmp_path):
 
 
 def test_the_live_account_is_watched(tmp_path):
-    settings, no_login = load_settings(env={}), tmp_path / "session.json"
+    settings, no_login = replace(load_settings(env={}), live_enabled=False), tmp_path / "session.json"
     assert levels(live_checks(settings, None, EVENING, no_login)) == {"live trading": INFO}  # off
     assert levels(live_checks(replace(settings, live_enabled=True), None, EVENING, no_login)) == {"live login": WARN}
     store = LiveStore(tmp_path / "live.db")
@@ -153,6 +153,17 @@ def test_the_live_account_is_watched(tmp_path):
     everything = health_checks(None, NSE, StrategyRegistry([]), KillSwitch(tmp_path / "KILL"), settings, EVENING,
                                session_file=no_login, live_store=store)
     assert everything[0].name == "live unknown orders"  # worst first
+
+
+def test_a_changed_internet_address_is_an_alert_while_live_trading_is_on():
+    settings = replace(load_settings(env={}), live_enabled=True, kite_static_ip="198.51.100.7")
+    assert health.address_checks(replace(settings, live_enabled=False), lambda: "203.0.113.9") == []
+    assert health.address_checks(settings) == []  # the dashboard and Telegram commands don't look it up
+    assert levels(health.address_checks(replace(settings, kite_static_ip=""), lambda: "x")) == {"internet address": WARN}
+    assert levels(health.address_checks(settings, lambda: "198.51.100.7")) == {"internet address": OK}
+    moved = health.address_checks(settings, lambda: "203.0.113.9")
+    assert levels(moved) == {"internet address": ALERT} and "now 203.0.113.9, but Kite has 198.51.100.7" in moved[0].detail
+    assert levels(health.address_checks(settings, lambda: None)) == {"internet address": INFO}
 
 
 def test_a_real_money_trial_is_watched_while_live_trading_is_on():

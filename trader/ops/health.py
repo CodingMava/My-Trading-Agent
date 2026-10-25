@@ -236,6 +236,27 @@ def live_checks(settings, store: LiveStore | None, now: datetime, session_file: 
     return checks or [Health("live trading", INFO, "off: no real order has been sent; Indian orders are a dry run")]
 
 
+def address_checks(settings, address=None) -> list[Health]:
+    """While live trading is on: is this PC still at the internet address Kite has registered (KITE_STATIC_IP)? Kite
+    refuses orders from any other, so the live jobs then send nothing until it is updated. `address` looks it up
+    (trader.execution.live.public_ip, over the internet): only the scheduled check passes it, not the dashboard or
+    the Telegram commands."""
+    if not settings.live_enabled or address is None:
+        return []
+    registered = settings.kite_static_ip
+    if not registered:
+        return [Health("internet address", WARN, "KITE_STATIC_IP isn't set in .env: the live jobs can't tell when this "
+                                                 "PC's address changes, and Kite refuses orders from any other address")]
+    seen = address()
+    if seen is None:
+        return [Health("internet address", INFO, "couldn't look up this PC's internet address just now")]
+    if seen != registered:
+        return [Health("internet address", ALERT, f"this PC's internet address is now {seen}, but Kite has {registered} "
+                       "registered: put the new address in Kite's developer console and in KITE_STATIC_IP in .env, "
+                       "or the live jobs send nothing, stops included")]
+    return [Health("internet address", OK, f"{seen}, the address Kite has registered")]
+
+
 def trial_money_checks(settings, now: datetime, overrides=None) -> list[Health]:
     """Real-money trials (config/overrides.toml) while live trading is on: one that can't open trades, and one whose
     end is two weeks away or less (renew it in writing, or let it end)."""
@@ -524,7 +545,8 @@ def health_checks(store: PaperStore | None, calendar: MarketCalendar, registry: 
                   kill_switch: KillSwitch, settings, now: datetime, max_age_days: int = 365,
                   evidence_dir: Path = EVIDENCE_DIR, session_file: Path = SESSION_FILE,
                   backup_dir: Path | None = None, live_store: LiveStore | None = None,
-                  us_store: PaperStore | None = None, dry_run_store: LiveStore | None = None) -> list[Health]:
+                  us_store: PaperStore | None = None, dry_run_store: LiveStore | None = None,
+                  address=None) -> list[Health]:
     """Every check, worst first. `store` is None before the first daily run."""
     checks = [*run_checks(store, calendar, now), *safety_checks(store, kill_switch), unattended_record(store, now),
               dry_run_check(store, now.date()), *backup_check(store, backup_dir, now.date()),
@@ -532,7 +554,8 @@ def health_checks(store: PaperStore | None, calendar: MarketCalendar, registry: 
               *us_checks(us_store, now, backup_dir),
               *strategy_checks(registry, now.date(), max_age_days, evidence_dir), calendar_checks(calendar, now.date()),
               data_checks(settings, now, session_file), *live_checks(settings, live_store, now, session_file),
-              *trial_money_checks(settings, now), *dry_run_live_checks(dry_run_store, settings, now)]
+              *trial_money_checks(settings, now), *address_checks(settings, address),
+              *dry_run_live_checks(dry_run_store, settings, now)]
     order = (ALERT, WARN, INFO, OK)
     return sorted(checks, key=lambda c: order.index(c.level))
 
@@ -559,13 +582,15 @@ def main(argv: list[str] | None = None, sleep=_sleep) -> None:
         log.info("The 21:00 check is starting late (the PC was asleep or off): waiting %d minutes for the daily "
                  "run's own catch-up first", CATCH_UP_WAIT.total_seconds() // 60)
         sleep(CATCH_UP_WAIT.total_seconds())
+    from trader.execution.live import public_ip  # here: the live jobs import the daily run, which imports this module
+
     database = ROOT / settings.paper_database
     store = PaperStore(database, settings.paper_starting_capital) if database.exists() else None
     now = datetime.now(IST)
     checks = health_checks(store, load_calendars()["NSE"], StrategyRegistry.load(), KillSwitch(), settings, now,
                            load_gate_config().max_evidence_age_days, backup_dir=database.parent / "backups",
                            live_store=open_live_store(settings), us_store=open_us_store(settings),
-                           dry_run_store=open_dry_run_store())
+                           dry_run_store=open_dry_run_store(), address=public_ip)
     print(f"Health at {now:%Y-%m-%d %H:%M} IST")
     width = max(len(c.name) for c in checks)
     for check in checks:

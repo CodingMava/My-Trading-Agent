@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
 import pytest
+import requests
 
 from tests.execution.fake_kite import FakeKite, ok
 from tests.execution.test_paper_trader import SIGNAL_DAY, SPEC, FakeNotifier, make_trader
@@ -420,14 +421,25 @@ def test_a_time_exit_waits_while_its_stop_cant_be_deleted(tmp_path):
     assert (tmp_path / "backups" / "live-2026-08-11.db").exists()
 
 
-def test_the_command_line(tmp_path, monkeypatch, capsys):
+def command_line(tmp_path, monkeypatch, **changes):
+    """The command, apart from this PC's own setup: records in tmp_path, live off unless changed, no override, no
+    never-trade list, and no internet address looked up."""
+    settings = replace(load_settings(env={}), live_enabled=False, live_capital=0.0, **changes)
     monkeypatch.setattr(live_jobs, "ROOT", tmp_path)
     monkeypatch.setattr(live_jobs, "configure_logging", lambda **kwargs: None)  # not into the real logs/
     monkeypatch.setattr(live_jobs, "notifier_from_settings", lambda settings: FakeNotifier())
-    settings = load_settings()
+    monkeypatch.setattr(live_jobs, "load_settings", lambda: settings)
+    monkeypatch.setattr(live_jobs, "load_overrides", lambda: ())
+    monkeypatch.setattr(live_jobs, "load_never_trade", lambda: frozenset())
+    monkeypatch.setattr(live_jobs, "public_ip", lambda: pytest.fail("no internet address lookup expected"))
     PaperStore(tmp_path / settings.paper_database, settings.paper_starting_capital).close()
+    return settings
+
+
+def test_the_command_line(tmp_path, monkeypatch, capsys):
+    command_line(tmp_path, monkeypatch)
     live_jobs.main(["status"])
-    assert "Live trading: LOCKED" in capsys.readouterr().out  # the repository's settings: off
+    assert "Live trading: LOCKED" in capsys.readouterr().out  # off
     live_jobs.main(["track"])
     assert "live price" in capsys.readouterr().out
     assert not (tmp_path / "state" / "live.db").exists()  # looking leaves no live records behind
@@ -498,11 +510,7 @@ def test_the_read_only_check_holds_kites_answers_to_what_the_code_relies_on(tmp_
 
 
 def test_the_check_command(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(live_jobs, "ROOT", tmp_path)
-    monkeypatch.setattr(live_jobs, "configure_logging", lambda **kwargs: None)
-    monkeypatch.setattr(live_jobs, "notifier_from_settings", lambda settings: FakeNotifier())
-    settings = load_settings()
-    PaperStore(tmp_path / settings.paper_database, settings.paper_starting_capital).close()
+    command_line(tmp_path, monkeypatch, kite_static_ip="198.51.100.7")
 
     def no_login(settings):
         raise KiteAuthError("no valid Kite session today (run: python -m trader.data.kite login)")
@@ -512,9 +520,51 @@ def test_the_check_command(tmp_path, monkeypatch, capsys):
     kite = FakeKite()
     kite.prices = {"NIFTYBEES": 285.5}
     monkeypatch.setattr(live_jobs, "from_session", lambda settings: KiteOrders("key", "AT", http=kite, sleep=lambda s: None))
+    monkeypatch.setattr(live_jobs, "public_ip", lambda: "198.51.100.7")  # still at the registered address
     with pytest.raises(SystemExit) as finished:
         live_jobs.main(["check"])
     assert finished.value.code == 0 and "Every field the order system relies on is there" in capsys.readouterr().out
+    monkeypatch.setattr(live_jobs, "public_ip", lambda: "203.0.113.9")  # the provider gave this PC a new address
+    with pytest.raises(SystemExit) as finished:
+        live_jobs.main(["check"])
+    assert finished.value.code == 1 and "PROBLEM: This PC's internet address is now 203.0.113.9" in capsys.readouterr().out
+
+
+class Answer:
+    def __init__(self, status_code, text):
+        self.status_code, self.text = status_code, text
+
+
+def test_this_pcs_internet_address_and_kites_registered_one(tmp_path):
+    def asked(*answers):
+        queue = list(answers)
+
+        class Http:
+            @staticmethod
+            def get(url, timeout):
+                answer = queue.pop(0)
+                if isinstance(answer, Exception):
+                    raise answer
+                return answer
+        return Http
+    assert live_jobs.public_ip(asked(Answer(200, "203.0.113.9\n"))) == "203.0.113.9"
+    assert live_jobs.public_ip(asked(requests.ConnectionError("down"), Answer(200, "2001:db8::1"))) == "2001:db8::1"
+    assert live_jobs.public_ip(asked(Answer(503, "busy"), Answer(200, "<html>not an address</html>"))) is None
+
+    paper, live, kite, clock = setup(tmp_path)
+    live.settings = replace(live.settings, kite_static_ip="198.51.100.7")
+    live.store.save_position(Position("T1", "AAA.NS", 10, 100.0, 95.0, date(2026, 8, 11)))
+    live.store.add_fill(date(2026, 8, 11), "Eaaa", "T1", "AAA.NS", "buy", 10, 100.0)
+    kite.positions["net"].append({"tradingsymbol": "AAA", "exchange": "NSE", "product": "CNC", "quantity": 10})
+    kite.prices = {"AAA": 100.0}
+    live.address = lambda: "203.0.113.9"  # the address changed overnight
+    code, messages = job(live, clock, "morning", date(2026, 8, 11), 9, 20)
+    assert code == 1 and "This PC's internet address is now 203.0.113.9, but Kite has 198.51.100.7" in messages[0]
+    assert kite.calls == [] and kite.gtts == {}  # nothing asked of Kite, so no stop refused for good
+    assert job(live, clock, "morning", date(2026, 8, 11), 9, 35) == (1, [])  # told once a day
+    live.address = lambda: None  # the address can't be looked up: Kite decides
+    code, messages = job(live, clock, "morning", date(2026, 8, 11), 9, 50)
+    assert code == 0 and "AAA.NS: stop (SENT)" in messages[0]
 
 
 
