@@ -222,7 +222,9 @@ def my_ip_text(argument: str, env_file: Path = ENV_FILE, address: Callable[[], s
     if not argument:
         return escape(f"This PC's internet address is now {seen}, but .env has {registered or 'none'}.\n\n"
                       f"1. On developers.kite.trade, open your app and put {seen} as its IP address.\n"
-                      "2. Then send /myip done.")
+                      "2. Then send /myip done.\n\n"
+                      "Kite allows only one change a week. If you can't change it, that's OK: I'll send you each "
+                      "order to do by hand in the Kite app.")
     text = env_file.read_text(encoding="utf-8-sig") if env_file.is_file() else ""
     line = f"KITE_STATIC_IP={seen}"
     text = (STATIC_IP_LINE.sub(line, text, count=1) if STATIC_IP_LINE.search(text)

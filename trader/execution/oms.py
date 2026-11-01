@@ -7,6 +7,12 @@ was lost. A SENDING or UNKNOWN request is looked up at Kite before anything is s
 a GTT by its stock, trigger and quantity), so neither a crash nor a timeout can place an order twice. Each
 order's fill is recorded once, when Kite is done with it, and the system's holdings follow from the fills.
 The record of events and fills is append-only.
+
+While the bot can't send (Kite takes orders only from the internet address registered with it), each request is
+handed to you instead, recorded as HAND: you do it in the Kite app. Reading Kite works from any address, so each
+job looks for what you did (an order without a tag for the same stock and side, a sell GTT for the stock) and from
+then on follows it like the bot's own: its fill, its holding, its stop. A handed buy is never also sent by the bot,
+so nothing is bought twice; a handed stop or sale you haven't done goes out by itself once the bot can send.
 """
 from __future__ import annotations
 
@@ -51,6 +57,9 @@ CREATE TRIGGER IF NOT EXISTS live_fills_no_update BEFORE UPDATE ON live_fills BE
 CREATE TRIGGER IF NOT EXISTS live_fills_no_delete BEFORE DELETE ON live_fills BEGIN SELECT RAISE(ABORT, 'live fills are append-only'); END;
 """
 UNSETTLED = ("SENDING", "SENT", "TRIGGERED", "UNKNOWN")  # Kite may still act on these
+HAND = "HAND"  # handed to you to do in the Kite app, not yet seen done there
+PLAIN = {"entry": "buy", "exit": "sell", "time exit": "sell", "stop exit": "sell", "gap exit": "sell",
+         "stop": "stop-loss", "cancel stop": "stop-loss delete"}  # a request's purpose in everyday words
 ORDER_PURPOSES = ("entry", "exit", "time exit", "stop exit")
 GTT_GONE = ("deleted", "cancelled", "expired", "disabled", "rejected")
 STOP_IN_PATH = re.compile(r"GTT (S[0-9a-f]{19})>")
@@ -177,21 +186,40 @@ def _stop_tag(path: str) -> str:
 
 
 class OMS:
-    def __init__(self, store: LiveStore, kite: KiteOrders, clock):
+    def __init__(self, store: LiveStore, kite: KiteOrders, clock, by_hand: str = "", calendar=None):
+        """`by_hand`: why the bot can't send today (empty when it can); its requests are then handed to you, and
+        `handed` lists those to tell you about. `calendar` says when a handed order has had its day."""
         self.store, self.kite, self.clock = store, kite, clock
+        self.by_hand, self.calendar = by_hand, calendar
+        self.handed: list[broker.KiteRequest] = []
 
     # --- sending ------------------------------------------------------------------------------------
     def submit(self, session: date, strategy_id: str, request: broker.KiteRequest, stop_distance: float = 0.0,
                max_hold_days: int | None = None) -> str:
         """Send one request, at most once; returns its status. A request already on record is never sent again,
-        unless Kite has no trace of it after a crash or a lost answer."""
+        unless Kite has no trace of it after a crash or a lost answer. While the bot can't send, it is handed to
+        you instead (once a day until you've done it); a handed buy stays yours even once the bot can send."""
         row = self.store.order(request.tag)
-        if row is not None and (row["status"] not in ("SENDING", "UNKNOWN") or self._found(row)):
+        if row is not None and row["status"] == HAND:
+            if self._found_by_hand(row):
+                return self.store.order(request.tag)["status"]
+            if self.by_hand or row["purpose"] == "entry":
+                if self.by_hand and self.store.first_notice(session, f"hand {request.tag}"):
+                    self.handed.append(request)
+                return HAND
+            # a stop or a sale you haven't done: the bot sends it itself, now that it can
+        elif row is not None and (row["status"] not in ("SENDING", "UNKNOWN") or self._found(row)):
             return self.store.order(request.tag)["status"]
         problems = broker.problems(request)
         if problems:
             self.store.record(self.clock(), session, strategy_id, request, "REJECTED", "invalid: " + "; ".join(problems))
             return "REJECTED"
+        if self.by_hand:
+            self.store.record(self.clock(), session, strategy_id, request, HAND, self.by_hand,
+                              stop_distance=stop_distance, max_hold_days=max_hold_days)
+            self.store.first_notice(session, f"hand {request.tag}")
+            self.handed.append(request)
+            return HAND
         self.store.record(self.clock(), session, strategy_id, request, "SENDING", stop_distance=stop_distance,
                           max_hold_days=max_hold_days)  # on record before it leaves
         try:
@@ -248,13 +276,62 @@ class OMS:
                           **({"kite_id": kite_id} if kite_id else {}))
         return True
 
+    def _found_by_hand(self, row: sqlite3.Row) -> bool:
+        """Whether you've done a request handed to you; if so, it is followed from now on like the bot's own. An
+        order is yours when it has no tag, the same stock and side, and isn't already followed (nor the sell of a
+        GTT, which has no tag either); any quantity, since what filled is what's recorded. A stop is any sell GTT
+        on the stock. A deleted stop or a modified sell is looked for as after a lost answer."""
+        request = json.loads(row["request"])
+        method, path, params = request["method"], request["path"], request["params"]
+        if method != "POST":
+            return self._found(row)
+        gtts = self.kite.gtts()
+        followed = ({r["kite_id"] for r in self.store.orders()} | {r["child_id"] for r in self.store.orders()}
+                    | {str(order_id) for g in gtts for leg in g.get("orders") or ()
+                       if (order_id := ((leg.get("result") or {}).get("order_result") or {}).get("order_id"))})
+        if path.startswith("/orders/"):
+            match = next((o for o in self.kite.orders() if not o.get("tag") and o["order_id"] not in followed
+                          and o["tradingsymbol"] == params["tradingsymbol"]
+                          and o["transaction_type"] == params["transaction_type"]
+                          and o["status"] not in ("CANCELLED", "REJECTED")), None)
+            kite_id = match and match["order_id"]
+        else:
+            match = next((g for g in gtts if g["status"] in ("active", "triggered") and str(g["id"]) not in followed
+                          and g["condition"]["tradingsymbol"] == params["condition"]["tradingsymbol"]
+                          and (g.get("orders") or [{}])[0].get("transaction_type") == "SELL"), None)
+            kite_id = match and str(match["id"])
+        if not kite_id:
+            return False
+        self.store.update(self.clock(), row["tag"], "SENT", "done by you in the Kite app", kite_id=kite_id)
+        return True
+
+    def _expired(self, row: sqlite3.Row, session: date) -> bool:
+        """Whether a request handed to you is no longer looked for: an order once the session after it was handed
+        is over (an after-market order is for the next open), a stop or a gap exit once its holding is gone."""
+        if row["purpose"] in ORDER_PURPOSES:
+            return self.calendar is not None and session > self.calendar.next_trading_day(date.fromisoformat(row["session"]))
+        held = self.store.positions().get(row["symbol"])
+        return row["purpose"] != "cancel stop" and (
+            held is None or row["tag"] not in (broker.stop_order(held).tag, broker.gap_exit(held).tag))
+
     # --- following up -------------------------------------------------------------------------------
     def refresh(self, session: date) -> list[str]:
-        """Bring every unsettled request up to date with Kite and record its fills; returns what happened."""
-        pending = self.store.orders(UNSETTLED)
+        """Bring every unsettled request up to date with Kite and record its fills; returns what happened. A request
+        handed to you is followed once you've done it, and dropped once it has had its day."""
+        pending = self.store.orders(UNSETTLED + (HAND,))
         if not pending:
             return []
         news = []
+        found = []
+        for row in (r for r in pending if r["status"] == HAND):
+            if self._found_by_hand(row):
+                found.append(row["tag"])
+                news.append(f"{row['symbol']}: your {PLAIN[row['purpose']]} is in Kite. Thanks, I'll take it from here")
+            elif self._expired(row, session):
+                self.store.update(self.clock(), row["tag"], "NOT DONE", "not done by hand in time")
+                if row["purpose"] in ORDER_PURPOSES:
+                    news.append(f"{row['symbol']}: your {PLAIN[row['purpose']]} wasn't done in time, so I skip it")
+        pending = [r for r in pending if r["status"] != HAND or r["tag"] in found]
         orders = {o["order_id"]: o for o in self.kite.orders()}
         gtts = {str(g["id"]): g for g in self.kite.gtts()} if any(r["purpose"] == "stop" for r in pending) else {}
         for row in pending:

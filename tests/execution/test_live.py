@@ -19,7 +19,7 @@ from trader.execution import broker, live as live_jobs
 from trader.execution.kite_orders import KiteOrders
 from trader.execution.live import (Live, Override, capital_for_today, check, load_never_trade, load_overrides, locks, run,
                                    status_text, step_drawdown, track)
-from trader.execution.oms import LiveStore
+from trader.execution.oms import OMS, LiveStore
 from trader.execution.sources import LiveOrder
 from trader.execution.store import PaperStore
 from trader.markets.calendar import load_calendars
@@ -559,12 +559,101 @@ def test_this_pcs_internet_address_and_kites_registered_one(tmp_path):
     kite.prices = {"AAA": 100.0}
     live.address = lambda: "203.0.113.9"  # the address changed overnight
     code, messages = job(live, clock, "morning", date(2026, 8, 11), 9, 20)
-    assert code == 1 and "This PC's internet address is now 203.0.113.9, but Kite has 198.51.100.7" in messages[0]
-    assert kite.calls == [] and kite.gtts == {}  # nothing asked of Kite, so no stop refused for good
-    assert job(live, clock, "morning", date(2026, 8, 11), 9, 35) == (1, [])  # told once a day
+    assert code == 0 and "This PC's internet address is now 203.0.113.9, but Kite has 198.51.100.7" in messages[0]
+    assert "AAA.NS: stop (HAND)" in messages[0] and "[LIVE · real money] Please do this by hand" in messages[1]
+    assert "1. SET A STOP-LOSS on AAA\nKite app: AAA > Create GTT > Single > Sell > trigger price ₹95.00 > quantity 10 " \
+           "> price ₹90.25 > Create." in messages[1]
+    assert writes(kite) == [] and kite.gtts == {}  # only read: Kite would refuse the stop, and not take it again
+    assert job(live, clock, "morning", date(2026, 8, 11), 9, 35) == (0, [])  # told once a day
     live.address = lambda: None  # the address can't be looked up: Kite decides
     code, messages = job(live, clock, "morning", date(2026, 8, 11), 9, 50)
-    assert code == 0 and "AAA.NS: stop (SENT)" in messages[0]
+    assert code == 0 and "AAA.NS: stop (SENT)" in messages[0]  # a stop you didn't place goes in by itself
+
+
+def writes(kite):
+    return [call for call in kite.calls if call[0] != "GET"]
+
+
+def test_orders_kite_refuses_are_handed_to_you_and_followed_once_done(tmp_path):
+    paper, live, kite, clock = setup(tmp_path)
+    live.settings = replace(live.settings, kite_static_ip="198.51.100.7")
+    live.address = lambda: "203.0.113.9"
+    paper.run(until=SIGNAL_DAY, start=SIGNAL_DAY)
+    code, messages = job(live, clock, "evening", SIGNAL_DAY, 18, 30)
+    assert code == 0 and "AAA.NS: buy 100 at the open (HAND)" in messages[0] and writes(kite) == []
+    assert ("1. BUY 100 shares of AAA\nKite app: AAA > Buy > AMO > Market > quantity 100 > Buy. It buys at tomorrow's "
+            "9:15 open. Do it tonight, or skip it.") in messages[1] and "3. BUY 100 shares of CCC" in messages[1]
+    assert {r["status"] for r in live.store.orders()} == {"HAND"}
+    aaa, ccc = kite.by_hand("AAA", "BUY", 100), kite.by_hand("CCC", "BUY", 60)  # you buy two of the three, CCC smaller
+
+    kite.new_day()  # Tue 11 Aug: your after-market buys fill at the open; the address is fixed
+    kite.fill(aaa, 101.0)
+    kite.fill(ccc, 102.0)
+    kite.prices = {"AAA": 101.0, "CCC": 102.0}
+    live.address = lambda: "198.51.100.7"
+    code, messages = job(live, clock, "morning", date(2026, 8, 11), 9, 20)
+    assert "AAA.NS: your buy is in Kite. Thanks, I'll take it from here" in messages[0]
+    assert "AAA.NS entry: buy 100 at 101.00" in messages[0] and "CCC.NS entry: buy 60 at 102.00" in messages[0]
+    assert "AAA.NS: stop (SENT)" in messages[0] and "CCC.NS: stop (SENT)" in messages[0] and len(messages) == 1
+    assert {s: p.quantity for s, p in live.store.positions().items()} == {"AAA.NS": 100, "CCC.NS": 60}
+    assert not any(o["tradingsymbol"] == "BBB" for o in kite.orders)  # a buy handed to you is never also sent
+    assert live.store.order(broker.entry_order("T1:BBB.NS:2026-08-10:buy", "BBB.NS", 100).tag)["status"] == "HAND"
+
+    code, messages = job(live, clock, "morning", date(2026, 8, 12), 9, 20)  # its open has passed: BBB is skipped
+    assert "BBB.NS: your buy wasn't done in time, so I skip it" in messages[0]
+    assert live.store.order(broker.entry_order("T1:BBB.NS:2026-08-10:buy", "BBB.NS", 100).tag)["status"] == "NOT DONE"
+    assert live.store.ledger_problems() == [] and live.kill_switch.engaged is False
+
+
+def test_a_time_exit_by_hand_deletes_the_stop_first(tmp_path):
+    paper, live, kite, clock = setup(tmp_path)
+    live.settings = replace(live.settings, kite_static_ip="198.51.100.7")
+    live.address = lambda: "198.51.100.7"
+    held = Position("T1", "CCC.NS", 100, 101.0, 95.95, date(2026, 8, 11), max_hold_days=1)
+    live.store.save_position(held)
+    live.store.add_fill(date(2026, 8, 11), "Eccc", "T1", "CCC.NS", "buy", 100, 101.0)
+    kite.positions["net"].append({"tradingsymbol": "CCC", "exchange": "NSE", "product": "CNC", "quantity": 100})
+    kite.prices = {"CCC": 101.0}
+    job(live, clock, "morning", date(2026, 8, 11), 9, 20)  # the stop goes in as usual
+    live.address = lambda: "203.0.113.9"
+    code, messages = job(live, clock, "preclose", date(2026, 8, 11), 15, 15)
+    assert "1. DELETE the stop-loss of CCC\nKite app: Orders > GTT > CCC > Delete." in messages[-1]
+    assert "2. SELL 100 shares of CCC NOW, before 3:30 pm (its time is up)" in messages[-1]
+    [stop] = kite.gtts.values()
+    stop["status"] = "deleted"  # you delete it, then sell
+    kite.fill(kite.by_hand("CCC", "SELL", 100, "regular"), 100.0)
+    code, messages = job(live, clock, "evening", date(2026, 8, 11), 18, 30)
+    assert "CCC.NS: your sell is in Kite" in messages[0] and "CCC.NS time exit: sell 100 at 100.00" in messages[0]
+    assert live.store.positions() == {} and writes(kite)[-1][0] == "POST"  # only the stop the bot placed itself
+
+
+def test_your_own_trades_and_the_stops_own_sell_are_never_taken_for_hand_orders(tmp_path):
+    paper, live, kite, clock = setup(tmp_path)
+    live.settings = replace(live.settings, kite_static_ip="198.51.100.7")
+    live.address = lambda: "203.0.113.9"
+    paper.run(until=SIGNAL_DAY, start=SIGNAL_DAY)
+    job(live, clock, "evening", SIGNAL_DAY, 18, 30)
+    tagged = kite.by_hand("AAA", "BUY", 100)
+    tagged["tag"] = "Eother"  # another app's order carries a tag
+    kite.by_hand("BBB", "SELL", 5)  # the other side
+    kite.reject(kite.by_hand("CCC", "BUY", 100), "insufficient funds")  # refused: still to do
+    job(live, clock, "evening", SIGNAL_DAY, 19, 0)
+    assert {r["status"] for r in live.store.orders()} == {"HAND"}
+
+    live.address = lambda: "198.51.100.7"  # a holding whose stop goes in; then a sale of it is handed to you
+    live.store.save_position(Position("T1", "DDD.NS", 10, 100.0, 95.0, date(2026, 8, 11)))
+    live.store.add_fill(date(2026, 8, 11), "Eddd", "T1", "DDD.NS", "buy", 10, 100.0)
+    kite.positions["net"].append({"tradingsymbol": "DDD", "exchange": "NSE", "product": "CNC", "quantity": 10})
+    kite.prices = {"DDD": 100.0}
+    job(live, clock, "morning", date(2026, 8, 11), 9, 20)
+    oms = OMS(live.store, live.connect(), clock, by_hand="the address moved", calendar=NSE)
+    sale = broker.exit_order("T1:DDD.NS:2026-08-11:sell", "DDD.NS", 10)
+    assert oms.submit(date(2026, 8, 11), "T1", sale) == "HAND" and oms.handed == [sale]
+    [stop] = kite.gtts.values()
+    kite.trigger(stop["id"])  # the stop's own sell has no tag either: it is the stop's, not your sale
+    oms.refresh(date(2026, 8, 11))
+    assert live.store.order(sale.tag)["status"] == "HAND"
+    assert live.store.order(broker.stop_order(live.store.positions()["DDD.NS"]).tag)["status"] == "TRIGGERED"
 
 
 

@@ -26,6 +26,11 @@ Nothing is sent unless every lock is open:
      account, which may cut an order but never enlarges it.
 Exits and stops go out even with the kill switch engaged: it blocks new trades, never the way out.
 
+Kite takes orders only from the internet address registered with it (KITE_STATIC_IP), and lets you change that
+only once a week. On a day this PC's address differs, the jobs run as usual but send nothing: each order comes to
+you on Telegram as a step to do in the Kite app, in plain words, and the jobs then find what you did in Kite and
+carry on from there (trader/execution/oms.py). Sending by itself always comes first: this is only the fallback.
+
 A live entry is its paper order scaled by live capital / paper capital, so it risks the same share of the
 account. An exit sells what the account holds for that strategy, never more.
 
@@ -61,7 +66,7 @@ from trader.core.models import PortfolioState, Position, TradeIntent
 from trader.data.kite import KiteAuthError, session_secrets
 from trader.execution import broker
 from trader.execution.kite_orders import KiteOrders, from_session, held_quantity
-from trader.execution.oms import OMS, LiveStore
+from trader.execution.oms import HAND, OMS, LiveStore
 from trader.execution.records import from_fills
 from trader.execution.simkite import SimKite
 from trader.execution.sources import TRIAL, LiveOrder, Source, paper_orders, trial_orders
@@ -232,6 +237,35 @@ def say(live: Live, title: str, lines: list[str]) -> None:
     live.notifier.send(templates.live_update(title=title, lines=lines, dry_run=live.dry_run, trial=bool(live.overrides)))
 
 
+def hand_step(request: broker.KiteRequest) -> str:
+    """One order the bot couldn't send, as what to tap in the Kite app."""
+    sid, p = request.symbol.removesuffix(".NS"), request.params
+    if request.purpose == "entry":
+        return (f"BUY {p['quantity']} shares of {sid}\nKite app: {sid} > Buy > AMO > Market > quantity "
+                f"{p['quantity']} > Buy. It buys at tomorrow's 9:15 open. Do it tonight, or skip it.")
+    if request.purpose == "exit":
+        return (f"SELL {p['quantity']} shares of {sid}\nKite app: {sid} > Sell > AMO > Market > quantity "
+                f"{p['quantity']} > Sell. It sells at tomorrow's 9:15 open. Please do it tonight.")
+    if request.purpose == "stop":
+        leg, trigger = p["orders"][0], p["condition"]["trigger_values"][0]
+        return (f"SET A STOP-LOSS on {sid}\nKite app: {sid} > Create GTT > Single > Sell > trigger price "
+                f"{templates.rupees(trigger)} > quantity {leg['quantity']} > price {templates.rupees(leg['price'])} > "
+                f"Create. It sells your {leg['quantity']} shares if the price falls to {templates.rupees(trigger)}.")
+    if request.purpose == "cancel stop":
+        return f"DELETE the stop-loss of {sid}\nKite app: Orders > GTT > {sid} > Delete."
+    if request.purpose == "gap exit":
+        return (f"SELL {sid} NOW\nIt fell below its stop-loss, but the stop-loss sell is stuck. Kite app: Orders > "
+                f"the open SELL of {sid} > Modify > Market > Modify.")
+    why = "its time is up" if request.purpose == "time exit" else "it is already below its stop-loss"
+    return (f"SELL {p['quantity']} shares of {sid} NOW, before 3:30 pm ({why})\nKite app: {sid} > Sell > Market > "
+            f"quantity {p['quantity']} > Sell.")
+
+
+def hand_over(live: Live, requests: list[broker.KiteRequest]) -> None:
+    """Tell you the orders to do by hand today, in order (a stop-loss is deleted before its shares are sold)."""
+    live.notifier.send(templates.by_hand([f"{n}. {hand_step(r)}" for n, r in enumerate(requests, 1)]))
+
+
 def address_moved(live: Live) -> str:
     """Why nothing may be sent from this PC's internet address (empty when it may, or when it can't be told): Kite
     takes orders only from the address registered in its developer console (KITE_STATIC_IP in .env)."""
@@ -239,9 +273,8 @@ def address_moved(live: Live) -> str:
     seen = live.address() if live.address is not None and registered else None
     if seen is None or seen == registered:
         return ""
-    return (f"This PC's internet address is now {seen}, but Kite has {registered} registered, and it refuses orders "
-            "from any other address. Nothing was sent, stops included. Put the new address in Kite's developer "
-            "console and in KITE_STATIC_IP in .env (Telegram: /myip done); the next job then sends what is waiting.")
+    return (f"This PC's internet address is now {seen}, but Kite has {registered} registered, so Kite won't take "
+            "orders from me. Until it's fixed, I send you each order to do by hand. To fix it, send /myip.")
 
 
 def failed(live: Live, job: str, today: date, kind: str, detail: str, trace: bool = False) -> int:
@@ -273,12 +306,10 @@ def run(job: str, live: Live, backup_dir=None) -> int:
     if blocked:
         log.info("Live %s: nothing sent: %s", job, "; ".join(blocked))
         return 0
-    today = live.clock().date()
+    today, oms = live.clock().date(), None
     try:
-        moved = address_moved(live)
-        if moved:  # Kite would refuse every request, and a refused stop isn't sent again: send nothing yet
-            return failed(live, job, today, "address", moved)
-        oms = OMS(live.store, live.connect(), live.clock)
+        moved = address_moved(live)  # Kite would refuse every order, so each is handed to you instead
+        oms = OMS(live.store, live.connect(), live.clock, by_hand=moved, calendar=live.calendar)
         news = oms.refresh(today)
         problems = oms.reconcile()
         if problems:  # told when it engages the kill switch, and once a day while the switch stays engaged
@@ -293,13 +324,18 @@ def run(job: str, live: Live, backup_dir=None) -> int:
         now = live.clock().time()
         news += (JOBS[job](live, oms, today) if start <= now <= end else
                  [f"Nothing sent: the {job} job runs between {start:%H:%M} and {end:%H:%M} IST, not at {now:%H:%M}."])
+        if moved and live.store.first_notice(today, "address"):  # once a day, though the jobs repeat
+            news.insert(0, moved)
+        if news:
+            say(live, f"Live {job}", news)
     except KiteAuthError as exc:
         return failed(live, job, today, "login", str(exc))
     except Exception as exc:  # recorded and reported, never swallowed
         detail = redact(f"{type(exc).__name__}: {exc}", live.settings.secret_values() + session_secrets())[:500]
         return failed(live, job, today, "error", detail, trace=True)
-    if news:
-        say(live, f"Live {job}", news)
+    finally:  # even when the job failed after it: what was handed to you isn't handed again today
+        if oms is not None and oms.handed:
+            hand_over(live, oms.handed)
     if backup_dir is not None:
         live.store.backup(backup_dir, today)
     return 0
@@ -454,10 +490,12 @@ def morning(live: Live, oms: OMS, today: date) -> list[str]:
     for symbol, position in held.items():
         price = prices[symbol.removesuffix(".NS")]
         stop = live.store.order(broker.stop_order(position).tag)
-        if stop is None or stop["status"] in ("SENDING", "UNKNOWN"):  # not placed, or not found at Kite
+        if stop is None or stop["status"] in ("SENDING", "UNKNOWN", HAND):  # not placed, not found, or not done by hand
             request = (broker.stop_exit(position) if price <= broker.to_tick(position.stop_price)
                        else broker.stop_order(position, last_price=price))
-            news.append(f"{symbol}: {request.purpose} ({oms.submit(today, position.strategy_id, request)})")
+            status = oms.submit(today, position.strategy_id, request)
+            if status != HAND or request in oms.handed:  # a repeat of the job doesn't say it again
+                news.append(f"{symbol}: {request.purpose} ({status})")
         elif stop["status"] == "TRIGGERED" and price < broker.stop_limit(position.stop_price):
             news.append(f"{symbol}: gap exit ({oms.submit(today, position.strategy_id, broker.gap_exit(position))})")
         elif stop["status"] not in ("SENT", "TRIGGERED") and live.store.first_notice(today, f"no stop {symbol}"):
@@ -487,7 +525,7 @@ def preclose(live: Live, oms: OMS, today: date) -> list[str]:
             continue
         if stop is not None and stop["status"] == "SENT":
             deleted = oms.submit(today, position.strategy_id, broker.cancel_stop(position, broker.BEFORE_CLOSE))
-            if deleted != "DONE":
+            if deleted not in ("DONE", HAND):  # handed to you: you delete it, then sell
                 news.append(f"{symbol}: time exit not sent: its stop couldn't be deleted ({deleted})")
                 continue
         news.append(f"{symbol}: time exit, sell {position.quantity} ({oms.submit(today, position.strategy_id, broker.time_exit(position))})")
@@ -575,7 +613,7 @@ def status_text(live: Live) -> str:
     held = live.store.positions()
     lines.append("Live holdings: " + ("; ".join(f"{p.symbol} x{p.quantity} @ {p.entry_price:,.2f}, stop {p.stop_price:,.2f}"
                                                 for p in held.values()) or "none"))
-    unsettled = [r for r in live.store.orders(("SENDING", "SENT", "TRIGGERED", "UNKNOWN"))]
+    unsettled = [r for r in live.store.orders(("SENDING", "SENT", "TRIGGERED", "UNKNOWN", HAND))]
     lines.append("Unsettled requests: " + ("; ".join(f"{r['symbol']} {r['purpose']} {r['status']}" for r in unsettled) or "none"))
     return "\n".join(lines)
 

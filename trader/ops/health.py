@@ -22,7 +22,7 @@ from trader.config import ROOT, load_settings
 from trader.data.kite import SESSION_FILE, load_session, session_secrets
 from trader.data.validate import DAILY_SETTLE
 from trader.execution import broker
-from trader.execution.oms import ORDER_PURPOSES, LiveStore
+from trader.execution.oms import HAND, ORDER_PURPOSES, PLAIN, LiveStore
 from trader.execution.store import PaperStore
 from trader.gate import EVIDENCE_DIR, REQUIREMENTS, load_evidence, load_gate_config
 from trader.logging_setup import configure_logging, make_console_utf8
@@ -216,6 +216,11 @@ def live_checks(settings, store: LiveStore | None, now: datetime, session_file: 
         if bare:
             checks.append(Health("live stops", ALERT, f"no stop at Kite for {', '.join(bare)}: place one by hand "
                                  "(a GTT at the stop in python -m trader.execution.live status)"))
+        handed = store.orders((HAND,))
+        if handed:
+            checks.append(Health("live hand orders", WARN, f"{len(handed)} order(s) waiting for you to do by hand in "
+                                 "the Kite app (" + ", ".join(f"{r['symbol']} {PLAIN[r['purpose']]}" for r in handed[:3])
+                                 + "): see the Telegram message 'Please do this by hand in Zerodha'"))
         stale = [r for r in store.orders(("SENT",)) if r["purpose"] in ORDER_PURPOSES
                  and datetime.fromisoformat(r["updated_at"]) < now - LIVE_SETTLE]
         if stale:
@@ -252,8 +257,8 @@ def address_checks(settings, address=None) -> list[Health]:
         return [Health("internet address", INFO, "couldn't look up this PC's internet address just now")]
     if seen != registered:
         return [Health("internet address", ALERT, f"this PC's internet address is now {seen}, but Kite has {registered} "
-                       "registered: put the new address in Kite's developer console and in KITE_STATIC_IP in .env "
-                       "(Telegram: /myip done), or the live jobs send nothing, stops included")]
+                       "registered, so Kite won't take orders from the bot: until it's fixed, each order comes to you "
+                       "on Telegram to do by hand. To fix it, send /myip (Kite allows one change a week)")]
     return [Health("internet address", OK, f"{seen}, the address Kite has registered")]
 
 

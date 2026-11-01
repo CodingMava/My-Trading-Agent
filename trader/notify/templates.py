@@ -86,6 +86,17 @@ def live_update(*, title: str, lines: list[str], dry_run: bool = False, trial: b
     return "\n".join([f"<b>{label} {escape(title)}</b>", "", *(escape(line) for line in lines)])
 
 
+def by_hand(steps: list[str]) -> str:
+    """Real orders the bot couldn't send (Kite takes orders only from the registered internet address), as steps
+    to do in the Kite app, in plain words."""
+    return "\n".join(["<b>[LIVE · real money] Please do this by hand in Zerodha</b>", "",
+                      "Kite won't take orders from me right now (your internet address changed). So please do "
+                      "these yourself in the Kite app:", "",
+                      *(escape(step) + "\n" for step in steps),
+                      "I'll see in Kite when it's done, and take care of the rest myself.",
+                      "Skipping a BUY is fine. Please don't skip a SELL or a STOP-LOSS: they protect your money."])
+
+
 def daily_summary(*, session: str, equity: float, day_change: float, cash: float, positions: list[tuple[str, int, float]],
                   strategies: int, paper: bool = True, market: list[str] = (), record: str = "", currency: str = "₹",
                   label: str = "") -> str:

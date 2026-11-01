@@ -417,3 +417,11 @@ def test_forward_test_5_failures_and_staleness_are_alerts(tmp_path, monkeypatch)
     assert health.forward5_check(EVENING)[0].level == ALERT
     ledger.close()
 
+
+
+def test_orders_handed_to_you_are_a_warning(tmp_path):
+    settings, no_login = replace(load_settings(env={}), live_enabled=False), tmp_path / "session.json"
+    store = LiveStore(tmp_path / "live.db")
+    store.record(EVENING, date(2026, 8, 17), "B1F", broker.entry_order("k", "AAA.NS", 10), "HAND", "the address moved")
+    [check] = live_checks(settings, store, EVENING, no_login)
+    assert check.name == "live hand orders" and check.level == WARN and "(AAA.NS buy)" in check.detail

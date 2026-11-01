@@ -129,6 +129,20 @@ class FakeKite:
                 self.positions["net"].append({"tradingsymbol": tradingsymbol, "exchange": "NSE", "product": "CNC",
                                               "quantity": -filled})
 
+    def by_hand(self, tradingsymbol, side, quantity, variety="amo"):
+        """An order you place yourself in the Kite app: it carries no tag."""
+        self._write("POST", f"/orders/{variety}", {"exchange": "NSE", "tradingsymbol": tradingsymbol, "quantity": quantity,
+                                                   "transaction_type": side, "order_type": "MARKET", "product": "CNC"})
+        return self.orders[-1]
+
+    def gtt_by_hand(self, tradingsymbol, trigger, quantity, price):
+        """A stop-loss GTT you create yourself in the Kite app."""
+        leg = {"exchange": "NSE", "tradingsymbol": tradingsymbol, "transaction_type": "SELL", "quantity": quantity,
+               "order_type": "LIMIT", "product": "CNC", "price": price}
+        self._write("POST", "/gtt/triggers", {"type": "single", "orders": json.dumps([leg]), "condition": json.dumps(
+            {"exchange": "NSE", "tradingsymbol": tradingsymbol, "trigger_values": [trigger], "last_price": price})})
+        return list(self.gtts.values())[-1]
+
     def reject(self, order, message):
         order.update(status="REJECTED", status_message=message, pending_quantity=0)
 
