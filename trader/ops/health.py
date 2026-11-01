@@ -599,9 +599,24 @@ def main(argv: list[str] | None = None, sleep=_sleep) -> None:
     log.info("%d alert(s), %d warning(s)%s", len(alerts), len(warnings),  # a trace of every run, even a clean one
              "".join(f"; {c.level} {c.name}: {c.detail}" for c in alerts + warnings))
     if alerts and args.notify:
-        notifier_from_settings(settings).send(templates.risk_alert(
-            title="Health check", detail="; ".join(f"{c.name}: {c.detail}" for c in alerts)))
+        notifier = notifier_from_settings(settings)
+        for text in alert_messages(alerts):
+            notifier.send(text)
     raise SystemExit(1 if alerts else 0)
+
+
+def about_real_money(check: Health) -> bool:
+    """The checks about real orders at Kite: their alerts mustn't read as [PAPER]."""
+    return check.name.startswith("live ") or check.name in ("internet address", "real-money trial")
+
+
+def alert_messages(alerts: list[Health]) -> list[str]:
+    """At most two Telegram messages: the real-money alerts without the [PAPER] label, the rest with it."""
+    live, paper = [c for c in alerts if about_real_money(c)], [c for c in alerts if not about_real_money(c)]
+    return ([templates.risk_alert(title="Health check, real money", paper=False,
+                                  detail="; ".join(f"{c.name}: {c.detail}" for c in live))] if live else []) + \
+           ([templates.risk_alert(title="Health check", detail="; ".join(f"{c.name}: {c.detail}" for c in paper))]
+            if paper else [])
 
 
 if __name__ == "__main__":

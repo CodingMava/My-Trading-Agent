@@ -393,6 +393,18 @@ def test_a_failed_forward_test_or_trial_run_is_sent_on_telegram(tmp_path, monkey
     assert "forward test 3" in sent[0] and "its last run failed" in sent[0] and "paper trial 1" not in sent[0]
 
 
+def test_real_money_alerts_are_never_labelled_paper():
+    address = health.Health("internet address", health.ALERT, "this PC's internet address is now 1.2.3.4")
+    stops = health.Health("live stops", health.ALERT, "no stop at Kite for X")
+    run = health.Health("daily run", health.ALERT, "the last processed session is none")
+    [only] = health.alert_messages([address])
+    assert "[PAPER]" not in only and "real money" in only and "internet address" in only
+    live, paper = health.alert_messages([address, run, stops])
+    assert "[PAPER]" not in live and "live stops" in live and "daily run" not in live
+    assert paper.startswith("<b>[PAPER] RISK ALERT: Health check</b>") and "daily run" in paper
+    assert "internet address" not in paper
+
+
 def test_forward_test_5_failures_and_staleness_are_alerts(tmp_path, monkeypatch):
     from trader.research.forward5 import Ledger
     monkeypatch.setattr(health, "ROOT", tmp_path)
