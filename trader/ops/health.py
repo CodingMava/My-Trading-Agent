@@ -252,8 +252,8 @@ def address_checks(settings, address=None) -> list[Health]:
         return [Health("internet address", INFO, "couldn't look up this PC's internet address just now")]
     if seen != registered:
         return [Health("internet address", ALERT, f"this PC's internet address is now {seen}, but Kite has {registered} "
-                       "registered: put the new address in Kite's developer console and in KITE_STATIC_IP in .env, "
-                       "or the live jobs send nothing, stops included")]
+                       "registered: put the new address in Kite's developer console and in KITE_STATIC_IP in .env "
+                       "(Telegram: /myip done), or the live jobs send nothing, stops included")]
     return [Health("internet address", OK, f"{seen}, the address Kite has registered")]
 
 

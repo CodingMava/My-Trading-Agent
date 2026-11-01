@@ -7,12 +7,15 @@ Only messages from the chat in TELEGRAM_CHAT_ID are answered; every other chat i
 release the kill switch, change a limit or place an order: commands never bypass the risk controls. /login
 makes today's Kite session here on the PC from the page Kite returns to after you log in: the API secret
 and the session's access token never pass through Telegram, and the request token you send is single-use.
+/myip compares this PC's internet address with KITE_STATIC_IP in .env, and /myip done writes the new one there
+(that one line only) once it is in Kite's developer console, which only Kite's own site can change.
 While live trading is on, a trading morning without a login gets a reminder at 08:30.
 """
 from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -23,11 +26,11 @@ from zoneinfo import ZoneInfo
 
 import requests
 
-from trader.config import ROOT, load_settings
+from trader.config import ENV_FILE, ROOT, load_settings, parse_env_file
 from trader.data.kite import (LOGIN_URL, SESSION_FILE, KiteAuthError, KiteError, create_session, load_session,
                               request_token_from, save_session, session_secrets)
 from trader.execution.kite_orders import from_session
-from trader.execution.live import check as live_check, dry_run_waiting
+from trader.execution.live import check as live_check, dry_run_waiting, public_ip
 from trader.execution.store import PaperStore
 from trader.gate import load_gate_config
 from trader.logging_setup import configure_logging
@@ -51,7 +54,8 @@ HELP = ("<b>Commands</b>\n\n"
         "/trades: the latest closed trades\n"
         "/kill reason: stop all new trades (open positions still exit as planned)\n"
         "/login: log in to Kite for today (live trading needs it before 09:15)\n"
-        "/kitecheck: check the Kite connection, read-only (after /login)\n\n"
+        "/kitecheck: check the Kite connection, read-only (after /login)\n"
+        "/myip: is this PC's internet address the one Kite has? /myip done: save the new one in .env\n\n"
         "Releasing the kill switch, changing a limit or trading is only possible on the PC.")
 
 
@@ -200,6 +204,36 @@ def kite_check_text(settings, connect: Callable[[], object] | None = None) -> st
     return "<b>Kite check (read-only)</b>\n\n" + escape("\n".join(seen) + "\n\n" + verdict)
 
 
+STATIC_IP_LINE = re.compile(r"^[ \t]*(export[ \t]+)?KITE_STATIC_IP[ \t]*=.*$", re.MULTILINE)
+
+
+def my_ip_text(argument: str, env_file: Path = ENV_FILE, address: Callable[[], str | None] = public_ip) -> str:
+    """/myip: this PC's internet address against KITE_STATIC_IP in .env. /myip done: write it there, once it is in
+    Kite's developer console: before that, the live jobs would send orders Kite refuses, and a refused stop isn't
+    sent again."""
+    if argument.lower() not in ("", "done"):
+        return "Send /myip to check the address, or /myip done once the new one is in Kite's developer console."
+    seen = address()
+    if seen is None:
+        return "Couldn't look up this PC's internet address just now. Try again in a minute."
+    registered = parse_env_file(env_file).get("KITE_STATIC_IP", "").strip()
+    if seen == registered:
+        return escape(f"This PC's internet address is {seen}, the one in .env. Nothing to do.")
+    if not argument:
+        return escape(f"This PC's internet address is now {seen}, but .env has {registered or 'none'}.\n\n"
+                      f"1. On developers.kite.trade, open your app and put {seen} as its IP address.\n"
+                      "2. Then send /myip done.")
+    text = env_file.read_text(encoding="utf-8-sig") if env_file.is_file() else ""
+    line = f"KITE_STATIC_IP={seen}"
+    text = (STATIC_IP_LINE.sub(line, text, count=1) if STATIC_IP_LINE.search(text)
+            else text + ("" if not text or text.endswith("\n") else "\n") + line + "\n")
+    temporary = env_file.with_name(env_file.name + ".tmp")  # written whole, then swapped in: .env is never half-written
+    temporary.write_text(text, encoding="utf-8")
+    temporary.replace(env_file)
+    log.info("KITE_STATIC_IP in .env changed from %s to %s from Telegram", registered or "none", seen)
+    return escape(f"Saved {seen} in .env (it had {registered or 'none'}). The next live job sends what is waiting.")
+
+
 def login_reminder(settings, calendar, now: datetime, session_file: Path = SESSION_FILE,
                    dry_run: Callable[[], bool] = dry_run_waiting) -> str | None:
     """While live trading is on, or a live dry run holds simulated orders or shares: a trading morning between 08:30
@@ -301,7 +335,8 @@ def main() -> None:
     bot = CommandBot(settings.telegram_bot_token.reveal(), settings.telegram_chat_id,
                      notifier_from_settings(settings), lambda: load_context(settings, KillSwitch()),
                      direct={"/login": lambda argument: kite_login(settings, argument),
-                             "/kitecheck": lambda argument: kite_check_text(settings)},
+                             "/kitecheck": lambda argument: kite_check_text(settings),
+                             "/myip": my_ip_text},
                      reminder=lambda: login_reminder(settings, calendar, datetime.now(IST)))
     bot.run()
 

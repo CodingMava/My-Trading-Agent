@@ -241,7 +241,7 @@ def address_moved(live: Live) -> str:
         return ""
     return (f"This PC's internet address is now {seen}, but Kite has {registered} registered, and it refuses orders "
             "from any other address. Nothing was sent, stops included. Put the new address in Kite's developer "
-            "console and in KITE_STATIC_IP in .env; the next job then sends what is waiting.")
+            "console and in KITE_STATIC_IP in .env (Telegram: /myip done); the next job then sends what is waiting.")
 
 
 def failed(live: Live, job: str, today: date, kind: str, detail: str, trace: bool = False) -> int:

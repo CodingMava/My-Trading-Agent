@@ -232,3 +232,23 @@ def test_positions_and_trades_include_the_us_account(tmp_path):
     ctx.store.save_position(Position("H1", "AAA.NS", 10, 100.0, 95.0, date(2026, 8, 11), last_price=90.0))
     both = reply_to("/positions", ctx)
     assert both.index("<b>Open positions</b>") < both.index("AAA.NS") < both.index("<b>US Open positions</b>")
+
+
+def test_myip_compares_and_saves_only_the_static_ip_line(tmp_path):
+    from trader.config import parse_env_file
+    from trader.notify.bot import my_ip_text
+    env = tmp_path / ".env"
+    env.write_text("TELEGRAM_BOT_TOKEN=secret\nKITE_STATIC_IP=1.1.1.1\nKITE_API_KEY=key\n", encoding="utf-8")
+    moved = lambda: "2.2.2.2"
+    check = my_ip_text("", env, moved)
+    assert "now 2.2.2.2, but .env has 1.1.1.1" in check and "/myip done" in check
+    assert parse_env_file(env)["KITE_STATIC_IP"] == "1.1.1.1"  # a check never writes
+    assert my_ip_text("done", env, moved).startswith("Saved 2.2.2.2 in .env (it had 1.1.1.1)")
+    assert env.read_text(encoding="utf-8") == "TELEGRAM_BOT_TOKEN=secret\nKITE_STATIC_IP=2.2.2.2\nKITE_API_KEY=key\n"
+    assert "Nothing to do" in my_ip_text("", env, moved) and "Nothing to do" in my_ip_text("done", env, moved)
+    assert my_ip_text("", env, lambda: None).startswith("Couldn't look up")
+    assert my_ip_text("1.2.3.4", env, moved).startswith("Send /myip")
+    bare = tmp_path / "bare.env"
+    bare.write_text("KITE_API_KEY=key", encoding="utf-8")
+    my_ip_text("done", bare, moved)
+    assert bare.read_text(encoding="utf-8") == "KITE_API_KEY=key\nKITE_STATIC_IP=2.2.2.2\n"
