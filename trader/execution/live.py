@@ -241,10 +241,10 @@ def hand_step(request: broker.KiteRequest) -> str:
     """One order the bot couldn't send, as what to tap in the Kite app."""
     sid, p = request.symbol.removesuffix(".NS"), request.params
     if request.purpose == "entry":
-        return (f"BUY {p['quantity']} shares of {sid}\nKite app: {sid} > Buy > AMO > Market > quantity "
+        return (f"BUY {p['quantity']} shares of {sid}\nKite app: {sid} > Buy > AMO > Longterm (CNC) > Market > quantity "
                 f"{p['quantity']} > Buy. It buys at tomorrow's 9:15 open. Do it tonight, or skip it.")
     if request.purpose == "exit":
-        return (f"SELL {p['quantity']} shares of {sid}\nKite app: {sid} > Sell > AMO > Market > quantity "
+        return (f"SELL {p['quantity']} shares of {sid}\nKite app: {sid} > Sell > AMO > Longterm (CNC) > Market > quantity "
                 f"{p['quantity']} > Sell. It sells at tomorrow's 9:15 open. Please do it tonight.")
     if request.purpose == "stop":
         leg, trigger = p["orders"][0], p["condition"]["trigger_values"][0]
@@ -257,8 +257,8 @@ def hand_step(request: broker.KiteRequest) -> str:
         return (f"SELL {sid} NOW\nIt fell below its stop-loss, but the stop-loss sell is stuck. Kite app: Orders > "
                 f"the open SELL of {sid} > Modify > Market > Modify.")
     why = "its time is up" if request.purpose == "time exit" else "it is already below its stop-loss"
-    return (f"SELL {p['quantity']} shares of {sid} NOW, before 3:30 pm ({why})\nKite app: {sid} > Sell > Market > "
-            f"quantity {p['quantity']} > Sell.")
+    return (f"SELL {p['quantity']} shares of {sid} NOW, before 3:30 pm ({why})\nKite app: {sid} > Sell > Longterm (CNC) > "
+            f"Market > quantity {p['quantity']} > Sell.")
 
 
 def hand_over(live: Live, requests: list[broker.KiteRequest]) -> None:

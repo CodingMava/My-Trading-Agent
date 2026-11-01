@@ -581,7 +581,7 @@ def test_orders_kite_refuses_are_handed_to_you_and_followed_once_done(tmp_path):
     paper.run(until=SIGNAL_DAY, start=SIGNAL_DAY)
     code, messages = job(live, clock, "evening", SIGNAL_DAY, 18, 30)
     assert code == 0 and "AAA.NS: buy 100 at the open (HAND)" in messages[0] and writes(kite) == []
-    assert ("1. BUY 100 shares of AAA\nKite app: AAA > Buy > AMO > Market > quantity 100 > Buy. It buys at tomorrow's "
+    assert ("1. BUY 100 shares of AAA\nKite app: AAA > Buy > AMO > Longterm (CNC) > Market > quantity 100 > Buy. It buys at tomorrow's "
             "9:15 open. Do it tonight, or skip it.") in messages[1] and "3. BUY 100 shares of CCC" in messages[1]
     assert {r["status"] for r in live.store.orders()} == {"HAND"}
     aaa, ccc = kite.by_hand("AAA", "BUY", 100), kite.by_hand("CCC", "BUY", 60)  # you buy two of the three, CCC smaller
