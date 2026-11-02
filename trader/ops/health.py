@@ -381,14 +381,15 @@ FORWARD2_LEDGER = Path("state") / "forward2.db"
 FORWARD_STALE = timedelta(days=3)  # they update every evening; three days without a good update means one has stopped
 
 
-def evening_update_alert(conn: sqlite3.Connection, name: str, log_name: str, now: datetime) -> Health | None:
+def evening_update_alert(conn: sqlite3.Connection, name: str, log_name: str, now: datetime,
+                         stale: timedelta = FORWARD_STALE) -> Health | None:
     """A forward test's or the paper trial's evening update (research only): an ALERT, which the 21:00 check sends on
-    Telegram, when its latest run failed or it has had no good update for three days; None while it runs fine."""
+    Telegram, when its latest run failed or it has had no good update for three days (`stale`); None while it runs fine."""
     latest = conn.execute("SELECT at, status, detail FROM runs ORDER BY id DESC LIMIT 1").fetchone()
     last_ok = conn.execute("SELECT MAX(at) FROM runs WHERE status = 'ok'").fetchone()[0]
     if latest is not None and latest[1] != "ok":
         return Health(name, ALERT, f"its last run failed ({_when(latest[0])}): {latest[2][:160]}; check logs/{log_name}")
-    if last_ok is None or now - datetime.fromisoformat(last_ok) > FORWARD_STALE:
+    if last_ok is None or now - datetime.fromisoformat(last_ok) > stale:
         return Health(name, ALERT, f"no good update since {_when(last_ok) if last_ok else 'it began'}: check logs/{log_name}")
     return None
 
@@ -451,6 +452,42 @@ def trial_check(now: datetime) -> list[Health]:
     if problem:
         return [problem]
     return [Health("paper trial 1", OK, f"updated {_when(last_ok)}; {closed} closed paper trade(s), {r:+.2f}R"
+                   + (f"; brakes: {', '.join(brakes)}" if brakes else ""))]
+
+
+USTRIAL_LEDGER = Path("state") / "ustrial1.db"
+USTRIAL_STALE = timedelta(hours=25)  # its first run of each evening is always recorded, weekends too, by 19:45 at the latest
+USTRIAL_LIST_UNREAD = 7  # good runs in a row that couldn't read Wikipedia's list before it is worth a warning
+
+
+def ustrial_check(now: datetime) -> list[Health]:
+    """US paper trial 1 (paper trial 1's rules on S&P 500 stocks, research only): still updating, and its messages going out
+    (an alert if not)? A warning if its S&P 500 list has stopped updating. Its brakes, if any (as defined, not a failure)."""
+    path = ROOT / USTRIAL_LEDGER
+    if not path.exists():
+        return []
+    conn = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+    try:
+        problem = evening_update_alert(conn, "US paper trial", "ustrial1.log", now, USTRIAL_STALE)
+        last_ok = conn.execute("SELECT MAX(at) FROM runs WHERE status = 'ok'").fetchone()[0]
+        closed, r = conn.execute("SELECT COUNT(*), COALESCE(SUM(r), 0) FROM trades").fetchone()
+        brakes = [f"{scope} {kind}" for scope, kind in conn.execute("SELECT scope, kind FROM brakes ORDER BY id")]
+        waiting = conn.execute("SELECT COUNT(*) FROM outbox AS o WHERE NOT EXISTS (SELECT 1 FROM notices AS n "
+                               "WHERE n.key = o.key AND n.sent = 1)").fetchone()[0]
+        list_lost = conn.execute("SELECT MAX(sent) FROM notices WHERE key = ?", (f"plan {now.astimezone(IST).date()}",)).fetchone()[0] == 0
+        recent = [row[0] for row in conn.execute("SELECT detail FROM runs WHERE status = 'ok' ORDER BY id DESC LIMIT ?",
+                                                 (USTRIAL_LIST_UNREAD,))]
+    finally:
+        conn.close()
+    if problem:
+        return [problem]
+    if list_lost or waiting:
+        return [Health("US paper trial", ALERT, ("tonight's list couldn't be sent" if list_lost else f"{waiting} message(s) couldn't be "
+                                                 "sent; the next run sends them") + ": check logs/ustrial1.log")]
+    if len(recent) == USTRIAL_LIST_UNREAD and all("list unread" in detail for detail in recent):
+        return [Health("US paper trial", WARN, f"Wikipedia's S&P 500 list hasn't been read for {USTRIAL_LIST_UNREAD} evenings, so "
+                                               "new companies aren't joining: check logs/ustrial1.log")]
+    return [Health("US paper trial", OK, f"updated {_when(last_ok)}; {closed} closed paper trade(s), {r:+.2f}R"
                    + (f"; brakes: {', '.join(brakes)}" if brakes else ""))]
 
 
@@ -546,6 +583,14 @@ def data_checks(settings, now: datetime, session_file: Path = SESSION_FILE) -> H
     return Health("data source", OK, f"Kite session valid until {session.expires_at:%d %b %H:%M} IST")
 
 
+def research_check(check, now: datetime) -> list[Health]:
+    """A research ledger that can't be read (damaged, or locked) is an alert, and must not stop the checks on real orders."""
+    try:
+        return check(now)
+    except sqlite3.Error as exc:
+        return [Health(check.__name__.removesuffix("_check"), ALERT, f"its ledger can't be read: {exc}")]
+
+
 def health_checks(store: PaperStore | None, calendar: MarketCalendar, registry: StrategyRegistry,
                   kill_switch: KillSwitch, settings, now: datetime, max_age_days: int = 365,
                   evidence_dir: Path = EVIDENCE_DIR, session_file: Path = SESSION_FILE,
@@ -555,7 +600,7 @@ def health_checks(store: PaperStore | None, calendar: MarketCalendar, registry: 
     """Every check, worst first. `store` is None before the first daily run."""
     checks = [*run_checks(store, calendar, now), *safety_checks(store, kill_switch), unattended_record(store, now),
               dry_run_check(store, now.date()), *backup_check(store, backup_dir, now.date()),
-              *integrity_check(store, live_store, backup_dir), *news_check(settings, now), *forward2_check(now), *forward3_check(now), *trial_check(now), *forward5_check(now), *january_looks_check(now.date()),
+              *integrity_check(store, live_store, backup_dir), *news_check(settings, now), *research_check(forward2_check, now), *research_check(forward3_check, now), *research_check(trial_check, now), *research_check(forward5_check, now), *january_looks_check(now.date()), *research_check(ustrial_check, now),
               *us_checks(us_store, now, backup_dir),
               *strategy_checks(registry, now.date(), max_age_days, evidence_dir), calendar_checks(calendar, now.date()),
               data_checks(settings, now, session_file), *live_checks(settings, live_store, now, session_file),

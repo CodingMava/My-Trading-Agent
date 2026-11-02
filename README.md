@@ -423,7 +423,8 @@ universe is US stocks (such as `us_sector_etfs`) trades here. **None does today*
 each session and checks SPY without sending anything. It stays quiet while it has nothing to trade,
 and speaks up only when something is wrong.
 
-Once a US strategy earns `PAPER`, you follow it by hand at your US broker. Nothing sends a US order.
+Once a US strategy earns `PAPER`, you follow it by hand at your US broker. Nothing sends a US order. (This is the gate's
+US account. The `[US PAPER TRIAL]` lists are separate: docs/research/ustrial1-definition.md.)
 
 - **BUY SIGNAL** (18:00 IST): buy at the next US open (19:00 IST, or 20:00 in the northern winter),
   then place the stop order it gives.
@@ -439,16 +440,18 @@ cover the US account too, and the heartbeat is pinged only when both accounts' r
 
 ## Running unattended
 
-Five Windows scheduled tasks run the system. `scripts/register_tasks.ps1` creates them: review it, then
+Six Windows scheduled tasks run the system. `scripts/register_tasks.ps1` creates them: review it, then
 run it once with `powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1`. They run on
 battery too (by Windows' default a laptop that isn't plugged in would skip them), and without a console
 window, so nothing pops up to be closed by accident; their output is in `logs/`. Run the script again
-whenever it changes.
+whenever it changes, with the switches you registered it with (`-Live`, `-LiveDryRun`): it refuses to run without
+them, because the live evening job lives in a task it rebuilds.
 
 | Task | When | Runs |
 |---|---|---|
 | Daily run | 18:00 IST every day; if the PC was off then, as soon as it is back | `python -m trader.execution.eod` (India's account, then the US one) |
 | Health check | 21:00 IST every day; if the PC was asleep or off then, as soon as it is back, after giving a catch-up daily run 10 minutes | `python -m trader.ops.health --notify --scheduled` |
+| US trial | 17:15 IST every day, repeating every 15 minutes until 19:45; if the PC was off then, as soon as it is back | `python -m trader.research.ustrial daily` (research only: paper trial 1's rules on S&P 500 stocks, with a list of what they buy and sell at each US open) |
 | Telegram commands | Always, from logon (no console window; restarted if it stops) | `python -m trader.notify.bot` |
 | News | Every 15 minutes, all day; a run missed while the PC slept starts when it wakes, and hours it slept through are fetched whole from NSE's announcement API | `python -m trader.research.news collect` |
 | Forward tests 2 and 3, then paper trial 1 (one task, "Trading agent - forward tests") | 19:30 every evening; if the PC was off or asleep then, as soon as it is back | `python -m trader.research.forward2 daily` (N2 in paper mode on new NSE sessions), `python -m trader.research.forward3 daily` (E2 in paper mode on new results meetings, with NSE's board-meeting notices fetched each evening), then `python -m trader.research.trial daily` (E2 x3 + V2 x2 in one paper account); research only |

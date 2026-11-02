@@ -1,5 +1,5 @@
-# Registers the five Windows scheduled tasks that run the trading agent unattended. Review it, then run it
-# once from the project folder in PowerShell:
+# Registers the six Windows scheduled tasks that run the trading agent unattended. Review it, then run it
+# once from the project folder in PowerShell, with the switches below if you use them (it refuses to drop live jobs):
 #   powershell -ExecutionPolicy Bypass -File scripts\register_tasks.ps1
 # The times are this PC's local time, which must be India time (IST). The tasks run while you are logged
 # in to Windows, on battery too: by default Windows skips a task that comes due while a laptop is on
@@ -14,6 +14,14 @@
 param([switch]$Live, [switch]$LiveDryRun)
 
 $ErrorActionPreference = "Stop"
+# The "forward tests" task below is rebuilt from these switches, and its live evening job sends the next open's real orders:
+# a run without them would take that job away, while the morning and pre-close jobs stay and nothing looks wrong.
+if (-not $Live -and (Get-ScheduledTask -TaskName "Trading agent - live morning" -ErrorAction SilentlyContinue)) {
+    throw "The live jobs are registered, so run this with -Live (and -LiveDryRun if the dry run is registered too). To stop live trading, see docs/runbook.md."
+}
+if (-not $LiveDryRun -and (Get-ScheduledTask -TaskName "Trading agent - live dry run morning" -ErrorAction SilentlyContinue)) {
+    throw "The dry-run jobs are registered, so run this with -LiveDryRun (and -Live if the live jobs are registered too). To stop the dry run, unregister its tasks first."
+}
 $root = Split-Path -Parent $PSScriptRoot
 # Every task runs pythonw.exe, so no console window opens: a window that pops up when the PC wakes can be
 # closed by accident, or catch a Ctrl+C typed into it, and that kills the run. The output goes to logs/.
@@ -63,6 +71,22 @@ Register-ScheduledTask -TaskName "Trading agent - news" -Force `
     -Description "Collects NSE announcements for research (python -m trader.research.news collect). Never trades." `
     -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.news collect" -WorkingDirectory $root) `
     -Trigger $newsTrigger -Settings $newsSettings | Out-Null
+
+# 17:15 every evening: US paper trial 1 (docs/research/ustrial1-definition.md), paper trial 1's rules on S&P 500 stocks:
+# Yahoo's prices and the SEC's results filings, then messages labelled paper only, before the US open (19:00 or 20:00 IST).
+# It repeats every 15 minutes until 19:45, because one failed try would otherwise mean no list before the open; a repeat
+# does nothing once the evening's work is done. Research only; it never trades. If the PC was asleep or off, it runs as soon
+# as it is back and catches up.
+$usSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 30) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+$usTrigger = New-ScheduledTaskTrigger -Daily -At "17:15"
+$usTrigger.Repetition = (New-ScheduledTaskTrigger -Once -At "17:15" -RepetitionInterval (New-TimeSpan -Minutes 15) `
+    -RepetitionDuration (New-TimeSpan -Hours 2 -Minutes 35)).Repetition  # the last start is 19:45
+$usTrigger.Repetition.StopAtDurationEnd = $false  # 19:50 mustn't stop a run still going: its 30-minute limit rules
+Register-ScheduledTask -TaskName "Trading agent - US trial" -Force `
+    -Description "US paper trial 1 on S&P 500 stocks, before the US open (python -m trader.research.ustrial daily). Research only; never trades." `
+    -Action (New-ScheduledTaskAction -Execute $pythonw -Argument "-m trader.research.ustrial daily" -WorkingDirectory $root) `
+    -Trigger $usTrigger -Settings $usSettings | Out-Null
 
 # 19:30 every evening: the forward tests, in paper mode (research only), one after the other in one task so they never
 # rebuild the data at the same time.
