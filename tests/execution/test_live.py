@@ -627,6 +627,34 @@ def test_a_time_exit_by_hand_deletes_the_stop_first(tmp_path):
     assert live.store.positions() == {} and writes(kite)[-1][0] == "POST"  # only the stop the bot placed itself
 
 
+def test_every_kind_of_order_has_steps_in_the_kite_app():
+    held = Position("T1", "AAA.NS", 10, 100.0, 95.0, date(2026, 8, 11))
+    assert live_jobs.hand_step(broker.exit_order("k", "AAA.NS", 10)).startswith(
+        "SELL 10 shares of AAA\nKite app: AAA > Sell > AMO > Longterm (CNC) > Market > quantity 10 > Sell.")
+    assert live_jobs.hand_step(broker.gap_exit(held)).startswith("SELL AAA NOW\nIt fell below its stop-loss")
+    assert live_jobs.hand_step(broker.stop_exit(held)).startswith(
+        "SELL 10 shares of AAA NOW, before 3:30 pm (it is already below its stop-loss)\nKite app: AAA > Sell > Longterm (CNC) > Market")
+
+
+def test_a_stop_handed_to_you_is_asked_for_each_day_until_it_is_found_or_its_holding_is_gone(tmp_path):
+    paper, live, kite, clock = setup(tmp_path)
+    held, sold = (Position("T1", s, 10, 100.0, 95.0, date(2026, 8, 11)) for s in ("AAA.NS", "BBB.NS"))
+    stop, other = broker.stop_order(held, last_price=100.0), broker.stop_order(sold, last_price=100.0)
+    live.store.save_position(held)
+    day_one, day_two = date(2026, 8, 11), date(2026, 8, 12)
+    first = OMS(live.store, live.connect(), clock, by_hand="the address moved", calendar=NSE)
+    assert first.submit(day_one, "T1", stop) == "HAND" and first.submit(day_one, "T1", stop) == "HAND"
+    assert first.handed == [stop]  # told once a day
+    assert first.submit(day_one, "T1", other) == "HAND"
+    second = OMS(live.store, live.connect(), clock, by_hand="the address moved", calendar=NSE)
+    assert second.submit(day_two, "T1", stop) == "HAND" and second.handed == [stop]  # told again the next day
+    kite.gtt_by_hand("AAA", 95.0, 10, 90.25)
+    assert second.submit(day_two, "T1", stop) == "SENT"  # you placed it: followed like the bot's own
+    assert live.store.order(stop.tag)["detail"] == "done by you in the Kite app"
+    assert second.refresh(day_two) == []  # BBB's holding is gone, so its stop is no longer asked for (and no news)
+    assert live.store.order(other.tag)["status"] == "NOT DONE"
+
+
 def test_your_own_trades_and_the_stops_own_sell_are_never_taken_for_hand_orders(tmp_path):
     paper, live, kite, clock = setup(tmp_path)
     live.settings = replace(live.settings, kite_static_ip="198.51.100.7")
