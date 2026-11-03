@@ -284,8 +284,8 @@ def trial_money_checks(settings, now: datetime, overrides=None) -> list[Health]:
             checks.append(Health("real-money trial", WARN, f"the real-money trial of {o.strategy_id} ends on {o.until}: "
                                  "renew it in writing (a new decided date) or let it end; its trades then only exit"))
         else:
-            checks.append(Health("real-money trial", INFO, f"{o.strategy_id} trades real money until {o.until}, "
-                                 "without the evidence the rules ask for (config/overrides.toml)"))
+            checks.append(Health("real-money trial", INFO, f"{o.strategy_id} trades Rs {settings.live_capital:,.0f} of real money "
+                                 f"until {o.until}, by your written choice, without the evidence the rules ask for"))
     return checks
 
 

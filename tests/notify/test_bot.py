@@ -13,7 +13,7 @@ from trader.execution.store import PaperStore
 from trader.markets.calendar import load_calendars
 from trader.notify import bot as bot_module
 from trader.notify.bot import HELP, CommandBot, Context, kite_check_text, kite_login, login_reminder, reply_to
-from trader.ops.health import ALERT, OK, Health
+from trader.ops.health import ALERT, INFO, OK, WARN, Health
 from trader.registry import StrategyRecord, StrategyRegistry
 from trader.risk.killswitch import KillSwitch
 
@@ -209,6 +209,20 @@ def test_the_kite_check_from_the_phone_sends_counts_and_a_verdict_only(monkeypat
     assert offline == "Kite check failed: couldn't reach Kite (ConnectionError)."
     assert "/kitecheck" in HELP
 
+
+
+def test_status_shows_the_real_money_trial_beside_the_mode(tmp_path):
+    trial = Health("real-money trial", INFO, "B1F trades Rs 10,000 of real money until 2027-01-24")
+    live = Health("live trading", INFO, "on, and logged in to Kite; no real order has been sent yet")
+    text = reply_to("/status", context(tmp_path, checks=[trial, live, Health("calendar", OK, "fine")]))
+    lines = text.split("\n")
+    assert lines[3] == "Real-money trial: B1F trades Rs 10,000 of real money until 2027-01-24"
+    assert lines[4] == "Live trading: on, and logged in to Kite; no real order has been sent yet"
+    assert lines[2].startswith("Mode: NO TRADE") and lines[5] == "Kill switch: off" and "All health checks pass." in text
+    assert "fine" not in text
+    ended = Health("real-money trial", WARN, "the real-money trial of B1F ends on 2027-01-24")
+    text = reply_to("/status", context(tmp_path / "b", checks=[ended]))  # a problem goes once, under the warnings
+    assert text.count("ends on 2027-01-24") == 1 and text.index("Warnings:") < text.index("ends on 2027-01-24")
 
 
 def test_status_shows_the_us_account_when_there_is_one(tmp_path):

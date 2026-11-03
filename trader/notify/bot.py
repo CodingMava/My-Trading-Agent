@@ -38,7 +38,7 @@ from trader.markets.calendar import load_calendars
 from trader.notify.telegram import notifier_from_settings
 from trader.notify.templates import money, rupees
 from trader.ops import console
-from trader.ops.health import ACTIVE, ALERT, WARN, Health, health_checks, open_live_store, open_us_store
+from trader.ops.health import ACTIVE, ALERT, INFO, WARN, Health, health_checks, open_live_store, open_us_store
 from trader.registry import StrategyRegistry
 from trader.risk.killswitch import KillSwitch
 
@@ -83,8 +83,11 @@ def load_context(settings, kill_switch: KillSwitch) -> Context:
 def status_text(ctx: Context) -> str:
     active = [r.id for r in ctx.registry.records() if r.status in ACTIVE]
     lines = [f"<b>Status</b> ({datetime.now(IST):%d %b %H:%M} IST)", "",
-             f"Mode: {'paper trading ' + ', '.join(active) if active else 'NO TRADE (no strategy has the evidence to trade)'}",
-             f"Kill switch: {'ENGAGED (' + ctx.kill_switch.reason + ')' if ctx.kill_switch.engaged else 'off'}"]
+             f"Mode: {'paper trading ' + ', '.join(active) if active else 'NO TRADE (no strategy has the evidence to trade)'}"]
+    # The real-money trial trades by your written choice, whatever the mode says. Its problems are in the warnings below.
+    lines += [f"{c.name.capitalize()}: {c.detail}" for c in ctx.checks
+              if c.name == "live trading" or (c.name == "real-money trial" and c.level == INFO)]
+    lines.append(f"Kill switch: {'ENGAGED (' + ctx.kill_switch.reason + ')' if ctx.kill_switch.engaged else 'off'}")
     if ctx.store is None:
         lines.append("No paper-trading records yet: the first daily run creates them.")
     else:
