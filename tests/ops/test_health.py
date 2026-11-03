@@ -131,6 +131,18 @@ def test_dry_run_orders_kite_would_refuse_are_a_warning(tmp_path):
     assert dry_run_check(store, today + timedelta(days=31)).level == OK  # fixed a month ago
 
 
+def test_live_trading_that_is_on_with_nothing_to_report_doesnt_say_off(tmp_path, monkeypatch):
+    settings = replace(load_settings(env={}), live_enabled=True)
+    monkeypatch.setattr(health, "load_session", lambda *args: object())  # logged in to Kite
+    store = LiveStore(tmp_path / "live.db")
+    for records in (None, store):  # no live job has run yet, or one has and left nothing
+        [check] = live_checks(settings, records, EVENING, tmp_path / "session.json")
+        assert check.name == "live trading" and check.level == INFO
+        assert check.detail == "on, and logged in to Kite; no real order has been sent yet"
+    [off] = live_checks(replace(settings, live_enabled=False), store, EVENING, tmp_path / "session.json")
+    assert off.detail.startswith("off: no real order has been sent")
+
+
 def test_the_live_account_is_watched(tmp_path):
     settings, no_login = replace(load_settings(env={}), live_enabled=False), tmp_path / "session.json"
     assert levels(live_checks(settings, None, EVENING, no_login)) == {"live trading": INFO}  # off

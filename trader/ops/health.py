@@ -238,7 +238,11 @@ def live_checks(settings, store: LiveStore | None, now: datetime, session_file: 
     if settings.live_enabled and load_session(session_file) is None:
         checks.append(Health("live login", WARN, "no Kite login today: the 09:20, 15:15 and evening live jobs need one "
                              "(python -m trader.data.kite login)"))
-    return checks or [Health("live trading", INFO, "off: no real order has been sent; Indian orders are a dry run")]
+    if checks:
+        return checks
+    if settings.live_enabled:
+        return [Health("live trading", INFO, "on, and logged in to Kite; no real order has been sent yet")]
+    return [Health("live trading", INFO, "off: no real order has been sent; Indian orders are a dry run")]
 
 
 def address_checks(settings, address=None) -> list[Health]:
