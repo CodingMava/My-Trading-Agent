@@ -438,21 +438,24 @@ def next_open(ledger, sessions: list[date], secs: dict, e2: pd.DataFrame, v2: di
     """What the trial will do at the open of `next_session`, planned the evening before from the ledger as recorded: the
     entries it makes if the stock trades there and isn't locked at its upper band all day, the positions it sells by
     time, and what it holds after that open. It runs the trial's own update on a stand-in session and records nothing.
-    Returns {"entries": [{part, sid, signal_date, tier, close}], "exits": [{part, sid, signal_date, entry_date}],
-    "passed": [(part, sid, status)], "held": {sid: part}}; `close` is the latest close, as NSE printed it."""
+    Returns {"entries": [{part, sid, signal_date, tier, strength, close}], "exits": [{part, sid, signal_date, entry_date}],
+    "passed": [(part, sid, status)], "held": {sid: part}}; `close` is the latest close, as NSE printed it, and
+    `strength` the signal's (E2: the results reaction against the market)."""
     view = _ReadOnly(ledger)
     stand_in = _NextSession(secs)
     events = update(view, [*sessions, next_session], stand_in, e2, v2, now)
     day = next_session.isoformat()
     signals = view.table("signals")
-    tier = {(p, s, d): t for p, s, d, t in zip(signals["part"], signals["sid"], signals["signal_date"], signals["tier"])}
+    found = {(p, s, d): (t, v) for p, s, d, t, v in zip(signals["part"], signals["sid"], signals["signal_date"],
+                                                         signals["tier"], signals["strength"])}
     decisions, trades = view.table("decisions"), view.table("trades")
     entries, passed = [], []
     for row in decisions[decisions["entry_date"] == day].itertuples(index=False):
         if row.status == "bought":
             sec = secs[row.sid]
-            entries.append({"part": row.part, "sid": row.sid, "signal_date": row.signal_date,
-                            "tier": tier[(row.part, row.sid, row.signal_date)], "close": float(sec.raw_close[sec.last_row[-1]])})
+            tier, strength = found[(row.part, row.sid, row.signal_date)]
+            entries.append({"part": row.part, "sid": row.sid, "signal_date": row.signal_date, "tier": tier,
+                            "strength": float(strength), "close": float(sec.raw_close[sec.last_row[-1]])})
         else:
             passed.append((row.part, row.sid, row.status))
     exits = [{"part": t.part, "sid": t.sid, "signal_date": t.signal_date, "entry_date": t.entry_date}

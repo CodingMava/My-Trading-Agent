@@ -162,7 +162,7 @@ def job(live, clock, name, day, hour, minute=0):
 
 def test_a_dry_run_carries_out_the_trials_plan_on_the_simulated_account(tmp_path):
     clock, quotes = Clock(), Quotes()
-    aaa = {"part": "E2", "sid": "AAA", "signal_date": "2026-08-07", "tier": "N1", "close": 100.0}
+    aaa = {"part": "E2", "sid": "AAA", "signal_date": "2026-08-07", "tier": "N1", "strength": 0.08, "close": 100.0}
     plans = {MON: plan([aaa], held=["AAA"], passed=[("E2", "BBB", "no free place")]),
              TUE: plan(held=["AAA"]),
              WED: plan(exits=[{"part": "E2", "sid": "AAA", "signal_date": "2026-08-07", "entry_date": "2026-08-11"}])}
@@ -170,14 +170,19 @@ def test_a_dry_run_carries_out_the_trials_plan_on_the_simulated_account(tmp_path
     code, messages = job(live, clock, "evening", MON, 21, 30)
     assert code == 0 and "<b>[LIVE DRY RUN · nothing sent to Kite] Live evening</b>" in messages[0]
     assert "AAA.NS: buy 33 at the open (SENT)" in messages[0]  # Rs 3,333 (0.5% of 10 lakh over a 15% stop) scaled to 1 lakh
-    assert "B1F E2 BBB: no paper entry at the open (no free place)" in messages[0]
+    assert "BBB: a buy signal, but all 5 slots of our rules are full." in messages[0]
+    assert messages[1] == ("[LIVE DRY RUN] <b>India plan for Tue 11 Aug</b>\n\n<b>BUY 33 AAA at 9:15 am, placed by the "
+                           "bot</b>\nWhy: after its results, it beat the market by 8% in 2 days (our rule buys these).\n"
+                           "Stop-loss: the bot sets it after the buy.\n\n"
+                           "BBB: a buy signal, but all 5 slots of our rules are full.")
     quotes.set("AAA", 100.0, 99.0, 100.5)
     code, messages = job(live, clock, "morning", TUE, 9, 20)
     assert "AAA.NS entry: buy 33 at 100.00" in messages[0] and "AAA.NS: stop (SENT)" in messages[0]
     position = live.store.positions()["AAA.NS"]
     assert position.stop_price == pytest.approx(85.0) and position.max_hold_days is None
     assert job(live, clock, "preclose", TUE, 15, 15) == (0, [])  # B1F's exits are at the open, never before the close
-    assert job(live, clock, "evening", TUE, 21, 30) == (0, [])  # held, as in paper: nothing to send
+    assert job(live, clock, "evening", TUE, 21, 30) == (0, [  # held, as in paper: nothing to send
+        "[LIVE DRY RUN] <b>India plan for Wed 12 Aug</b>\nNothing to buy or sell.\n\nNo new buy signals, and nothing to sell."])
     code, messages = job(live, clock, "evening", WED, 21, 30)
     assert "AAA.NS: sell 33 at the open (SENT)" in messages[0]
     quotes.set("AAA", 104.0, 103.0, 104.0)
@@ -185,7 +190,7 @@ def test_a_dry_run_carries_out_the_trials_plan_on_the_simulated_account(tmp_path
     assert "AAA.NS exit: sell 33 at 104.00" in messages[0] and "AAA.NS: stop deleted (DONE)" in messages[0]
     assert live.store.positions() == {} and live.store.ledger_problems() == []
     code, messages = job(live, clock, "evening", THU, 21, 30)
-    assert "Paper trial 1 hasn't processed 2026-08-13 yet" in messages[0]
+    assert "Tonight's rules run hasn't finished, so there is no plan yet" in messages[0]
 
 
 def test_only_a_dry_run_may_treat_a_strategy_as_live(tmp_path):
@@ -205,7 +210,7 @@ def test_the_trials_orders_sell_what_paper_no_longer_holds():
             "DDD.NS": Position("H1", "DDD.NS", 10, 50.0, 45.0, MON)}
     orders, notes = trial_orders(TUE, held, NSE, plan_for=lambda d, nxt: plan(held=["CCC"]))
     assert [(o.symbol, o.side) for o in orders] == [("AAA.NS", "sell")]  # paper doesn't hold AAA; DDD isn't B1F's
-    assert notes == ["AAA.NS: held live for B1F but not by paper trial 1, so it is sold at the open"]
+    assert notes == []  # the sale carries its reason ("our rules no longer hold it")
     assert trial_orders(TUE, held, NSE, plan_for=lambda d, nxt: None)[0] is None
 
 
@@ -252,20 +257,18 @@ def test_a_dry_run_reads_prices_from_kite_with_the_days_login(tmp_path, monkeypa
     api = live.connect()
     assert api.ltp(["AAA"]) == {"AAA": 101.5} and api.ltp(["AAA"]) == {"AAA": 101.5} and logins == [1]
     assert {call[0] for call in kite.calls} == {"GET"} and {call[1] for call in kite.calls} == {"/quote/ohlc"}
-    assert live_jobs.dry_run_waiting(tmp_path / "dry") is False  # nothing held or outstanding
-    store = LiveStore(tmp_path / "dry" / "live.db")
-    store.save_position(Position(TRIAL, "AAA.NS", 30, 100.0, 85.0, MON))
-    store.close()
-    assert live_jobs.dry_run_waiting(tmp_path / "dry") is True
-    assert live_jobs.dry_run_waiting(tmp_path / "none") is False
 
 
 def test_the_dry_run_command_line(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(live_jobs, "ROOT", tmp_path)
     monkeypatch.setattr(live_jobs, "DRY_RUN_DIR", tmp_path / "state" / "live-dryrun")
     monkeypatch.setattr(live_jobs, "configure_logging", lambda **kwargs: None)
-    telegram = FakeNotifier()
-    monkeypatch.setattr(live_jobs, "notifier_from_settings", lambda settings: telegram)
+    telegram, kinds = FakeNotifier(), []
+
+    def notifier(settings, kind="note"):
+        kinds.append(kind)
+        return telegram
+    monkeypatch.setattr(live_jobs, "notifier_from_settings", notifier)
     monkeypatch.setattr(live_jobs, "trial_orders", lambda today, held, calendar: (None, ["the trial hasn't run"]))
     clock, original = Clock(), live_jobs.dry_run
     clock.at(MON, 21, 30)  # a trading evening, whenever the test runs
@@ -284,11 +287,12 @@ def test_the_dry_run_command_line(tmp_path, monkeypatch, capsys):
         live_jobs.main(["evening", "--dry-run", "--as-live", "B1F", "--notify"])
     assert finished.value.code == 0 and "the trial hasn't run" in capsys.readouterr().out
     assert telegram.sent and all("[LIVE DRY RUN" in text for text in telegram.sent)
+    assert kinds == ["note"]  # a dry run's messages are notes: only logged (trader/notify/telegram.py)
     assert not (tmp_path / "state" / "live.db").exists()  # the real live records are untouched
 
 
 # --- failures on the dry-run path ----------------------------------------------------------------------------
-AAA = {"part": "E2", "sid": "AAA", "signal_date": "2026-08-07", "tier": "N1", "close": 100.0}
+AAA = {"part": "E2", "sid": "AAA", "signal_date": "2026-08-07", "tier": "N1", "strength": 0.08, "close": 100.0}
 
 
 def test_a_trial_that_refuses_to_run_is_a_reported_failure(tmp_path, monkeypatch):
@@ -355,3 +359,16 @@ def test_the_kill_switch_stops_b1f_entries_but_never_its_exits(tmp_path):
     code, messages = job(live, clock, "evening", TUE, 21, 30)
     assert "BBB.NS: entry not sent: the kill switch is engaged" in messages[0]
     assert "AAA.NS: sell 33 at the open (SENT)" in messages[0]  # the way out is never blocked
+
+
+def test_the_trials_orders_say_why_in_plain_words():
+    v2 = {"part": "V2", "sid": "VVV", "signal_date": "2026-07-31", "tier": "N1", "strength": 2.0, "close": 50.0}
+    old = {"part": "V2", "sid": "OLD", "signal_date": "2026-06-30", "entry_date": "2026-07-01"}
+    late = {"part": "E2", "sid": "EEE", "signal_date": "2026-06-10", "entry_date": "2026-06-11"}
+    held = {"GONE.NS": Position(TRIAL, "GONE.NS", 3, 100.0, 85.0, MON)}
+    orders, _ = trial_orders(TUE, held, NSE, plan_for=lambda d, nxt: plan([AAA, v2], exits=[old, late], held=["AAA", "VVV"]))
+    assert [o.reason for o in orders] == [
+        "after its results, it beat the market by 8% in 2 days (our rule buys these)",
+        "one of the steadiest risers of the past year: a top pick this month",
+        "a new month: our rule sells and picks again", "its 40 trading days are up (our rule)",
+        "our rules no longer hold it"]

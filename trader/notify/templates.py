@@ -86,15 +86,28 @@ def live_update(*, title: str, lines: list[str], dry_run: bool = False, trial: b
     return "\n".join([f"<b>{label} {escape(title)}</b>", "", *(escape(line) for line in lines)])
 
 
-def by_hand(steps: list[str]) -> str:
-    """Real orders the bot couldn't send (Kite takes orders only from the registered internet address), as steps
-    to do in the Kite app, in plain words."""
-    return "\n".join(["<b>[LIVE · real money] Please do this by hand in Zerodha</b>", "",
-                      "Kite won't take orders from me right now (your internet address changed). So please do "
-                      "these yourself in the Kite app:", "",
-                      *(escape(step) + "\n" for step in steps),
-                      "I'll see in Kite when it's done, and take care of the rest myself.",
-                      "Skipping a BUY is fine. Please don't skip a SELL or a STOP-LOSS: they protect your money."])
+HOW = ("How: tap the stock › Buy or Sell › Longterm (CNC) › Market (in the evening, tick AMO). "
+       "Skip a BUY if you like; please don't skip a SELL or a stop-loss.")
+
+
+def steps_message(title: str, steps: list[str], footer: str = "", note: str = "") -> str:
+    """A short message to act on: a bold title (with a plain note under it), each step with its first line in bold,
+    then a footer. Every part is escaped (quotes needn't be: they are text, not attributes)."""
+    def text(part: str) -> str:
+        return escape(part, quote=False)
+
+    head = f"<b>{text(title)}</b>" + (f"\n{text(note)}" if note else "")
+    body = []
+    for step in steps:
+        first, _, rest = step.partition("\n")
+        body.append(f"<b>{text(first)}</b>" + (f"\n{text(rest)}" if rest else ""))
+    return "\n\n".join([head, *body, *([text(footer)] if footer else [])])
+
+
+def by_hand(steps: list[str], why: str = "") -> str:
+    """Real orders the bot couldn't place in Zerodha, as short steps to do in the Kite app, in plain words; `why`
+    says what stopped the bot (no Kite login today, a changed internet address)."""
+    return steps_message("India: please do this in Kite", steps, HOW, f"The bot couldn't place it: {why}." if why else "")
 
 
 def daily_summary(*, session: str, equity: float, day_change: float, cash: float, positions: list[tuple[str, int, float]],

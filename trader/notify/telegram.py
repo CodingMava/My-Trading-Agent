@@ -48,15 +48,24 @@ class TelegramNotifier:
 
 
 class LogNotifier:
-    """Used when Telegram isn't configured: messages only go to the log."""
+    """Messages that only go to the log: every kind but those in TO_TELEGRAM, and all of them while Telegram is off."""
 
     def send(self, text: str) -> bool:
-        log.info("Notification (Telegram off): %s", text.replace("\n", " | "))
+        log.info("Notification (log only): %s", text.replace("\n", " | "))
         return True
 
 
-def notifier_from_settings(settings):
-    if settings.telegram_enabled:
+# What reaches your Telegram (your decisions, 20 Nov 2026), all in short plain words. "orders": each market day's
+# messages about buying and selling: the morning one (please log in; today's 9:15 orders), the US list each evening and
+# India's plan for the next market day, with anything the bot couldn't place for you to do by hand; "alerts": a problem
+# that needs you (the 21:00 health check); "answers": the bot's replies to your own commands. Every other message
+# (paper summaries, research and forward tests, the dry run) is a "note", and goes to the log files only.
+TO_TELEGRAM = ("orders", "alerts", "answers")
+
+
+def notifier_from_settings(settings, kind: str = "note"):
+    """Where a message of this kind goes: Telegram for those in TO_TELEGRAM, the log for anything else."""
+    if settings.telegram_enabled and kind in TO_TELEGRAM:
         return TelegramNotifier(settings.telegram_bot_token.reveal(), settings.telegram_chat_id,
                                 timeout=settings.telegram_timeout_seconds)
     return LogNotifier()
@@ -76,9 +85,8 @@ def main(argv: list[str] | None = None) -> None:
     configure_logging(secrets=settings.secret_values())
     if not settings.telegram_enabled:
         raise SystemExit("Telegram is off: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env (see .env.example).")
-    sent = notifier_from_settings(settings).send(
-        "<b>Test message</b>\n\nThe trading agent can reach this chat. Mode: NO TRADE until a strategy passes "
-        "the profitability gate.")
+    sent = notifier_from_settings(settings, "answers").send(
+        "<b>Test message</b>\n\nThe trading agent can reach this chat. It only writes when you have something to buy or sell.")
     raise SystemExit(0 if sent else "The test message could not be sent: see logs/trader.log.")
 
 

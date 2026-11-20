@@ -23,6 +23,7 @@ from trader.execution.oms import OMS, LiveStore
 from trader.execution.sources import LiveOrder
 from trader.execution.store import PaperStore
 from trader.markets.calendar import load_calendars
+from trader.notify import templates
 from trader.registry import StrategyRecord, StrategyRegistry
 from trader.risk.killswitch import KillSwitch
 
@@ -163,13 +164,21 @@ def test_failures_are_reported(tmp_path):
     def no_login():
         raise KiteAuthError("no valid Kite session today (run: python -m trader.data.kite login)")
     live.connect = no_login
-    code, messages = job(live, clock, "morning", date(2026, 8, 11), 9, 20)
-    assert code == 1 and "[LIVE] Live morning failed" in messages[0] and "login" in messages[0]
-    assert "tries again every 15 minutes" in messages[0]
+    assert job(live, clock, "morning", date(2026, 8, 11), 9, 20) == (0, [])  # no login, nothing held: nothing to do
     live.connect = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
     code, messages = job(live, clock, "morning", date(2026, 8, 11), 9, 20)
-    assert code == 1 and "RuntimeError: boom" in messages[0]  # another kind of failure: told too
+    assert code == 1 and "[LIVE] Live morning failed" in messages[0] and "RuntimeError: boom" in messages[0]
+    assert "tries again every 15 minutes" in messages[0]
     assert job(live, clock, "morning", date(2026, 8, 11), 9, 35) == (1, [])  # its repeat: only logged
+
+    class Expired:  # a login that stops working during the job: it fails, and says so once
+        def __getattr__(self, name):
+            raise KiteAuthError("the session expired")
+    live.store.save_position(Position("T1", "AAA.NS", 10, 100.0, 95.0, date(2026, 8, 11)))
+    live.connect = Expired
+    code, messages = job(live, clock, "morning", date(2026, 8, 11), 9, 50)
+    assert code == 1 and "Live morning failed" in messages[0] and "the session expired" in messages[0]
+    live.connect = lambda: (_ for _ in ()).throw(RuntimeError("boom"))
     code, messages = job(live, clock, "preclose", date(2026, 8, 11), 15, 15)
     assert code == 1 and "Live preclose failed" in messages[0] and "tries again" not in messages[0]  # runs once
 
@@ -182,10 +191,13 @@ def test_a_stop_missed_for_want_of_a_login_goes_in_after_the_login(tmp_path):
     kite.positions["net"].append({"tradingsymbol": "AAA", "exchange": "NSE", "product": "CNC", "quantity": 10})
     kite.prices = {"AAA": 100.0}
     logged_in, live.connect = live.connect, lambda: (_ for _ in ()).throw(KiteAuthError("no valid Kite session today"))
-    code, messages = job(live, clock, "morning", today, 9, 20)  # nobody logged in before 09:20
-    assert code == 1 and len(messages) == 1 and kite.gtts == {}
-    assert job(live, clock, "morning", today, 9, 35) == (1, [])  # still no login: told once, not every 15 minutes
-    live.connect = logged_in  # the login at 11:07
+    code, messages = job(live, clock, "morning", today, 9, 20)  # nobody logged in before 09:20: the stop is yours to set
+    assert code == 0 and "AAA.NS: stop (HAND)" in messages[0] and kite.calls == [] and kite.gtts == {}
+    assert ("<b>India: please do this in Kite</b>\nThe bot couldn't place it: no Kite login today.\n\n"
+            "<b>STOP-LOSS on AAA: sell 10 if it falls to ₹95.00</b>\nKite: AAA › Create GTT › Single › Sell › trigger ₹95.00 › "
+            "qty 10 › price ₹90.25\n\nHow: ") in messages[1]
+    assert job(live, clock, "morning", today, 9, 35) == (0, [])  # still no login: told once, not every 15 minutes
+    live.connect = logged_in  # the login at 11:07; you didn't set it
     code, messages = job(live, clock, "morning", today, 11, 20)
     assert code == 0 and "AAA.NS: stop (SENT)" in messages[0] and len(kite.gtts) == 1
     assert job(live, clock, "morning", today, 11, 35) == (0, [])  # nothing new: nothing said
@@ -227,7 +239,8 @@ def test_a_bad_day_stops_new_live_entries_and_a_smaller_account_buys_less(tmp_pa
     kite.fill(kite.orders[0], 100.0)
     kite.prices = {"AAA": 100.0}
     job(live, clock, "morning", tue, 9, 20)
-    assert job(live, clock, "evening", tue, 18, 30) == (0, [])  # nothing to send; the evening's equity is recorded
+    assert job(live, clock, "evening", tue, 18, 30) == (0, [  # nothing to do: the plan says so; the equity is recorded
+        "<b>India plan for Wed 12 Aug</b>\nNothing to buy or sell.\n\nNo new buy signals, and nothing to sell."])
     kite.prices = {"AAA": 70.0}  # AAA closes 30% down, below its stop: the account is down 3% today
     code, messages = job(live, clock, "evening", wed, 18, 30)
     assert "BBB.NS: entry not sent: today -3.0% (no new entries below -2%)" in messages[0]
@@ -280,8 +293,13 @@ def test_a_real_money_trial_opens_trades_only_within_its_limits(tmp_path):
     assert "AAA.NS: buy 100 at the open (SENT)" in messages[0]
     assert "on for TS with Rs 100,000" in status_text(live)
     assert "Real-money trial of TS, decided 2026-08-10, until 2026-08-31, at most Rs 150,000: NOT approved" in status_text(live)
-    live.settings = replace(live.settings, live_capital=150_000)
-    assert "TS must first pass Level 6 (status LIVE)" in capital_for_today(live, date(2026, 8, 28))[1][0]  # can't grow
+    live.settings = replace(live.settings, live_capital=150_000)  # your written cap decides: no Level 6, no 4 weeks
+    assert capital_for_today(live, date(2026, 8, 12)) == (150_000, ["Live capital raised to Rs 150,000."])
+    assert live.store.capital_steps()[-1]["reason"] == "raised: your written trial cap"
+    live.overrides = (Override("TS", SIGNAL_DAY, date(2026, 8, 31), 400_000.0, REASON),)
+    live.settings = replace(live.settings, live_capital=400_000)
+    assert "more than 2x the current step" in capital_for_today(live, date(2026, 8, 13))[1][0]  # still at most double
+    live.overrides = (Override("TS", SIGNAL_DAY, date(2026, 8, 31), 150_000.0, REASON),)
     live.settings = replace(live.settings, live_capital=200_000)
     assert "capital Rs 200,000 is above the real-money trial's cap of Rs 150,000" in status_text(live)
     live.settings = replace(live.settings, live_capital=100_000)
@@ -356,6 +374,9 @@ def test_the_morning_job_handles_stops_that_cant_wait(tmp_path):
     code, messages = job(live, clock, "morning", today, 9, 25)
     assert "BBB.NS: gap exit (DONE)" in messages[0] and sell["order_type"] == "MARKET"
     assert "CCC.NS has no stop at Kite (cancelled: GTT rejected). Place one by hand." in messages[0]
+    assert ("<b>STOP-LOSS on CCC: sell 10 if it falls to ₹95.00</b>\nKite: CCC › Create GTT › Single › Sell › trigger "
+            "₹95.00 › qty 10 › price ₹90.25\nWhy: Kite has no stop-loss for it (cancelled).") in messages[1]
+    assert "couldn't place it" not in messages[1]  # the bot could send: Kite said no
     code, messages = job(live, clock, "morning", today, 9, 40)
     assert not any("CCC.NS has no stop" in text for text in messages)  # said once a day, though the job repeats
     code, messages = job(live, clock, "morning", date(2026, 8, 12), 9, 20)
@@ -365,7 +386,9 @@ def test_the_morning_job_handles_stops_that_cant_wait(tmp_path):
 def test_the_evening_job_waits_for_the_paper_run(tmp_path):
     paper, live, kite, clock = setup(tmp_path)
     code, messages = job(live, clock, "evening", SIGNAL_DAY, 18, 30)  # the paper run hasn't processed the day
-    assert "hasn't processed 2026-08-10 yet" in messages[0] and kite.orders == []
+    assert "Tonight's paper run hasn't finished" in messages[0] and kite.orders == []
+    assert messages[1] == ("<b>India plan for Tue 11 Aug</b>\nNothing to buy or sell.\n\n"
+                           "Tonight's paper run hasn't finished, so there is no plan yet: nothing to buy or sell.")
     assert job(live, clock, "evening", date(2026, 8, 15), 18, 30) == (0, [])  # a Saturday: nothing to do
 
 
@@ -427,7 +450,7 @@ def command_line(tmp_path, monkeypatch, **changes):
     settings = replace(load_settings(env={}), live_enabled=False, live_capital=0.0, **changes)
     monkeypatch.setattr(live_jobs, "ROOT", tmp_path)
     monkeypatch.setattr(live_jobs, "configure_logging", lambda **kwargs: None)  # not into the real logs/
-    monkeypatch.setattr(live_jobs, "notifier_from_settings", lambda settings: FakeNotifier())
+    monkeypatch.setattr(live_jobs, "notifier_from_settings", lambda settings, kind="note": FakeNotifier())
     monkeypatch.setattr(live_jobs, "load_settings", lambda: settings)
     monkeypatch.setattr(live_jobs, "load_overrides", lambda: ())
     monkeypatch.setattr(live_jobs, "load_never_trade", lambda: frozenset())
@@ -560,9 +583,10 @@ def test_this_pcs_internet_address_and_kites_registered_one(tmp_path):
     live.address = lambda: "203.0.113.9"  # the address changed overnight
     code, messages = job(live, clock, "morning", date(2026, 8, 11), 9, 20)
     assert code == 0 and "This PC's internet address is now 203.0.113.9, but Kite has 198.51.100.7" in messages[0]
-    assert "AAA.NS: stop (HAND)" in messages[0] and "[LIVE · real money] Please do this by hand" in messages[1]
-    assert "1. SET A STOP-LOSS on AAA\nKite app: AAA > Create GTT > Single > Sell > trigger price ₹95.00 > quantity 10 " \
-           "> price ₹90.25 > Create." in messages[1]
+    assert "AAA.NS: stop (HAND)" in messages[0]
+    assert ("<b>India: please do this in Kite</b>\nThe bot couldn't place it: your internet address changed (send /myip "
+            "to fix it).\n\n<b>STOP-LOSS on AAA: sell 10 if it falls to ₹95.00</b>\nKite: AAA › Create GTT › Single › Sell › "
+            "trigger ₹95.00 › qty 10 › price ₹90.25") in messages[1]
     assert writes(kite) == [] and kite.gtts == {}  # only read: Kite would refuse the stop, and not take it again
     assert job(live, clock, "morning", date(2026, 8, 11), 9, 35) == (0, [])  # told once a day
     live.address = lambda: None  # the address can't be looked up: Kite decides
@@ -581,8 +605,8 @@ def test_orders_kite_refuses_are_handed_to_you_and_followed_once_done(tmp_path):
     paper.run(until=SIGNAL_DAY, start=SIGNAL_DAY)
     code, messages = job(live, clock, "evening", SIGNAL_DAY, 18, 30)
     assert code == 0 and "AAA.NS: buy 100 at the open (HAND)" in messages[0] and writes(kite) == []
-    assert ("1. BUY 100 shares of AAA\nKite app: AAA > Buy > AMO > Longterm (CNC) > Market > quantity 100 > Buy. It buys at tomorrow's "
-            "9:15 open. Do it tonight, or skip it.") in messages[1] and "3. BUY 100 shares of CCC" in messages[1]
+    assert "<b>BUY 100 AAA on Tue 11 Aug at 9:15 am</b>\nStop-loss: once bought, sell if it falls to ₹" in messages[1]
+    assert "<b>BUY 100 CCC on Tue 11 Aug at 9:15 am</b>" in messages[1] and "Longterm (CNC)" in messages[1]
     assert {r["status"] for r in live.store.orders()} == {"HAND"}
     aaa, ccc = kite.by_hand("AAA", "BUY", 100), kite.by_hand("CCC", "BUY", 60)  # you buy two of the three, CCC smaller
 
@@ -617,8 +641,8 @@ def test_a_time_exit_by_hand_deletes_the_stop_first(tmp_path):
     job(live, clock, "morning", date(2026, 8, 11), 9, 20)  # the stop goes in as usual
     live.address = lambda: "203.0.113.9"
     code, messages = job(live, clock, "preclose", date(2026, 8, 11), 15, 15)
-    assert "1. DELETE the stop-loss of CCC\nKite app: Orders > GTT > CCC > Delete." in messages[-1]
-    assert "2. SELL 100 shares of CCC NOW, before 3:30 pm (its time is up)" in messages[-1]
+    assert ("<b>DELETE the stop-loss of CCC (Kite: Orders › GTT › CCC › Delete)</b>\nWhy: it is being sold.\n\n"
+            "<b>SELL 100 CCC NOW, before 3:30 pm</b>\nWhy: its time is up (our rule).") in messages[-1]
     [stop] = kite.gtts.values()
     stop["status"] = "deleted"  # you delete it, then sell
     kite.fill(kite.by_hand("CCC", "SELL", 100, "regular"), 100.0)
@@ -627,13 +651,20 @@ def test_a_time_exit_by_hand_deletes_the_stop_first(tmp_path):
     assert live.store.positions() == {} and writes(kite)[-1][0] == "POST"  # only the stop the bot placed itself
 
 
-def test_every_kind_of_order_has_steps_in_the_kite_app():
+def test_every_kind_of_order_has_short_steps_in_the_kite_app():
     held = Position("T1", "AAA.NS", 10, 100.0, 95.0, date(2026, 8, 11))
-    assert live_jobs.hand_step(broker.exit_order("k", "AAA.NS", 10)).startswith(
-        "SELL 10 shares of AAA\nKite app: AAA > Sell > AMO > Longterm (CNC) > Market > quantity 10 > Sell.")
-    assert live_jobs.hand_step(broker.gap_exit(held)).startswith("SELL AAA NOW\nIt fell below its stop-loss")
-    assert live_jobs.hand_step(broker.stop_exit(held)).startswith(
-        "SELL 10 shares of AAA NOW, before 3:30 pm (it is already below its stop-loss)\nKite app: AAA > Sell > Longterm (CNC) > Market")
+    step = live_jobs.hand_step
+    assert step(broker.entry_order("k", "AAA.NS", 10), "Mon 23 Nov") == "BUY 10 AAA on Mon 23 Nov at 9:15 am"
+    assert step(broker.exit_order("k", "AAA.NS", 10)) == "SELL 10 AAA on the next trading day at 9:15 am"
+    assert step(broker.gap_exit(held)) == ("SELL AAA NOW: it fell below its stop-loss, but that sell is stuck\n"
+                                           "Kite: Orders › the open AAA sell › Modify › Market")
+    assert step(broker.stop_exit(held)) == "SELL 10 AAA NOW, before 3:30 pm\nWhy: it is already below its stop-loss."
+    assert step(broker.time_exit(held)) == "SELL 10 AAA NOW, before 3:30 pm\nWhy: its time is up (our rule)."
+    assert live_jobs.refused_step(broker.exit_order("k", "AAA.NS", 10), "no holdings") == (
+        "SELL 10 AAA yourself, now\nZerodha refused the bot's sell: no holdings")
+    assert live_jobs.refused_step(broker.gap_exit(held), "x").startswith("SELL AAA yourself, now")
+    assert live_jobs.refused_step(broker.stop_order(held), "too far").endswith(
+        "price ₹90.25\nZerodha refused the bot's stop-loss: too far")
 
 
 def test_a_stop_handed_to_you_is_asked_for_each_day_until_it_is_found_or_its_holding_is_gone(tmp_path):
@@ -778,3 +809,96 @@ def test_the_read_only_check_finds_quotes_a_dry_run_cant_fill_at():
     kite.prices = {"NIFTYBEES": 285.5}
     seen, problems = check(KiteOrders("key", "AT", http=kite, sleep=lambda s: None))
     assert problems == ["quotes: the open, high and low a dry run relies on are missing"]
+
+
+# --- what comes to you on Telegram when the bot can't place an order --------------------------------------------
+def no_login():
+    raise KiteAuthError("no valid Kite session today (run: python -m trader.data.kite login)")
+
+
+def test_without_a_login_the_evening_hands_you_its_orders_with_their_reasons(tmp_path):
+    why = "after its results, it beat the market by 9% in 2 days (our rule buys these)"
+    live, kite, clock = from_source(tmp_path, {SIGNAL_DAY: [replace(entry("AAA.NS"), reason=why)]})
+    live.connect = no_login
+    code, messages = job(live, clock, "evening", SIGNAL_DAY, 21, 30)
+    assert code == 0 and kite.calls == [] and "AAA.NS: buy 100 at the open (HAND)" in messages[0]
+    assert messages[1] == ("<b>India plan for Tue 11 Aug</b>\nThe bot couldn't place these: no Kite login today. Please do "
+                           f"them in Kite.\n\n<b>BUY 100 AAA on Tue 11 Aug at 9:15 am</b>\nWhy: {why}.\n"
+                           f"Stop-loss: once bought, sell if it falls to ₹95.00 (5% down).\n\n{templates.HOW}")
+    code, messages = job(live, clock, "evening", SIGNAL_DAY, 21, 45)  # the task's repeat: nothing is told twice
+    assert code == 0 and not any("India" in text for text in messages)
+
+
+def test_a_buy_handed_to_you_is_yours_to_sell_once_the_rules_sell_it(tmp_path):
+    why = "its 40 trading days are up (our rule)"
+    sale = LiveOrder("TS", "TS AAA.NS exit", "AAA.NS", "sell", 0, 1_000_000, 0.0, reason=why)
+    live, kite, clock = from_source(tmp_path, {SIGNAL_DAY: [entry("AAA.NS")], date(2026, 8, 13): [sale, entry("AAA.NS")],
+                                               date(2026, 8, 14): [sale], date(2026, 8, 17): [sale]})
+    logged_in, live.connect = live.connect, no_login
+    job(live, clock, "evening", SIGNAL_DAY, 21, 30)  # handed to you: the bot never sees whether you bought it
+    live.connect = logged_in
+    code, messages = job(live, clock, "evening", date(2026, 8, 13), 21, 30)  # sold and bought again at one open
+    assert "AAA.NS: kept, since the rules buy it again at the open" in messages[0]
+    assert messages[1] == ("<b>India plan for Fri 14 Aug</b>\nNothing to buy or sell.\n\n"
+                           "KEEP AAA: the rules sell it and buy it again at the open, so it stays.")
+    code, messages = job(live, clock, "evening", date(2026, 8, 14), 21, 30)
+    assert messages[-1] == ("<b>India plan for Mon 17 Aug</b>\nPlease do these in Kite.\n\n<b>SELL 100 AAA on Mon 17 Aug at "
+                            f"9:15 am</b>\nOnly if you bought it after our 10 Aug message.\nWhy: {why}.\n\n{templates.HOW}")
+    assert job(live, clock, "evening", date(2026, 8, 17), 21, 30) == (0, [  # told once
+        "<b>India plan for Tue 18 Aug</b>\nNothing to buy or sell.\n\nNo new buy signals, and nothing to sell."])
+    assert writes(kite) == []  # the bot never sells what only you know about
+
+
+def test_without_a_login_the_morning_asks_you_once_to_protect_what_the_bot_bought(tmp_path):
+    live, kite, clock = from_source(tmp_path, {SIGNAL_DAY: [entry("AAA.NS")]})
+    job(live, clock, "evening", SIGNAL_DAY, 21, 30)  # logged in: the bot's after-market buy goes in
+    logged_in, live.connect = live.connect, no_login  # the login expired at 06:00
+    code, messages = job(live, clock, "morning", date(2026, 8, 11), 9, 20)
+    assert code == 0 and messages == [
+        "<b>India: please do this in Kite</b>\nThe bot couldn't place it: no Kite login today.\n\n<b>STOP-LOSS on AAA: once "
+        "the bot's 100 shares are bought, sell them if the price falls 5% below what was paid</b>\nKite: AAA › Create GTT › "
+        f"Single › Sell\n\n{templates.HOW}"]
+    assert job(live, clock, "morning", date(2026, 8, 11), 9, 35) == (0, [])  # told once
+    kite.new_day()  # it filled at the open, and you set its stop-loss yourself
+    kite.fill(kite.orders[0], 100.0)
+    kite.prices = {"AAA": 100.0}
+    kite.gtt_by_hand("AAA", 95.0, 100, 90.25)
+    live.connect = logged_in
+    code, messages = job(live, clock, "morning", date(2026, 8, 11), 11, 0)
+    assert "AAA.NS entry: buy 100 at 100.00" in messages[0] and "AAA.NS: stop (SENT)" in messages[0]
+    assert len(kite.gtts) == 1  # yours, followed: never a second one
+    stop = live.store.order(broker.stop_order(live.store.positions()["AAA.NS"]).tag)
+    assert stop["detail"] == "your own stop-loss in Kite" and stop["kite_id"] == str(next(iter(kite.gtts)))
+
+
+def test_a_sale_kite_refuses_comes_to_you_to_do_yourself(tmp_path):
+    sales = [LiveOrder("TS", f"TS {s} exit", s, "sell", 0, 1_000_000, 0.0) for s in ("AAA.NS", "BBB.NS")]
+    live, kite, clock = from_source(tmp_path, {SIGNAL_DAY: sales})
+    for symbol in ("AAA.NS", "BBB.NS"):
+        live.store.save_position(Position("TS", symbol, 10, 100.0, 95.0, date(2026, 8, 3)))
+        live.store.add_fill(date(2026, 8, 3), "E" + symbol[:3], "TS", symbol, "buy", 10, 100.0)
+        kite.positions["net"].append({"tradingsymbol": symbol[:3], "exchange": "NSE", "product": "CNC", "quantity": 10})
+    kite.prices = {"AAA": 100.0, "BBB": 100.0}
+    kite.failures = [("http", 400, "InputException", False)]  # Kite refuses AAA's sale; BBB's goes in
+    code, messages = job(live, clock, "evening", SIGNAL_DAY, 21, 30)
+    assert "AAA.NS: sell 10 at the open (REJECTED)" in messages[0] and "BBB.NS: sell 10 at the open (SENT)" in messages[0]
+    assert "<b>SELL 10 AAA yourself, now</b>\nZerodha refused the bot's sell: " in messages[1]
+    assert "<b>SELL 10 BBB at 9:15 am, placed by the bot</b>" in messages[1] and messages[1].startswith(
+        "<b>India plan for Tue 11 Aug</b>\nPlease do these in Kite.")
+    kite.new_day()
+    kite.reject(kite.by_tag(broker.exit_order("TS BBB.NS exit", "BBB.NS", 10).tag), "authorise the sale with your TPIN")
+    code, messages = job(live, clock, "morning", date(2026, 8, 11), 9, 20)  # the exchange turned BBB's sale down
+    assert ("<b>SELL 10 BBB yourself, now</b>\nZerodha refused the bot's sell: authorise the sale with your TPIN"
+            in messages[-1])
+
+
+def test_an_evening_plan_cut_short_says_so(tmp_path, monkeypatch):
+    live, kite, clock = from_source(tmp_path, {SIGNAL_DAY: [entry("AAA.NS")]})
+
+    def broken(live, today):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(live_jobs, "capital_for_today", broken)
+    code, messages = job(live, clock, "evening", SIGNAL_DAY, 21, 30)
+    assert code == 1 and "Live evening failed" in messages[0] and kite.orders == []
+    assert messages[1] == ("<b>India plan for Tue 11 Aug</b>\nNothing to buy or sell.\n\nSomething went wrong while making "
+                           "tonight's plan, so nothing more was placed (logs/live.log has why).")

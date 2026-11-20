@@ -184,11 +184,12 @@ is built and locked. Before it sends anything for real:
   meets it: its exits are at the open (after-market orders), so its pre-close job has nothing to do.
 - **A Kite login every trading day before 09:15:** sessions expire at 06:00 IST, and the live jobs run at
   09:20, 15:15 and in the evening right after paper trial 1 (in the "forward tests" task, about 21:00). Send
-  `/login` to the bot from your phone (or run `python -m trader.data.kite login` on the PC). While live trading
-  is on, or a live dry run holds simulated orders or shares, the bot reminds you at 08:30 on a trading day
-  without a login, and the health check warns. A late login still protects the holdings: the morning job
-  repeats every 15 minutes until 15:00, says once that it needs the login, and places the missing stops on
-  its first run after it.
+  `/login` to the bot from your phone (or run `python -m trader.data.kite login` on the PC). Each market day's
+  first Telegram message (08:30, "Good morning! India today") asks you to log in when there's no login yet and
+  lists today's 9:15 orders. On a day without a login, each order the bot would have placed comes to you as a
+  short step to do in the Kite app, with its reason, in the evening's "India plan for <next market day>". A
+  late login still protects the holdings: the morning job repeats every 15 minutes until 15:00 and places the
+  missing stops on its first run after it, following any stop-loss you already placed yourself.
 - **Enough capital for whole shares:** a live entry is its paper position scaled to the live capital, rounded
   down to whole shares, and one that rounds to none isn't sent. For B1F (E2 positions are 3.3% of the capital,
   V2's 5%), at Rs 1,00,000 about 14% of E2's possible stocks cost more than one position; at Rs 3,00,000 about

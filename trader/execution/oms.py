@@ -13,6 +13,8 @@ handed to you instead, recorded as HAND: you do it in the Kite app. Reading Kite
 job looks for what you did (an order without a tag for the same stock and side, a sell GTT for the stock) and from
 then on follows it like the bot's own: its fill, its holding, its stop. A handed buy is never also sent by the bot,
 so nothing is bought twice; a handed stop or sale you haven't done goes out by itself once the bot can send.
+Without today's Kite login nothing can be read either: requests are handed to you once, and an unclear one waits.
+A stop-loss you placed yourself is followed as the holding's stop, never placed a second time.
 """
 from __future__ import annotations
 
@@ -58,7 +60,8 @@ CREATE TRIGGER IF NOT EXISTS live_fills_no_delete BEFORE DELETE ON live_fills BE
 """
 UNSETTLED = ("SENDING", "SENT", "TRIGGERED", "UNKNOWN")  # Kite may still act on these
 HAND = "HAND"  # handed to you to do in the Kite app, not yet seen done there
-PLAIN = {"entry": "buy", "exit": "sell", "time exit": "sell", "stop exit": "sell", "gap exit": "sell",
+YOUR_SALE = "a buy handed to you: you sell it too"  # the detail of a sale only you know about (OMS.hand)
+PLAIN ={"entry": "buy", "exit": "sell", "time exit": "sell", "stop exit": "sell", "gap exit": "sell",
          "stop": "stop-loss", "cancel stop": "stop-loss delete"}  # a request's purpose in everyday words
 ORDER_PURPOSES = ("entry", "exit", "time exit", "stop exit")
 GTT_GONE = ("deleted", "cancelled", "expired", "disabled", "rejected")
@@ -186,34 +189,44 @@ def _stop_tag(path: str) -> str:
 
 
 class OMS:
-    def __init__(self, store: LiveStore, kite: KiteOrders, clock, by_hand: str = "", calendar=None):
+    def __init__(self, store: LiveStore, kite: KiteOrders | None, clock, by_hand: str = "", calendar=None):
         """`by_hand`: why the bot can't send today (empty when it can); its requests are then handed to you, and
-        `handed` lists those to tell you about. `calendar` says when a handed order has had its day."""
+        `handed` lists those to tell you about. `kite` is None without today's login: then nothing is read either.
+        `refused` lists what Kite refused (or what ended unfilled), with why. `calendar` says when a handed order has
+        had its day."""
         self.store, self.kite, self.clock = store, kite, clock
         self.by_hand, self.calendar = by_hand, calendar
         self.handed: list[broker.KiteRequest] = []
+        self.refused: list[tuple[broker.KiteRequest, str]] = []
 
     # --- sending ------------------------------------------------------------------------------------
     def submit(self, session: date, strategy_id: str, request: broker.KiteRequest, stop_distance: float = 0.0,
                max_hold_days: int | None = None) -> str:
         """Send one request, at most once; returns its status. A request already on record is never sent again,
         unless Kite has no trace of it after a crash or a lost answer. While the bot can't send, it is handed to
-        you instead (once a day until you've done it); a handed buy stays yours even once the bot can send."""
+        you instead (once a day until you've done it, or once while it can't even look); a handed buy stays yours
+        even once the bot can send. A stop-loss you already placed in Kite is followed, never placed twice."""
         row = self.store.order(request.tag)
         if row is not None and row["status"] == HAND:
-            if self._found_by_hand(row):
+            if self.kite is not None and self._found_by_hand(row):
                 return self.store.order(request.tag)["status"]
             if self.by_hand or row["purpose"] == "entry":
-                if self.by_hand and self.store.first_notice(session, f"hand {request.tag}"):
+                if self.by_hand and self.kite is not None and self.store.first_notice(session, f"hand {request.tag}"):
                     self.handed.append(request)
                 return HAND
             # a stop or a sale you haven't done: the bot sends it itself, now that it can
-        elif row is not None and (row["status"] not in ("SENDING", "UNKNOWN") or self._found(row)):
-            return self.store.order(request.tag)["status"]
+        elif row is not None and (row["status"] not in ("SENDING", "UNKNOWN") or self.kite is None or self._found(row)):
+            return self.store.order(request.tag)["status"]  # an unclear one waits for a login to be looked up
         problems = broker.problems(request)
         if problems:
             self.store.record(self.clock(), session, strategy_id, request, "REJECTED", "invalid: " + "; ".join(problems))
+            self.refused.append((request, "invalid: " + "; ".join(problems)))
             return "REJECTED"
+        if request.purpose == "stop" and self.kite is not None and (
+                yours := self._untracked_stop(request.params["condition"]["tradingsymbol"], self.kite.gtts())):
+            self.store.record(self.clock(), session, strategy_id, request, "SENT", "your own stop-loss in Kite")
+            self.store.update(self.clock(), request.tag, "SENT", kite_id=yours)
+            return "SENT"
         if self.by_hand:
             self.store.record(self.clock(), session, strategy_id, request, HAND, self.by_hand,
                               stop_distance=stop_distance, max_hold_days=max_hold_days)
@@ -226,12 +239,27 @@ class OMS:
             kite_id = self._send(request)
         except OrderRejected as exc:
             self.store.update(self.clock(), request.tag, "REJECTED", str(exc))
+            self.refused.append((request, str(exc)))
         except OutcomeUnknown as exc:
             self.store.update(self.clock(), request.tag, "UNKNOWN", str(exc))
         else:  # a deletion or a change is done once Kite accepts it; an order or a GTT has only begun
             self.store.update(self.clock(), request.tag, "DONE" if request.method in ("DELETE", "PUT") else "SENT",
                               kite_id=kite_id)
         return self.store.order(request.tag)["status"]
+
+    def hand(self, session: date, strategy_id: str, request: broker.KiteRequest) -> str:
+        """Hand a request to you whatever the bot could do: a sale of shares only you know about (a buy handed to you
+        that the bot never saw done). Recorded, so it is told once."""
+        self.store.record(self.clock(), session, strategy_id, request, HAND, YOUR_SALE)
+        self.handed.append(request)
+        return HAND
+
+    def _untracked_stop(self, tradingsymbol: str, gtts: list[dict]) -> str | None:
+        """The id of a sell GTT on the stock that the bot doesn't follow: a stop-loss you placed yourself."""
+        followed = {r["kite_id"] for r in self.store.orders()}
+        return next((str(g["id"]) for g in gtts if g["status"] in ("active", "triggered") and str(g["id"]) not in followed
+                     and g["condition"]["tradingsymbol"] == tradingsymbol
+                     and (g.get("orders") or [{}])[0].get("transaction_type") == "SELL"), None)
 
     def _send(self, request: broker.KiteRequest) -> str:
         if request.method == "POST" and request.path.startswith("/orders/"):
@@ -296,10 +324,7 @@ class OMS:
                           and o["status"] not in ("CANCELLED", "REJECTED")), None)
             kite_id = match and match["order_id"]
         else:
-            match = next((g for g in gtts if g["status"] in ("active", "triggered") and str(g["id"]) not in followed
-                          and g["condition"]["tradingsymbol"] == params["condition"]["tradingsymbol"]
-                          and (g.get("orders") or [{}])[0].get("transaction_type") == "SELL"), None)
-            kite_id = match and str(match["id"])
+            kite_id = self._untracked_stop(params["condition"]["tradingsymbol"], gtts)
         if not kite_id:
             return False
         self.store.update(self.clock(), row["tag"], "SENT", "done by you in the Kite app", kite_id=kite_id)
@@ -364,6 +389,9 @@ class OMS:
         if filled == 0:
             why = order.get("status_message") or order["status"].lower()
             self.store.update(self.clock(), row["tag"], order["status"], why)
+            request = json.loads(row["request"])
+            self.refused.append((broker.KiteRequest(row["symbol"], row["purpose"], "", request["method"], request["path"],
+                                                    request["params"], row["tag"]), why))
             return [f"{row['symbol']} {row['purpose']} {order['status'].lower()}: {why}"]
         detail = "" if filled == order["quantity"] else f"only {filled} of {order['quantity']} filled"
         with self.store.transaction():  # the fill, the holding and the status change together or not at all

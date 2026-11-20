@@ -5,9 +5,10 @@ the SEC's results filings, as defined in docs/research/ustrial1-definition.md.
     python -m trader.research.ustrial status    # the account: open positions and closed trades
 
 Research only: nothing here can place an order or change a strategy's status, and the rules have never been tested on US
-stocks. Its messages say what the rules buy and sell at each US open, for anyone who chooses to copy them by hand. The
-account logic is paper trial 1's, kept in this file with US costs and NYSE's month-ends so that trader/research/trial.py,
-which the real-money orders come from, stays untouched.
+stocks. Its list says what the rules buy and sell at each US open, for anyone who chooses to copy them by hand: on Telegram
+every US evening ("nothing tonight" too), in short plain words, with the rare note that needs you (ACT_ON). Its summaries,
+signals and paper entries go to logs/ustrial1.log only. The account logic is paper trial 1's, kept in this file with US
+costs and NYSE's month-ends so that trader/research/trial.py, which the real-money orders come from, stays untouched.
 """
 from __future__ import annotations
 
@@ -32,7 +33,7 @@ from trader.config import ENV_FILE, ROOT, load_settings, parse_env_file
 from trader.data.validate import DAILY_SETTLE
 from trader.logging_setup import configure_logging, make_console_utf8
 from trader.markets.calendar import MarketCalendar, load_calendars
-from trader.notify.templates import money
+from trader.notify.templates import money, steps_message
 from trader.research import forward2, forward3, round8, round9, round10, trial
 from trader.research.costs import CostModel
 from trader.research.datasets import text_sha256
@@ -69,6 +70,8 @@ TAG_OPEN = "<b>[US PAPER TRIAL · paper only] {title}</b>"
 CLOSED_HOW = {"stop": "stop-loss hit", "time": "its time was up", "time, delayed": "its time was up", "no further rows": "it stopped trading"}
 NOT_BOUGHT_WHY = {"not bought": "it didn't trade at that open", "no free place": "no free place", "already held": "already held",
                   "brake": "the trial has stopped buying"}
+# The notes that need you, if you copied the lists: they go to Telegram with the lists. Every other note is only logged.
+ACT_ON = ("not bought after all", "no prices")
 EXTRA_TABLES = ("members", "filings", "answers", "marks", "outbox")
 EXTRA_SCHEMA = """
 CREATE TABLE IF NOT EXISTS members (id INTEGER PRIMARY KEY, ticker TEXT NOT NULL, cik TEXT NOT NULL, name TEXT NOT NULL,
@@ -673,9 +676,9 @@ def messages(events: dict, trades: pd.DataFrame, latest: date) -> list[tuple[str
         out.append((f"brake {scope}", f"{TAG} The US paper trial {what} now, for good: too many losses. SELLs still come. This is only "
                     "the paper trial, nothing to do with your Indian account."))
     for part, sid, last in events["no prices"]:
-        out.append((f"no prices {part} {sid} {last['session'] if last else 'never'}", f"{TAG} Yahoo has stopped giving prices for "
-                    f"{html.escape(sid)} (renamed or bought out?). Its paper position ({part}) stays open and keeps its place for now. If "
-                    "you copied it, check it in Kite yourself: no SELL comes from here unless the prices return."))
+        out.append((f"no prices {part} {sid} {last['session'] if last else 'never'}", steps_message(
+            "US: a stock to check", [f"CHECK {sid} in Kite, if you bought it\nWhy: its price can't be read any more (renamed or "
+                                     "bought out?), so no SELL message will come for it. Sell it when you like."])))
     if len(trades) and latest.day <= 7:
         month = latest.replace(day=1) - pd.Timedelta(days=1)
         done = trades[[d[:7] == f"{month:%Y-%m}" for d in trades["exit_date"]]]
@@ -690,13 +693,13 @@ def out_of_step(ledger, events: dict) -> list[tuple[str, str]]:
     out = []
     for part, sid, entry, status in events["entries"]:
         told, name = ledger.sent(f"buy told {part} {sid} {entry}"), html.escape(sid)
-        if told and status != "bought":
-            out.append((f"out of step {part} {sid} {entry}", f"{TAG} The list said BUY {name} for the {entry:%d %b} open, but the "
-                        f"paper account didn't buy it ({NOT_BOUGHT_WHY[status]}). If you bought it, the bot won't follow it and no "
-                        "SELL will come for it: decide yourself."))
+        if told and status != "bought":  # the rules don't hold it, so no SELL would ever come: sell it now
+            out.append((f"not bought after all {part} {sid} {entry}", steps_message("US: a change", [
+                f"SELL {sid} at the next US open, if you bought it\nWhy: we said BUY for the {entry:%d %b} open, but the rules "
+                f"didn't buy it after all ({NOT_BOUGHT_WHY[status]}), so no other SELL message will come for it."])))
         elif status == "bought" and not told:
-            out.append((f"out of step {part} {sid} {entry}", f"{TAG} The paper account bought {name} at the {entry:%d %b} open, but "
-                        "no list told you in time. Don't buy it now. If you don't hold it, ignore its SELL later."))
+            out.append((f"bought, not told {part} {sid} {entry}", f"{TAG} The paper account bought {name} at the {entry:%d %b} "
+                        "open, but no list told you in time. Don't buy it now. If you don't hold it, ignore its SELL later."))
     return out
 
 
@@ -718,56 +721,39 @@ def _in_kite(sid: str, names: dict[str, str]) -> str:
 
 def tonight(plan: dict, told: pd.DataFrame, calendar: MarketCalendar, next_session: date, now: datetime,
             names: dict[str, str] | None = None) -> str:
-    """What the rules buy and sell at the next US open, in plain words, with what copying it by hand takes. A stock they sell
-    and buy again at one open gets one line. Once the open has passed it no longer says to buy."""
+    """What the rules buy and sell at the next US open, in short plain words: each stock with why, and how to do it in
+    Kite; or that there's nothing to do tonight. A stock they sell and buy again at one open is a KEEP. Once the open
+    has passed it no longer says to buy: a buy it missed is named as too late."""
     names = names or {}
     opens = calendar.session(next_session)[0].astimezone(IST)
     day, when = f"{opens:%a} {opens.day} {opens:%b}", f"{opens:%I:%M %p}".lstrip("0").lower()
     late = now.astimezone(IST) >= opens
-    title = f"Tonight's US open was at {when} India time, {day}" if late else f"Tonight's US open, {day}, {when} India time"
-    if not plan["entries"] and not plan["exits"] and told.empty:
-        return TAG_OPEN.format(title=title) + "\n\nNothing to buy or sell."
     keep = {e["sid"] for e in plan["entries"]} & ({x["sid"] for x in plan["exits"]} | set(told["sid"]))
-    sells = [(x["sid"], "its time is up") for x in plan["exits"]]
+    sells = [(x["sid"], "its time is up (our rule)") for x in plan["exits"]]
     for t in told.itertuples(index=False):
         end = f"{date.fromisoformat(t.exit_date):%d %b}"
-        sells.append((t.sid, f"it hit its stop-loss on {end}" if t.outcome == "stop"
-                      else f"its time was up on {end}, and that evening's list didn't reach you"))
-    sells = [(sid, why) for sid, why in sells if sid not in keep]
-    lines = [f"SELL {_in_kite(sid, names)}: all the shares you hold from these lists ({why}). None from these lists? Do nothing."
-             for sid, why in sells]
-    if lines:
-        lines.append("")
-    too_late = []
+        sells.append((t.sid, f"it fell below its stop-loss on {end}" if t.outcome == "stop" else f"its time was up on {end}"))
+    steps = [f"SELL {_in_kite(sid, names)}: all you bought from these messages\nWhy: {why}."
+             for sid, why in sells if sid not in keep]
     for e in plan["entries"]:
         name, value, stop = _in_kite(e["sid"], names), VALUE[e["part"]], trial.STOPS[e["part"]]
-        size = f"with about {money(value, '$')} (about {value / e['close']:.2f} shares at the last close, {money(e['close'], '$')})"
-        below = f"below tonight's open, about {money(e['close'] * (1 - stop), '$')}"
         if e["sid"] in keep:
-            lines.append(f"KEEP {name}: the rules buy it again at this open, so if you still hold it, do nothing.")
-            lines += [] if late else [f"Don't hold it? Buy {size}"]
-            lines += [f"Stop-loss from now: {stop:.0%} {below}", ""]
-        elif late:
-            too_late.append(name)
-        else:
-            why = (f"after its results filing it beat the market by {trial._pct(e['strength'])}" if e["part"] == "E2"
-                   else "one of this month's top picks")
-            lines += [f"BUY {name} {size}", f"Why: {why}", f"Stop-loss: {stop:.0%} {below}", ""]
-    if too_late:
-        lines += [f"Too late to copy: {', '.join(too_late)}. The paper account bought at the open, and the price has moved. "
-                  "Skip it, or decide yourself.", ""]
-    lines.append("Pretend money: the bot buys and sells nothing, and these rules were never tested on US stocks. Copying is your "
-                 "choice.")
-    if plan["entries"] and not late:
-        lines += ["The amounts are for a pretend $10,000 account: all 5 places take about $2,000. Use less if you like.",
-                  f"To buy, only before {when} tonight (after that, skip it): Kite > Marketwatch search > International > the stock > "
-                  "Buy > Market, by amount."]
-    if sells:
-        lines.append("To sell: Kite > Marketwatch search > International > the stock > Sell > Market, by quantity: the shares you "
-                     "hold from these lists.")
-    lines.append("Kite has no stop-loss for US stocks yet. I look once a day after the US close. A stop that was hit comes here as "
-                 "a SELL for the next open, when the price can be well below it (once 26% below the buy price, not 15%).")
-    return TAG_OPEN.format(title=title) + "\n\n" + html.escape("\n".join(lines), quote=False)
+            steps.append(f"KEEP {name}, if you have it\nWhy: the rules buy it again tonight."
+                         + ("" if late else f" Don't have it? Buy about {money(value, '$')}."))
+        elif not late:
+            why = (f"after its results, it beat the market by {e['strength']:.0%} in 2 days" if e["part"] == "E2"
+                   else "one of the steadiest risers of the past year: a top pick this month")
+            steps.append(f"BUY {name}: about {money(value, '$')}\nWhy: {why}.\nStop-loss: if it falls below "
+                         f"{money(e['close'] * (1 - stop), '$')} ({stop:.0%} down), I'll tell you to sell.")
+    title = f"US: tonight's open, {day}, {when}" + (" (it has passed)" if late else "")
+    missed = [_in_kite(e["sid"], names) for e in plan["entries"] if late and e["sid"] not in keep]
+    too_late = f"Too late to buy tonight: {', '.join(missed)}. Skip it." if missed else ""
+    if not steps:
+        return steps_message(title, [], note=too_late or "Nothing to buy or sell tonight.")
+    how = "How: Kite › search the stock › International › Buy (Market, by amount) or Sell (all you bought)."
+    how += "" if late else f" Buy only before {when}; after that, skip it."
+    return steps_message(title, steps, "\n\n".join(part for part in (
+        too_late, how + " These rules are untested on US stocks: your call.") if part))
 
 
 def sells_to_tell(ledger, trades: pd.DataFrame) -> pd.DataFrame:
@@ -838,10 +824,11 @@ def evening_done(ledger: Ledger, calendar: MarketCalendar, now: datetime) -> boo
     return next_session != today or ledger.sent(f"plan {next_session}")
 
 
-def send_notes(ledger: Ledger, notifier, now: datetime) -> None:
-    """Every message not yet sent, oldest first. It stops at one Telegram doesn't take; the next run goes on from there."""
+def send_notes(ledger: Ledger, notifier, now: datetime, orders=None) -> None:
+    """Every message not yet sent, oldest first: the ones that need you (ACT_ON) to `orders` (Telegram), the rest to
+    `notifier` (the log). It stops at one that isn't taken; the next run goes on from there."""
     for key, text in ledger.unsent():
-        sent = notifier.send(text)
+        sent = (orders if orders is not None and key.startswith(ACT_ON) else notifier).send(text)
         ledger.add_notice(key, now, sent)
         if not sent:
             break
@@ -849,7 +836,8 @@ def send_notes(ledger: Ledger, notifier, now: datetime) -> None:
 
 def send_list(ledger: Ledger, notifier, plan: dict, told: pd.DataFrame, calendar: MarketCalendar, next_session: date,
               now: datetime) -> None:
-    """Tonight's list, and which BUYs and SELLs it told. A list that comes after the open tells no BUY."""
+    """Tonight's list (sent every US evening, "nothing tonight" too), and which BUYs and SELLs it told. A list that comes
+    after the open tells no BUY."""
     members = ledger.table("members")
     sent = notifier.send(tonight(plan, told, calendar, next_session, now, dict(zip(members["ticker"], members["name"]))))
     ledger.add_notice(f"plan {next_session}", now, sent)
@@ -893,14 +881,16 @@ def daily(now: datetime | None = None, notify: bool = True) -> int:
     from trader.notify.telegram import notifier_from_settings
     now = now or datetime.now(IST)
     started = time.monotonic()
-    ledger = notifier = calendar = None
+    ledger = notifier = orders = calendar = None
     try:
         ledger = Ledger()
         calendar = load_calendars()["NYSE"]
-        notifier = notifier_from_settings(load_settings()) if notify else None
+        if notify:  # notes go to the log; the list and the notes that need you go to Telegram
+            settings = load_settings()
+            notifier, orders = notifier_from_settings(settings), notifier_from_settings(settings, "orders")
         if evening_done(ledger, calendar, now):
             if notifier is not None:
-                send_notes(ledger, notifier, now)
+                send_notes(ledger, notifier, now, orders)
             return 0
         members, list_read = refresh_members(ledger, now)
         got = fetch_filings(ledger, members, now)
@@ -913,11 +903,11 @@ def daily(now: datetime | None = None, notify: bool = True) -> int:
             ledger.add_marks(events["open"], sessions, secs, now)
             ledger.add_answers(sessions[-1], {sid for sid, sec in secs.items() if sec.present[-1]}, now)
         if notifier is not None:
-            send_notes(ledger, notifier, now)
+            send_notes(ledger, notifier, now, orders)
             next_session = calendar.next_trading_day(sessions[-1])
             if next_session == now.astimezone(IST).date() and not ledger.sent(f"plan {next_session}"):  # not two days early
                 plan = next_open(ledger, sessions, secs, e2, v2, next_session, now, calendar)
-                send_list(ledger, notifier, plan, sells_to_tell(ledger, trades), calendar, next_session,  # as of now, not the start
+                send_list(ledger, orders, plan, sells_to_tell(ledger, trades), calendar, next_session,  # as of now, not the start
                           now + timedelta(seconds=time.monotonic() - started))
         acct, waiting = account(trades, events), len(ledger.unsent())
         detail = (f"data to {sessions[-1]}; {len(secs)} stocks, {got['new']} new filings"

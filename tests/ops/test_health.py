@@ -389,32 +389,36 @@ def test_a_failed_forward_test_or_trial_run_is_sent_on_telegram(tmp_path, monkey
     f3.add_run(now - timedelta(hours=2), "failed", "ConnectionError: board meetings")
     f3.close()
     trial = Trial(tmp_path / "state" / "trial1.db")
-    trial.add_run(now - timedelta(hours=2), "ok", "data to ...")
+    trial.add_run(now - timedelta(hours=2), "failed", "ValueError: prices")
     trial.close()
-    sent = []
+    sent, kinds = [], []
 
     class Notifier:
         def send(self, text):
             sent.append(text)
             return True
 
-    monkeypatch.setattr(health, "notifier_from_settings", lambda settings: Notifier())
+    def notifier(settings, kind="note"):
+        kinds.append(kind)
+        return Notifier()
+    monkeypatch.setattr(health, "notifier_from_settings", notifier)
     with pytest.raises(SystemExit) as stopped:
         health.main(["--notify"])
-    assert stopped.value.code == 1 and len(sent) == 1  # one Telegram message for every alert of the run
-    assert "forward test 3" in sent[0] and "its last run failed" in sent[0] and "paper trial 1" not in sent[0]
+    assert stopped.value.code == 1 and len(sent) == 1 and kinds == ["alerts"]  # one Telegram message for the alerts
+    assert "<b>Tonight's rules run failed</b>" in sent[0] and "forward" not in sent[0]  # research ones stay in the log
 
 
-def test_real_money_alerts_are_never_labelled_paper():
+def test_alerts_come_in_plain_words_and_research_ones_stay_in_the_log():
     address = health.Health("internet address", health.ALERT, "this PC's internet address is now 1.2.3.4")
-    stops = health.Health("live stops", health.ALERT, "no stop at Kite for X")
-    run = health.Health("daily run", health.ALERT, "the last processed session is none")
-    [only] = health.alert_messages([address])
-    assert "[PAPER]" not in only and "real money" in only and "internet address" in only
-    live, paper = health.alert_messages([address, run, stops])
-    assert "[PAPER]" not in live and "live stops" in live and "daily run" not in live
-    assert paper.startswith("<b>[PAPER] RISK ALERT: Health check</b>") and "daily run" in paper
-    assert "internet address" not in paper
+    stops = health.Health("live stops", health.ALERT, "no stop at Kite for AAA.NS, BBB.NS: place one by hand (a GTT)")
+    research = health.Health("forward test 3", health.ALERT, "its last run failed")
+    new = health.Health("something new", health.ALERT, "a plain detail")
+    [text] = health.alert_messages([address, stops, research, new])
+    assert text == ("<b>Needs your attention</b>\n\n<b>Your internet address changed</b>\nZerodha blocks the bot's orders "
+                    "from this PC. Send /myip to fix it.\n\n<b>A stop-loss is missing</b>\nNo stop-loss in Kite for AAA, "
+                    "BBB. Please set one in Kite: the stock › Create GTT › Single › Sell.\n\n"
+                    "<b>Something new</b>\na plain detail")
+    assert health.alert_messages([research]) == []  # only research: nothing to send
 
 
 def test_forward_test_5_failures_and_staleness_are_alerts(tmp_path, monkeypatch):

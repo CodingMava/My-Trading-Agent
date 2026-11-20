@@ -553,7 +553,7 @@ def test_a_held_stock_yahoo_stops_answering_for_keeps_its_place_and_says_so():
     events = ustrial.update(ledger, sessions, gone, e2, {}, MONDAY, NYSE)
     assert sorted(s for _, s, _ in events["no prices"]) == ["A", "B"] and [t[1] for t in events["open"]] == ["C"]
     notes = dict(ustrial.messages(events, ledger.table("trades"), sessions[-1]))
-    assert any("Yahoo has stopped giving prices for A" in text and "check it in Kite yourself" in text for text in notes.values())
+    assert any("CHECK A in Kite, if you bought it" in text and "no SELL message will come" in text for text in notes.values())
     assert "no prices E2 A never" in notes
     later = ustrial.update(ledger, sessions, gone, _e2([("A", entry_signal, 0.3), ("B", entry_signal, 0.25), ("C", entry_signal, 0.2),
                                                         ("D", entry_signal + 2, 0.5)]), {}, MONDAY, NYSE)
@@ -625,7 +625,7 @@ def test_a_held_stock_whose_rows_stop_while_yahoo_still_answers_says_so_and_its_
     assert events["open"] == [] and [(p, s) for p, s, _ in events["no prices"]] == [("E2", "A")]
     summary = ustrial.summary_message(events, ledger.table("trades"), days[-1], 700.0)[1]
     assert "Holding: A (no price)" in summary
-    assert any("Yahoo has stopped giving prices for A" in text for _, text in ustrial.messages(events, ledger.table("trades"), days[-1]))
+    assert any("CHECK A in Kite, if you bought it" in text for _, text in ustrial.messages(events, ledger.table("trades"), days[-1]))
     exit_i = signal + 1 + 40  # its 40 sessions end here, with no row to sell at: planned, and told once
     days, now_secs = _upto(sessions, secs, sessions[exit_i - 1])
     assert [x["sid"] for x in ustrial.next_open(ledger, days, now_secs, e2, {}, sessions[exit_i], MONDAY, NYSE)["exits"]] == ["A"]
@@ -709,6 +709,8 @@ def _plan(**kwargs):
 
 
 NO_SALES = pd.DataFrame(columns=["part", "sid", "signal_date", "entry_date", "exit_date", "outcome"])
+HOW = ("How: Kite › search the stock › International › Buy (Market, by amount) or Sell (all you bought). Buy only before "
+       "8:00 pm; after that, skip it. These rules are untested on US stocks: your call.")
 OLD_EXIT = {"part": "E2", "sid": "OLD", "signal_date": "2026-08-25", "entry_date": "2026-08-26"}
 NVDA = {"part": "E2", "sid": "NVDA", "strength": 0.103, "close": 185.2}
 ABC = {"part": "V2", "sid": "ABC", "strength": 2.1, "close": 50.0}
@@ -721,69 +723,59 @@ def _sales(*rows):
 def test_the_list_for_an_open_says_what_to_do_in_plain_words():
     plan = _plan(entries=[NVDA, ABC], exits=[OLD_EXIT])
     stopped = _sales(("V2", "XYZ", "2026-09-30", "2026-10-01", "2026-10-30", "stop"))
-    raw = ustrial.tonight(plan, stopped, NYSE, date(2026, 11, 2), MONDAY)
-    text = html.unescape(raw)
-    assert text.startswith("<b>[US PAPER TRIAL · paper only] Tonight's US open, Mon 2 Nov, 8:00 pm India time</b>\n\n")
-    assert "BUY NVDA with about $333.33 (about 1.80 shares at the last close, $185.20)" in text
-    assert "Why: after its results filing it beat the market by +10.3%" in text and "Stop-loss: 15% below tonight's open, about $157.42" in text
-    assert "BUY ABC with about $500.00 (about 10.00 shares" in text and "Why: one of this month's top picks" in text
-    assert "Stop-loss: 10% below tonight's open, about $45.00" in text
-    assert "SELL OLD: all the shares you hold from these lists (its time is up). None from these lists? Do nothing." in text
-    assert "SELL XYZ: all the shares you hold from these lists (it hit its stop-loss on 30 Oct). None from these lists? Do nothing." in text
-    assert text.index("SELL OLD") < text.index("SELL XYZ") < text.index("BUY NVDA")  # the sales free the money for the buys
-    assert "Pretend money" in text and "never tested on US stocks" in text and "no stop-loss" in text
-    assert "a pretend $10,000 account: all 5 places take about $2,000" in text
-    assert "To buy, only before 8:00 pm tonight (after that, skip it): Kite > Marketwatch search > International > the stock > Buy > Market, by amount." in text
-    assert "To sell: Kite > Marketwatch search > International > the stock > Sell > Market, by quantity: the shares you hold from these lists." in text
-    assert "&gt;" in raw  # Telegram's HTML mode needs it
+    text = html.unescape(ustrial.tonight(plan, stopped, NYSE, date(2026, 11, 2), MONDAY))
+    assert text == ("<b>US: tonight's open, Mon 2 Nov, 8:00 pm</b>\n\n"  # the sales first: they free the money for the buys
+                    "<b>SELL OLD: all you bought from these messages</b>\nWhy: its time is up (our rule).\n\n"
+                    "<b>SELL XYZ: all you bought from these messages</b>\nWhy: it fell below its stop-loss on 30 Oct.\n\n"
+                    "<b>BUY NVDA: about $333.33</b>\nWhy: after its results, it beat the market by 10% in 2 days.\n"
+                    "Stop-loss: if it falls below $157.42 (15% down), I'll tell you to sell.\n\n"
+                    "<b>BUY ABC: about $500.00</b>\nWhy: one of the steadiest risers of the past year: a top pick this month.\n"
+                    "Stop-loss: if it falls below $45.00 (10% down), I'll tell you to sell.\n\n" + HOW)
 
 
 def test_a_stock_sold_and_bought_again_at_one_open_gets_one_line():
     held = dict(OLD_EXIT, sid="ABC")
     text = html.unescape(ustrial.tonight(_plan(entries=[NVDA, ABC], exits=[held]), NO_SALES, NYSE, date(2026, 11, 2), MONDAY))
-    assert "KEEP ABC: the rules buy it again at this open, so if you still hold it, do nothing." in text
-    assert "Don't hold it? Buy with about $500.00 (about 10.00 shares at the last close, $50.00)" in text
-    assert "Stop-loss from now: 10% below tonight's open, about $45.00" in text
+    assert "<b>KEEP ABC, if you have it</b>\nWhy: the rules buy it again tonight. Don't have it? Buy about $500.00." in text
     assert "SELL ABC" not in text and "BUY ABC" not in text and "BUY NVDA" in text
-    assert "To sell" not in text  # no SELL line above it
     stopped = _sales(("V2", "ABC", "2026-09-30", "2026-10-01", "2026-10-30", "stop"))  # a stop and a new buy: the same
     text = html.unescape(ustrial.tonight(_plan(entries=[ABC]), stopped, NYSE, date(2026, 11, 2), MONDAY))
-    assert "KEEP ABC" in text and "SELL ABC" not in text and "To sell" not in text
+    assert "KEEP ABC" in text and "SELL ABC" not in text
 
 
 def test_a_list_after_the_open_says_not_to_buy_and_still_says_to_sell():
     late = datetime(2026, 11, 2, 23, 40, tzinfo=IST)
     held = dict(OLD_EXIT, sid="ABC")
     text = html.unescape(ustrial.tonight(_plan(entries=[NVDA, ABC], exits=[OLD_EXIT, held]), NO_SALES, NYSE, date(2026, 11, 2), late))
-    assert "Tonight's US open was at 8:00 pm India time, Mon 2 Nov" in text
-    assert "BUY" not in text and "To buy" not in text and "$10,000" not in text
-    assert "SELL OLD: all the shares you hold from these lists" in text and "To sell" in text
-    assert "Too late to copy: NVDA. The paper account bought at the open, and the price has moved." in text
-    assert "KEEP ABC: the rules buy it again at this open, so if you still hold it, do nothing." in text and "Don't hold it?" not in text
+    assert text.startswith("<b>US: tonight's open, Mon 2 Nov, 8:00 pm (it has passed)</b>")
+    assert "BUY" not in text and "Buy only before" not in text and "Too late to buy tonight: NVDA. Skip it." in text
+    assert "<b>SELL OLD: all you bought from these messages</b>" in text
+    assert "<b>KEEP ABC, if you have it</b>\nWhy: the rules buy it again tonight.\n\n" in text and "Don't have it?" not in text
+    assert html.unescape(ustrial.tonight(_plan(entries=[NVDA]), NO_SALES, NYSE, date(2026, 11, 2), late)) == (
+        "<b>US: tonight's open, Mon 2 Nov, 8:00 pm (it has passed)</b>\nToo late to buy tonight: NVDA. Skip it.")
 
 
 def test_the_list_gives_the_opens_own_time_and_says_when_there_is_nothing_to_do():
-    assert html.unescape(ustrial.tonight(_plan(), NO_SALES, NYSE, date(2026, 11, 2), MONDAY)).endswith(
-        "Tonight's US open, Mon 2 Nov, 8:00 pm India time</b>\n\nNothing to buy or sell.")
+    assert html.unescape(ustrial.tonight(_plan(), NO_SALES, NYSE, date(2026, 11, 2), MONDAY)) == (
+        "<b>US: tonight's open, Mon 2 Nov, 8:00 pm</b>\nNothing to buy or sell tonight.")
     only_sale = _plan(exits=[OLD_EXIT])
     summer = datetime(2027, 4, 5, 18, 15, tzinfo=IST)
-    assert "Tonight's US open, Mon 5 Apr, 7:00 pm India time" in ustrial.tonight(only_sale, NO_SALES, NYSE, date(2027, 4, 5), summer)
+    assert "US: tonight's open, Mon 5 Apr, 7:00 pm" in ustrial.tonight(only_sale, NO_SALES, NYSE, date(2027, 4, 5), summer)
     text = html.unescape(ustrial.tonight(only_sale, NO_SALES, NYSE, date(2026, 11, 2), MONDAY))
-    assert "Do nothing.\n\nPretend money" in text and "To sell" in text and "To buy" not in text and "$10,000" not in text
-    assert "SELL OLD: all the shares you hold from these lists (its time is up)" in text
+    assert "<b>SELL OLD: all you bought from these messages</b>\nWhy: its time is up (our rule)." in text and "BUY" not in text
 
 
 def test_a_sale_whose_evening_was_missed_comes_in_the_next_list():
     missed = _sales(("E2", "A", "2026-08-25", "2026-08-26", "2026-10-29", "time"), ("V2", "B", "2026-08-31", "2026-09-01", "2026-10-29", "time, delayed"))
     text = html.unescape(ustrial.tonight(_plan(), missed, NYSE, date(2026, 11, 2), MONDAY))
-    assert "SELL A: all the shares you hold from these lists (its time was up on 29 Oct, and that evening's list didn't reach you)." in text
-    assert "SELL B: all the shares you hold from these lists (its time was up on 29 Oct" in text
+    assert "<b>SELL A: all you bought from these messages</b>\nWhy: its time was up on 29 Oct." in text
+    assert "<b>SELL B: all you bought from these messages</b>\nWhy: its time was up on 29 Oct." in text
 
 
 def test_the_list_spells_a_stock_as_the_exchange_does():
     brk = {"part": "E2", "sid": "BRK-B", "strength": 0.103, "close": 500.0}
     text = html.unescape(ustrial.tonight(_plan(entries=[brk]), NO_SALES, NYSE, date(2026, 11, 2), MONDAY))
-    assert "BUY BRK.B with" in text and "BRK-B" not in text
+    assert "BUY BRK.B: about" in text and "BRK-B" not in text
 
 
 def test_the_list_says_which_company_since_some_us_tickers_are_indian_symbols_too():
@@ -791,7 +783,7 @@ def test_the_list_says_which_company_since_some_us_tickers_are_indian_symbols_to
     sale = _plan(entries=[carnival], exits=[dict(OLD_EXIT, sid="HAL")])
     names = {"CCL": "Carnival", "HAL": "Halliburton"}
     text = html.unescape(ustrial.tonight(sale, NO_SALES, NYSE, date(2026, 11, 2), MONDAY, names))
-    assert "BUY CCL (Carnival) with about" in text and "SELL HAL (Halliburton): all the shares" in text
+    assert "BUY CCL (Carnival): about" in text and "SELL HAL (Halliburton): all you bought" in text
 
 
 def test_the_entries_message_gives_the_real_buy_price_and_stop():
@@ -859,16 +851,29 @@ def test_the_status_page(tmp_path, monkeypatch):
 
 # ---------------------------------------------------------------------------------------------- the evening run
 class Telegram:
+    """Every message in order, with the kind each was sent as: "orders" reach your Telegram, notes only the log."""
     def __init__(self, works=True):
-        self.sent, self.works = [], works
+        self.sent, self.kinds, self.works = [], [], works
+
+    def channel(self, kind):
+        telegram = self
+
+        class Channel:
+            def send(self, text):
+                telegram.kinds.append(kind)
+                return telegram.send(text)
+        return Channel()
 
     def send(self, text):
         self.sent.append(html.unescape(text))
         return self.works
 
+    def on_telegram(self):
+        return [text for text, kind in zip(self.sent, self.kinds) if kind == "orders"]
+
 
 def _lists(telegram):
-    return [text for text in telegram.sent if "Tonight's US open" in text and "isn't ready" not in text]
+    return [text for text in telegram.sent if "US: tonight's open" in text]
 
 
 @pytest.fixture
@@ -880,7 +885,8 @@ def evening(tmp_path, monkeypatch):
     monkeypatch.setattr(ustrial, "STATUS", tmp_path / "status.md")
     monkeypatch.setattr(ustrial, "load_settings", lambda: None)
     telegram = Telegram()
-    monkeypatch.setattr("trader.notify.telegram.notifier_from_settings", lambda settings: telegram)
+    monkeypatch.setattr("trader.notify.telegram.notifier_from_settings",
+                        lambda settings, kind="note": telegram.channel(kind))
     all_sessions, all_secs = _market()
     world = {"e2": _e2([]), "v2": {}, "last": OCT30, "secs": all_secs, "error": None, "reads": 0}
 
@@ -912,9 +918,9 @@ def test_the_first_evening_says_what_to_buy_and_nothing_is_said_twice(evening):
     assert "E2 signals at the 30 Oct 2026 US close: A (+20.0%), B (+10.0%)" in telegram.sent[0] and "V2 signal" in telegram.sent[1]
     assert "DAILY SUMMARY 30 Oct 2026" in telegram.sent[2] and "Holding: none" in telegram.sent[2]
     plan = telegram.sent[3]
-    assert "Tonight's US open, Mon 2 Nov, 8:00 pm India time" in plan
-    assert "BUY A (Alpha Inc) with about $333.33" in plan and all(f"BUY {s} " in plan for s in "BCD")
-    assert "SELL" not in plan.split("Pretend money")[0]
+    assert "US: tonight's open, Mon 2 Nov, 8:00 pm" in plan
+    assert "BUY A (Alpha Inc): about $333.33" in plan and all(f"BUY {s}: " in plan for s in "BCD") and "SELL" not in plan
+    assert telegram.on_telegram() == [plan]  # the signals and the summary are only logged
     assert world["reads"] == 1
     assert run(MONDAY.replace(minute=45)) == 0 and len(telegram.sent) == 4  # a repeat that evening: nothing new
     assert world["reads"] == 1  # and it doesn't ask the SEC or Yahoo again
@@ -923,12 +929,14 @@ def test_the_first_evening_says_what_to_buy_and_nothing_is_said_twice(evening):
     world["last"] = date(2026, 11, 2)
     assert run(tuesday) == 0
     told = telegram.sent[4:]
-    assert len(told) == 3
+    assert len(told) == 3  # the paper entries and the summary, logged; and the list: nothing to buy or sell
     assert ("Paper entries at the 02 Nov 2026 US open: E2 A: bought at $100.00, stop $85.00; E2 B: bought at $100.00, stop $85.00; "
             "V2 C: bought at $100.00, stop $90.00; V2 D: bought at $100.00, stop $90.00.") in told[0]
     assert "DAILY SUMMARY 02 Nov 2026" in told[1] and "Holding: A " in told[1]
-    assert told[2].endswith("Nothing to buy or sell.")
+    assert told[2] == "<b>US: tonight's open, Tue 3 Nov, 8:00 pm</b>\nNothing to buy or sell tonight."
+    assert telegram.on_telegram() == [plan, told[2]]
     ledger = ustrial.Ledger()
+    assert ledger.sent("plan 2026-11-03")  # a night with nothing to do is on record as told: the task's repeats stop
     runs = ledger.table("runs")
     assert list(runs["status"]) == ["ok", "ok"] and "data to 2026-11-02" in runs["detail"].iat[-1]  # the repeat left no row
     assert ledger.last_answers() == (date(2026, 11, 2), set(world["secs"]))
@@ -949,7 +957,7 @@ def test_the_list_waits_for_the_evening_of_the_open(evening):
     assert len(ledger.table("runs")) == 2
     ledger.close()
     assert run(MONDAY) == 0
-    assert len(telegram.sent) == 3 and "BUY A (Alpha Inc) " in telegram.sent[2]
+    assert len(telegram.sent) == 3 and "BUY A (Alpha Inc): " in telegram.sent[2]
 
 
 def test_a_stop_is_told_as_a_sell_once_in_the_next_list_and_time_exits_at_their_open(evening):
@@ -961,26 +969,28 @@ def test_a_stop_is_told_as_a_sell_once_in_the_next_list_and_time_exits_at_their_
     lows[stop_day] = 80.0
     world["secs"] = {**world["secs"], "A": _security("A", n, lows=lows)}
     world["e2"] = _e2([("A", signal, 0.2), ("B", signal, 0.1)])
-    assert run(MONDAY) == 0  # bought at Friday's open; Monday's list has nothing new to buy
-    assert _lists(telegram)[-1].endswith("Nothing to buy or sell.")
+    assert run(MONDAY) == 0  # bought at Friday's open; Monday has nothing new to buy
+    assert _lists(telegram)[-1].endswith("Nothing to buy or sell tonight.")
     world["last"] = date(2026, 11, 5)
     friday = datetime(2026, 11, 6, 18, 15, tzinfo=IST)
     assert run(friday) == 0
-    assert "SELL A (Alpha Inc): all the shares you hold from these lists (it hit its stop-loss on 05 Nov)" in _lists(telegram)[-1]
+    assert ("<b>SELL A (Alpha Inc): all you bought from these messages</b>\nWhy: it fell below its stop-loss on 05 Nov."
+            in _lists(telegram)[-1])
     assert any("Closed E2 A" in text and "(stop-loss hit, 05 Nov 2026)" in text for text in telegram.sent)
+    count = len(_lists(telegram))
     world["last"] = date(2026, 11, 6)
-    assert run(datetime(2026, 11, 9, 18, 15, tzinfo=IST)) == 0  # Monday's list: A's stop has been told
-    assert "SELL A" not in _lists(telegram)[-1]
+    assert run(datetime(2026, 11, 9, 18, 15, tzinfo=IST)) == 0  # Monday: A's stop has been told
+    assert all("SELL A" not in text for text in _lists(telegram)[count:])
 
     world["last"] = sessions[signal + 1 + 39]  # B's 40 sessions end at the next open
     exit_day = sessions[signal + 1 + 40]
     assert run(datetime(exit_day.year, exit_day.month, exit_day.day, 18, 15, tzinfo=IST)) == 0
-    assert "SELL B: all the shares you hold from these lists (its time is up)" in telegram.sent[-1] and "Tonight's" in telegram.sent[-1]
+    assert "<b>SELL B: all you bought from these messages</b>\nWhy: its time is up (our rule)." in telegram.sent[-1]
     count = len(_lists(telegram))
-    world["last"] = exit_day  # closed at that open: it was told, so the next list says nothing about it
+    world["last"] = exit_day  # closed at that open: it was told, so nothing more is said about it
     next_day = NYSE.next_trading_day(exit_day)
     assert run(datetime(next_day.year, next_day.month, next_day.day, 18, 15, tzinfo=IST)) == 0
-    assert len(_lists(telegram)) == count + 1 and "SELL B" not in _lists(telegram)[-1]
+    assert len(_lists(telegram)) == count + 1 and _lists(telegram)[-1].endswith("Nothing to buy or sell tonight.")
 
 
 def _b_and_its_time_exit(world, sessions):
@@ -1004,10 +1014,11 @@ def test_a_time_exit_whose_evening_was_lost_is_told_in_the_next_list(evening):
     world["last"] = exit_day
     next_day = NYSE.next_trading_day(exit_day)
     assert run(_evening_of(next_day)) == 0
-    assert f"SELL B: all the shares you hold from these lists (its time was up on {exit_day:%d %b}" in _lists(telegram)[-1]
+    assert f"<b>SELL B: all you bought from these messages</b>\nWhy: its time was up on {exit_day:%d %b}." in _lists(telegram)[-1]
+    count = len(_lists(telegram))
     world["last"] = next_day  # told once
     after = NYSE.next_trading_day(next_day)
-    assert run(_evening_of(after)) == 0 and "SELL B" not in _lists(telegram)[-1]
+    assert run(_evening_of(after)) == 0 and all("SELL B" not in text for text in _lists(telegram)[count:])
 
 
 def test_a_time_exit_with_no_row_at_its_open_is_told_once(evening):
@@ -1020,10 +1031,11 @@ def test_a_time_exit_with_no_row_at_its_open_is_told_once(evening):
     world["last"] = sessions[sessions.index(exit_day) - 1]
     assert run(_evening_of(exit_day)) == 0
     assert "SELL B" in _lists(telegram)[-1]
+    count = len(_lists(telegram))
     world["last"] = exit_day
     next_day = NYSE.next_trading_day(exit_day)
     assert run(_evening_of(next_day)) == 0
-    assert "SELL B" not in _lists(telegram)[-1]  # told the evening before
+    assert all("SELL B" not in text for text in _lists(telegram)[count:])  # told the evening before
 
 
 def test_messages_telegram_didnt_take_wait_for_the_next_run(evening):
@@ -1037,7 +1049,7 @@ def test_messages_telegram_didnt_take_wait_for_the_next_run(evening):
     ledger.close()
     telegram.works, telegram.sent = True, []
     assert run(MONDAY.replace(minute=30)) == 0
-    assert [("E2 signals" in text, "DAILY SUMMARY" in text, "BUY A (Alpha Inc) " in text) for text in telegram.sent] == [
+    assert [("E2 signals" in text, "DAILY SUMMARY" in text, "BUY A (Alpha Inc): " in text) for text in telegram.sent] == [
         (True, False, False), (False, True, False), (False, False, True)]  # in order, with the list after them
     assert run(MONDAY.replace(minute=45)) == 0 and len(telegram.sent) == 3
     ledger = ustrial.Ledger()
@@ -1058,10 +1070,11 @@ def test_a_list_that_comes_after_the_open_tells_no_buy(evening):
     run, world, telegram, sessions, path = evening
     world["e2"] = _e2([("A", sessions.index(OCT30), 0.2)])
     assert run(MONDAY.replace(hour=21)) == 0
-    assert "Too late to copy: A (Alpha Inc)." in _lists(telegram)[-1] and "BUY" not in _lists(telegram)[-1]
+    assert _lists(telegram)[-1].endswith("(it has passed)</b>\nToo late to buy tonight: A (Alpha Inc). Skip it.")
     world["last"] = date(2026, 11, 2)
     assert run(datetime(2026, 11, 3, 18, 15, tzinfo=IST)) == 0
     assert any("The paper account bought A at the 02 Nov open, but no list told you in time" in text for text in telegram.sent)
+    assert not any("no list told you" in text for text in telegram.on_telegram())  # nothing for you to do: only logged
 
 
 def test_a_buy_the_paper_account_didnt_make_is_said_plainly(evening):
@@ -1072,8 +1085,10 @@ def test_a_buy_the_paper_account_didnt_make_is_said_plainly(evening):
     hole.present[sessions.index(date(2026, 11, 2))] = False  # it didn't trade at that open
     world["secs"], world["last"] = {**world["secs"], "A": hole}, date(2026, 11, 2)
     assert run(datetime(2026, 11, 3, 18, 15, tzinfo=IST)) == 0
-    assert any("The list said BUY A for the 02 Nov open, but the paper account didn't buy it (it didn't trade at that open). If you bought it, the bot "
-               "won't follow it" in text for text in telegram.sent)
+    assert ("<b>US: a change</b>\n\n<b>SELL A at the next US open, if you bought it</b>\nWhy: we said BUY for the 02 Nov open, "
+            "but the rules didn't buy it after all (it didn't trade at that open), so no other SELL message will come for it."
+            in telegram.on_telegram())  # this one needs you: it reaches Telegram
+    assert not any("DAILY SUMMARY" in text for text in telegram.on_telegram())
 
 
 def test_a_run_that_fails_near_the_open_says_so_once(evening):
@@ -1087,7 +1102,8 @@ def test_a_run_that_fails_near_the_open_says_so_once(evening):
     assert run(at_risk.replace(minute=30)) == 1 and len(telegram.sent) == 1
     world["error"] = None
     assert run(at_risk.replace(minute=45)) == 0
-    assert "BUY A (Alpha Inc) " in _lists(telegram)[-1]
+    assert "BUY A (Alpha Inc): " in _lists(telegram)[-1]
+    assert telegram.kinds[0] == "note"  # that the list was late is only logged
     assert list(ustrial.Ledger().table("runs")["status"]) == ["failed", "failed", "failed", "ok"]
 
 
@@ -1110,7 +1126,7 @@ def test_whether_a_list_is_too_late_is_judged_when_it_goes_not_when_the_run_bega
         return 0.0 if clock["calls"] == 1 else 3600.0  # the run took an hour
     monkeypatch.setattr(ustrial.time, "monotonic", monotonic)
     assert run(MONDAY.replace(hour=19, minute=30)) == 0
-    assert "Too late to copy: A (Alpha Inc)." in _lists(telegram)[-1] and "BUY" not in _lists(telegram)[-1]
+    assert "Too late to buy tonight: A (Alpha Inc)." in _lists(telegram)[-1] and "BUY" not in _lists(telegram)[-1]
 
 
 def test_no_warning_on_an_evening_with_no_open(evening):
@@ -1134,7 +1150,7 @@ def test_a_failure_after_the_records_loses_no_message(evening, monkeypatch):
     ledger.close()
     monkeypatch.setattr(ustrial, "next_open", real)
     assert run(MONDAY.replace(minute=30)) == 0
-    assert len(telegram.sent) == 3 and "BUY A (Alpha Inc) " in telegram.sent[-1]
+    assert len(telegram.sent) == 3 and "BUY A (Alpha Inc): " in telegram.sent[-1]
 
 
 def test_a_failure_while_recording_records_nothing_and_a_later_run_does_it_all(evening, monkeypatch):
@@ -1151,7 +1167,7 @@ def test_a_failure_while_recording_records_nothing_and_a_later_run_does_it_all(e
     ledger.close()
     monkeypatch.setattr(ustrial, "summary_message", real)
     assert run(MONDAY.replace(minute=30)) == 0
-    assert "E2 signals" in telegram.sent[0] and "BUY A (Alpha Inc) " in telegram.sent[-1]
+    assert "E2 signals" in telegram.sent[0] and "BUY A (Alpha Inc): " in telegram.sent[-1]
 
 
 def test_a_status_page_that_cant_be_written_costs_nothing_else(evening, monkeypatch):
@@ -1161,7 +1177,7 @@ def test_a_status_page_that_cant_be_written_costs_nothing_else(evening, monkeypa
     def locked(*args):
         raise PermissionError("OneDrive has it")
     monkeypatch.setattr(ustrial, "write_status", locked)
-    assert run(MONDAY) == 0 and "BUY A (Alpha Inc) " in telegram.sent[-1]
+    assert run(MONDAY) == 0 and "BUY A (Alpha Inc): " in telegram.sent[-1]
     assert ustrial.Ledger().table("runs")["status"].iat[-1] == "ok"
 
 
@@ -1205,7 +1221,7 @@ def test_no_notify_sends_nothing_and_a_refused_run_records_nothing_but_the_failu
     assert len(ledger.table("signals")) == 1 and ledger.table("notices").empty and len(ledger.unsent()) == 2
     ledger.close()
     assert run(MONDAY.replace(minute=30), notify=False) == 0 and telegram.sent == []  # still nothing, and the list stays due
-    assert run(MONDAY.replace(minute=45)) == 0 and "BUY A (Alpha Inc) " in telegram.sent[-1]  # the next run with Telegram sends it all
+    assert run(MONDAY.replace(minute=45)) == 0 and "BUY A (Alpha Inc): " in telegram.sent[-1]  # the next run with Telegram sends it all
 
 
 def test_unread_filings_and_an_unread_list_show_in_the_runs_record(evening, monkeypatch):

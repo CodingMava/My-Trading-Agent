@@ -42,16 +42,35 @@ class LiveOrder:
     # Daily returns of the stock and of what the source holds, by symbol, for the live risk engine's correlation
     # check; None leaves it out (the paper engine's orders: it doesn't check correlation either).
     returns: dict[str, pd.Series] | None = field(default=None, compare=False, repr=False)
+    reason: str = field(default="", compare=False)  # why the rules buy or sell it, in plain words, for a step by hand
 
 
-Source = Callable[[date, dict[str, Position]], tuple[list[LiveOrder] | None, list[str]]]
+Source = Callable[[date, dict[str, Position]], tuple[list[LiveOrder] | None, list[str]]]  # notes: plain words, told to you
+# Why paper trial 1 didn't buy a signal at the open, in plain words.
+PASSED = {"no free place": "all 5 slots of our rules are full", "not bought": "it can't be bought at the open",
+          "already held": "our rules already hold it", "brake": "our rules have paused buying after too many losses"}
+
+
+def why_buy(entry: dict) -> str:
+    """Why paper trial 1's rules buy a stock, in plain words."""
+    if entry["part"] == "E2":
+        return f"after its results, it beat the market by {entry['strength']:.0%} in 2 days (our rule buys these)"
+    return "one of the steadiest risers of the past year: a top pick this month"
+
+
+def why_sell(part: str) -> str:
+    """Why paper trial 1's rules sell a stock at the next open (its time), in plain words."""
+    from trader.research import trial
+
+    return (f"its {trial.round10.HOLD} trading days are up (our rule)" if part == "E2"
+            else "a new month: our rule sells and picks again")
 
 
 def paper_orders(store: PaperStore, today: date, allowed: set[str], catalog: dict[str, StrategySpec]
                  ) -> tuple[list[LiveOrder] | None, list[str]]:
     """The paper engine's orders made today for the next open, of the allowed strategies' NSE stocks."""
     if store.last_session() != today:
-        return None, [f"The paper run hasn't processed {today} yet, so nothing was sent for tomorrow's open."]
+        return None, ["Tonight's paper run hasn't finished, so there is no plan yet: nothing to buy or sell."]
     return [LiveOrder(o.strategy_id, o.key, o.symbol, o.side, o.quantity, store.starting_capital, o.reference_price,
                       o.stop_distance, catalog[o.strategy_id].max_hold_days)
             for o in store.pending_orders()
@@ -70,24 +89,23 @@ def trial_orders(today: date, held: dict[str, Position], calendar, plan_for=None
     next_session = calendar.next_trading_day(today)
     plan = (plan_for or trial_plan)(today, next_session)
     if plan is None:
-        return None, [f"Paper trial 1 hasn't processed {today} yet, so nothing was sent for B1F at tomorrow's open."]
+        return None, ["Tonight's rules run hasn't finished, so there is no plan yet: nothing to buy or sell."]
     orders, notes = [], []
     for e in plan["entries"]:
         value = trial.CAPITAL * trial.RISK / trial.STOPS[e["part"]]
         orders.append(LiveOrder(TRIAL, f"{TRIAL} {e['part']} {e['sid']} {e['signal_date']} entry", e["sid"] + ".NS", "buy",
                                 value / e["close"], trial.CAPITAL, e["close"], trial.STOPS[e["part"]],
-                                returns=plan.get("returns")))
+                                returns=plan.get("returns"), reason=why_buy(e)))
     for x in plan["exits"]:
         orders.append(LiveOrder(TRIAL, f"{TRIAL} {x['part']} {x['sid']} {x['signal_date']} exit {next_session}",
-                                x["sid"] + ".NS", "sell", 0, trial.CAPITAL, 0.0))
+                                x["sid"] + ".NS", "sell", 0, trial.CAPITAL, 0.0, reason=why_sell(x["part"])))
     selling = {x["sid"] for x in plan["exits"]}
     for symbol, position in held.items():
         sid = symbol.removesuffix(".NS")
         if position.strategy_id == TRIAL and sid not in plan["held"] and sid not in selling:
             orders.append(LiveOrder(TRIAL, f"{TRIAL} {sid} {position.entry_date} unmatched exit {next_session}", symbol,
-                                    "sell", 0, trial.CAPITAL, 0.0))
-            notes.append(f"{symbol}: held live for {TRIAL} but not by paper trial 1, so it is sold at the open")
-    notes += [f"{TRIAL} {part} {sid}: no paper entry at the open ({status})" for part, sid, status in plan["passed"]]
+                                    "sell", 0, trial.CAPITAL, 0.0, reason="our rules no longer hold it"))
+    notes += [f"{sid}: a buy signal, but {PASSED.get(status, status)}." for _, sid, status in plan["passed"]]
     return orders, notes
 
 

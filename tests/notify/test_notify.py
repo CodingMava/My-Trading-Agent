@@ -2,8 +2,9 @@ import logging
 
 import requests
 
+from trader.config import load_settings
 from trader.notify import templates
-from trader.notify.telegram import LogNotifier, TelegramNotifier
+from trader.notify.telegram import LogNotifier, TelegramNotifier, notifier_from_settings
 
 
 class FakeResponse:
@@ -69,3 +70,25 @@ def test_log_notifier_when_telegram_is_off(caplog):
     with caplog.at_level(logging.INFO):
         assert LogNotifier().send("<b>hello</b>\nworld")
     assert "hello" in caplog.text
+
+
+def test_only_what_you_act_on_reaches_telegram():
+    """Your rules (20 Nov 2026): the market day's messages, alerts that need you and answers to your commands; every
+    other message (summaries, research, the dry run) is only logged."""
+    on = load_settings(env={"TELEGRAM_BOT_TOKEN": "123:TOKEN", "TELEGRAM_CHAT_ID": "42"})
+    assert on.telegram_enabled
+    for kind in ("orders", "alerts", "answers"):
+        assert isinstance(notifier_from_settings(on, kind), TelegramNotifier)
+    for quiet in (notifier_from_settings(on), notifier_from_settings(on, "note")):
+        assert isinstance(quiet, LogNotifier)
+    off = load_settings(env={})
+    assert isinstance(notifier_from_settings(off, "orders"), LogNotifier)  # Telegram not set up: the log
+
+
+def test_a_message_to_act_on_is_short_steps_with_bold_first_lines():
+    text = templates.steps_message("US: tonight's open", ["BUY AAPL: about $333\nWhy: <strong> results & more."], "How: Kite.")
+    assert text == ("<b>US: tonight's open</b>\n\n<b>BUY AAPL: about $333</b>\nWhy: &lt;strong&gt; results &amp; more."
+                    "\n\nHow: Kite.")
+    assert templates.steps_message("T", ["ONE"]) == "<b>T</b>\n\n<b>ONE</b>"  # no footer
+    assert templates.by_hand(["SELL 1 X now"], "no Kite login today").startswith(
+        "<b>India: please do this in Kite</b>\nThe bot couldn't place it: no Kite login today.\n\n<b>SELL 1 X now</b>")

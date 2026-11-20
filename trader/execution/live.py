@@ -27,28 +27,34 @@ Nothing is sent unless every lock is open:
 Exits and stops go out even with the kill switch engaged: it blocks new trades, never the way out.
 
 Kite takes orders only from the internet address registered with it (KITE_STATIC_IP), and lets you change that
-only once a week. On a day this PC's address differs, the jobs run as usual but send nothing: each order comes to
-you on Telegram as a step to do in the Kite app, in plain words, and the jobs then find what you did in Kite and
-carry on from there (trader/execution/oms.py). Sending by itself always comes first: this is only the fallback.
+only once a week. On a day this PC's address differs, or without today's Kite login, the jobs run as usual but send
+nothing: each order comes to you on Telegram as a step to do in the Kite app, in plain words, with its reason, and
+the jobs then find what you did in Kite and carry on from there (trader/execution/oms.py). Without a login nothing in
+the account can be read, so a buy handed to you is taken as yours: once the rules sell it, you're told to sell it too
+(once, "only if you bought it"). An order Kite refuses, or a stop-loss missing at Kite, comes to you the same way.
+Sending by itself always comes first: this is only the fallback. Telegram carries only these steps; everything else
+the jobs say goes to logs/live.log (trader/notify/telegram.py).
 
 A live entry is its paper order scaled by live capital / paper capital, so it risks the same share of the
 account. An exit sells what the account holds for that strategy, never more.
 
 The live capital grows in recorded steps (the audit's Level 7). [live] capital is what you ask for; an
 increase takes effect only when every live strategy has passed Level 6 (status LIVE), it at most doubles the
-current step, and the step is at least min_step_weeks old (config/gate.toml [live]). A step that loses more
-than max_step_drawdown from its peak reverts to the previous one by itself; downward moves are automatic,
-upward ones deliberate.
+current step, and the step is at least min_step_weeks old (config/gate.toml [live]). While every live strategy is
+a real-money trial you decided in writing, your written cap (config/overrides.toml max_capital) decides instead of
+Level 6 and the weeks, still at most doubling the step. A step that loses more than max_step_drawdown from its
+peak reverts to the previous one by itself; downward moves are automatic, upward ones deliberate.
 
 A dry run (--dry-run) runs the same jobs, interlocks and order system against a simulated Zerodha account
 (trader/execution/simkite.py, kept in state/live-dryrun/) on real Kite prices: only price quotes are read from Kite,
 with today's login, and nothing is sent. --as-live names the strategies it treats as live, without touching the
-registry, and --capital the simulated account's rupees. Its messages are labelled [LIVE DRY RUN].
+registry, and --capital the simulated account's rupees. Its messages are labelled [LIVE DRY RUN] and only logged.
 """
 from __future__ import annotations
 
 import argparse
 import html
+import json
 import logging
 import re
 import tomllib
@@ -102,6 +108,9 @@ WINDOWS = {"evening": (time(16, 0), time(23, 59)), "morning": (time(9, 15), time
 # The scheduled morning job repeats (scripts/register_tasks.ps1), so a stop missed for want of a login goes in
 # soon after the login; each kind of failure is reported once a day and its repeats only logged.
 RETRIES = {"morning": "The scheduled morning job tries again every 15 minutes until 15:00; repeats of this are only logged today."}
+# Why the bot couldn't place today's orders, as the message to you says it.
+NO_LOGIN, ADDRESS_MOVED = "no Kite login today", "your internet address changed (send /myip to fix it)"
+SELLS = ("exit", "time exit", "stop exit", "gap exit")  # a refused one of these, or a refused stop, needs you
 OVERRIDES_FILE = CONFIG_DIR / "overrides.toml"
 MAX_TRIAL_DAYS = 92  # a real-money trial is decided for about three months at most, then renewed in writing or ended
 NEVER_TRADE_FILE = CONFIG_DIR / "never_trade.toml"  # git-ignored: the stocks you hold yourself
@@ -136,7 +145,8 @@ def load_never_trade(path: Path = NEVER_TRADE_FILE) -> frozenset[str]:
 class Override:
     """A real-money trial you decided on without the evidence the gate asks for (config/overrides.toml): small,
     capped and time-limited. It is not evidence: no strategy's status changes, every risk limit still applies,
-    and the live capital can't grow under it. `problem` says why it is invalid (empty when it isn't)."""
+    and the live capital grows under it only up to the cap you wrote, at most doubling a step (capital_for_today).
+    `problem` says why it is invalid (empty when it isn't)."""
     strategy_id: str
     decided: date | None
     until: date | None
@@ -201,6 +211,11 @@ class Live:
     overrides: tuple[Override, ...] = ()  # real-money trials you decided on (config/overrides.toml); never a dry run's
     never_trade: frozenset[str] = frozenset()  # the stocks you hold yourself (config/never_trade.toml): never bought
     address: Callable[[], str | None] | None = None  # this PC's internet address (public_ip); None: not checked
+    orders: object | None = None  # where the plans and the steps you must do go (Telegram); None: the notifier
+    explain: dict[str, list[str]] = field(default_factory=dict)  # a handed order's reason lines, by its tag
+    todo: list[str] = field(default_factory=list)  # this run's other steps for you: what Kite refused, a missing stop
+    placed: list[str] = field(default_factory=list)  # this evening's orders the bot placed itself, with their reasons
+    plan: list[str] | None = None  # a market evening's plain lines on what else the rules do (None: not an evening plan)
 
     def __post_init__(self):
         if self.as_live and not self.dry_run:
@@ -237,33 +252,89 @@ def say(live: Live, title: str, lines: list[str]) -> None:
     live.notifier.send(templates.live_update(title=title, lines=lines, dry_run=live.dry_run, trial=bool(live.overrides)))
 
 
-def hand_step(request: broker.KiteRequest) -> str:
-    """One order the bot couldn't send, as what to tap in the Kite app."""
+def hand_step(request: broker.KiteRequest, opens: str = "the next trading day") -> str:
+    """One order the bot couldn't place, as what to do in the Kite app, in plain words; `opens` names the day of the
+    next open (an after-market order's)."""
     sid, p = request.symbol.removesuffix(".NS"), request.params
-    if request.purpose == "entry":
-        return (f"BUY {p['quantity']} shares of {sid}\nKite app: {sid} > Buy > AMO > Longterm (CNC) > Market > quantity "
-                f"{p['quantity']} > Buy. It buys at tomorrow's 9:15 open. Do it tonight, or skip it.")
-    if request.purpose == "exit":
-        return (f"SELL {p['quantity']} shares of {sid}\nKite app: {sid} > Sell > AMO > Longterm (CNC) > Market > quantity "
-                f"{p['quantity']} > Sell. It sells at tomorrow's 9:15 open. Please do it tonight.")
+    if request.purpose in ("entry", "exit"):
+        return f"{'BUY' if request.purpose == 'entry' else 'SELL'} {p['quantity']} {sid} on {opens} at 9:15 am"
     if request.purpose == "stop":
         leg, trigger = p["orders"][0], p["condition"]["trigger_values"][0]
-        return (f"SET A STOP-LOSS on {sid}\nKite app: {sid} > Create GTT > Single > Sell > trigger price "
-                f"{templates.rupees(trigger)} > quantity {leg['quantity']} > price {templates.rupees(leg['price'])} > "
-                f"Create. It sells your {leg['quantity']} shares if the price falls to {templates.rupees(trigger)}.")
+        return (f"STOP-LOSS on {sid}: sell {leg['quantity']} if it falls to {templates.rupees(trigger)}\n"
+                f"Kite: {sid} › Create GTT › Single › Sell › trigger {templates.rupees(trigger)} › qty {leg['quantity']} › "
+                f"price {templates.rupees(leg['price'])}")
     if request.purpose == "cancel stop":
-        return f"DELETE the stop-loss of {sid}\nKite app: Orders > GTT > {sid} > Delete."
+        return f"DELETE the stop-loss of {sid} (Kite: Orders › GTT › {sid} › Delete)\nWhy: it is being sold."
     if request.purpose == "gap exit":
-        return (f"SELL {sid} NOW\nIt fell below its stop-loss, but the stop-loss sell is stuck. Kite app: Orders > "
-                f"the open SELL of {sid} > Modify > Market > Modify.")
-    why = "its time is up" if request.purpose == "time exit" else "it is already below its stop-loss"
-    return (f"SELL {p['quantity']} shares of {sid} NOW, before 3:30 pm ({why})\nKite app: {sid} > Sell > Longterm (CNC) > "
-            f"Market > quantity {p['quantity']} > Sell.")
+        return (f"SELL {sid} NOW: it fell below its stop-loss, but that sell is stuck\n"
+                f"Kite: Orders › the open {sid} sell › Modify › Market")
+    why = "its time is up (our rule)" if request.purpose == "time exit" else "it is already below its stop-loss"
+    return f"SELL {p['quantity']} {sid} NOW, before 3:30 pm\nWhy: {why}."
 
 
-def hand_over(live: Live, requests: list[broker.KiteRequest]) -> None:
-    """Tell you the orders to do by hand today, in order (a stop-loss is deleted before its shares are sold)."""
-    live.notifier.send(templates.by_hand([f"{n}. {hand_step(r)}" for n, r in enumerate(requests, 1)]))
+def refused_step(request: broker.KiteRequest, why: str) -> str:
+    """An order Kite refused (or that ended unfilled), for you to do yourself: a buy if you like, a sale or a stop-loss
+    certainly."""
+    if request.purpose == "stop":
+        return hand_step(request) + f"\nZerodha refused the bot's stop-loss: {why}"
+    sid, quantity = request.symbol.removesuffix(".NS"), request.params.get("quantity")
+    if request.purpose == "entry":
+        return f"BUY {quantity} {sid} yourself, if you like\nZerodha refused the bot's buy: {why}"
+    return f"SELL {f'{quantity} ' if quantity else ''}{sid} yourself, now\nZerodha refused the bot's sell: {why}"
+
+
+def hand_over(live: Live, oms: OMS | None, today: date) -> None:
+    """Tell you, in one message, everything you must do yourself: the orders handed to you, in order (a stop-loss is
+    deleted before its shares are sold) and with their reasons, then what Kite refused and what else needs you. On a
+    market evening (`live.plan` set) it is the India plan for the next market day, sent even when there's nothing to
+    do: what the bot placed, what you must do, and why nothing else. Nothing when the job failed before it could plan
+    anything (`oms` None)."""
+    if oms is None:
+        return
+    opens = f"{live.calendar.next_trading_day(today):%a %d %b}"
+    yours = [hand_step(r, opens) + "".join(f"\n{line}" for line in live.explain.get(r.tag, [])) for r in oms.handed]
+    yours += [refused_step(r, why) for r, why in oms.refused if r.purpose in SELLS or r.purpose in ("stop", "entry")]
+    yours += live.todo
+    why = "" if not oms.by_hand else NO_LOGIN if oms.kite is None else ADDRESS_MOVED
+    practice = "[LIVE DRY RUN] " if live.dry_run else ""  # a dry run's messages are only logged, but say what they are
+    if live.plan is None or not live.store.first_notice(today, "evening plan"):  # the plan: once an evening
+        if yours:
+            (live.orders or live.notifier).send(practice + templates.by_hand(yours, why))
+        return
+    steps = yours + live.placed
+    note = (f"The bot couldn't place these: {why}. Please do them in Kite." if oms.handed and why
+            else "Please do these in Kite." if yours else "" if steps else "Nothing to buy or sell.")
+    lines = live.plan or ([] if steps else ["No new buy signals, and nothing to sell."])
+    footer = "\n\n".join(part for part in ("\n".join(lines), templates.HOW if yours else "") if part)
+    (live.orders or live.notifier).send(practice + templates.steps_message(f"India plan for {opens}", steps, footer, note))
+
+
+def entry_lines(order: LiveOrder) -> list[str]:
+    """Why the rules buy it, and the stop-loss to set once it is bought, for a buy handed to you (every entry has a
+    stop: it is what sizes the position)."""
+    stop = broker.to_tick(order.reference_price * (1 - order.stop_distance))
+    return [*([f"Why: {order.reason}."] if order.reason else []),
+            f"Stop-loss: once bought, sell if it falls to {templates.rupees(stop)} ({order.stop_distance:.0%} down)."]
+
+
+def hand_sale(position: Position) -> broker.KiteRequest:
+    """The one sale you're told to make of a buy handed to you that the bot never saw done."""
+    return broker.exit_order(f"{position.strategy_id} {position.symbol} {position.entry_date} bought by hand",
+                             position.symbol, position.quantity)
+
+
+def bought_by_hand(store: LiveStore) -> dict[str, Position]:
+    """The buys handed to you that the bot never saw done (without a login it can't look), as positions dated the day
+    you were told: taken as yours, so that once the rules sell them you're told to sell too. Each stays until that
+    sale has been told."""
+    yours = {}
+    for row in store.orders((HAND, "NOT DONE")):
+        if row["purpose"] == "entry":
+            quantity = json.loads(row["request"])["params"]["quantity"]
+            position = Position(row["strategy_id"], row["symbol"], quantity, 0.0, 0.0, date.fromisoformat(row["session"]))
+            if store.order(hand_sale(position).tag) is None:
+                yours[row["symbol"]] = position
+    return yours
 
 
 def address_moved(live: Live) -> str:
@@ -278,10 +349,13 @@ def address_moved(live: Live) -> str:
 
 
 def failed(live: Live, job: str, today: date, kind: str, detail: str, trace: bool = False) -> int:
-    """A job that couldn't finish: reported the first time today for this kind of failure, logged every time."""
+    """A job that couldn't finish: reported the first time today for this kind of failure, logged every time. An
+    evening plan cut short says so."""
     log.error("Live %s failed: %s", job, detail, exc_info=trace)
     if live.store.first_notice(today, f"{job} {kind}"):
         say(live, f"Live {job} failed", [detail, *([RETRIES[job]] if job in RETRIES else [])])
+    if live.plan is not None:
+        live.plan = ["Something went wrong while making tonight's plan, so nothing more was placed (logs/live.log has why)."]
     return 1
 
 
@@ -299,6 +373,15 @@ def locks(live: Live) -> list[str]:
     return reasons
 
 
+def kite_or_none(live: Live) -> KiteOrders | None:
+    """Today's Kite session; None without a login, when nothing can be read or sent and each order is handed to you."""
+    try:
+        return live.connect()
+    except KiteAuthError as exc:
+        log.info("Live: %s: today's orders go to you on Telegram, to do by hand", exc)
+        return None
+
+
 def run(job: str, live: Live, backup_dir=None) -> int:
     """One job. Returns 0 when done (or there was nothing to do), 1 when it failed, 2 when reconciliation
     stopped it."""
@@ -307,11 +390,13 @@ def run(job: str, live: Live, backup_dir=None) -> int:
         log.info("Live %s: nothing sent: %s", job, "; ".join(blocked))
         return 0
     today, oms = live.clock().date(), None
+    live.todo, live.placed, live.plan = [], [], None
     try:
         moved = address_moved(live)  # Kite would refuse every order, so each is handed to you instead
-        oms = OMS(live.store, live.connect(), live.clock, by_hand=moved, calendar=live.calendar)
-        news = oms.refresh(today)
-        problems = oms.reconcile()
+        kite = kite_or_none(live)
+        oms = OMS(live.store, kite, live.clock, by_hand=NO_LOGIN if kite is None else moved, calendar=live.calendar)
+        news = oms.refresh(today) if kite is not None else []  # without a login the account can't be read
+        problems = oms.reconcile() if kite is not None else []
         if problems:  # told when it engages the kill switch, and once a day while the switch stays engaged
             first, engaging = live.store.first_notice(today, f"{job} reconciliation"), not live.kill_switch.engaged
             live.kill_switch.engage("live reconciliation failed: " + problems[0])
@@ -334,8 +419,7 @@ def run(job: str, live: Live, backup_dir=None) -> int:
         detail = redact(f"{type(exc).__name__}: {exc}", live.settings.secret_values() + session_secrets())[:500]
         return failed(live, job, today, "error", detail, trace=True)
     finally:  # even when the job failed after it: what was handed to you isn't handed again today
-        if oms is not None and oms.handed:
-            hand_over(live, oms.handed)
+        hand_over(live, oms, today)
     if backup_dir is not None:
         live.store.backup(backup_dir, today)
     return 0
@@ -371,45 +455,51 @@ def capital_for_today(live: Live, today: date) -> tuple[float, list[str]]:
             return current, [f"Live capital stays at Rs {current:,.0f}: the revert is acknowledged."]
         return current, []
     weeks = (today - since).days / 7
-    unproven = sorted(i for i in live_strategies(live)
-                      if (record := live.registry.get_by_id(i)) is None or record.status != "LIVE")
+    written = trials(live)  # real-money trials you decided in writing; each one's cap already covers [live] capital
+    unproven = sorted(i for i in live_strategies(live) if i not in written
+                      and ((record := live.registry.get_by_id(i)) is None or record.status != "LIVE"))
+    by_you = bool(written) and live_strategies(live) <= set(written)  # every live strategy is your written decision
     refused = ("after a revert, lower [live] capital to the current step first, then raise it again"
                if steps[-1]["reason"].startswith("reverted") else
                f"{', '.join(unproven)} must first pass Level 6 (status LIVE)" if unproven else
                f"more than {t.max_step_increase:g}x the current step" if wanted > t.max_step_increase * current else
-               f"{weeks:.0f} of {t.min_step_weeks} weeks since the last step" if weeks < t.min_step_weeks else "")
+               f"{weeks:.0f} of {t.min_step_weeks} weeks since the last step"
+               if weeks < t.min_step_weeks and not by_you else "")
     if refused:
         return current, [f"Live capital stays at Rs {current:,.0f}, not Rs {wanted:,.0f}: {refused}."]
-    live.store.add_capital_step(today, wanted, "raised")
+    live.store.add_capital_step(today, wanted, "raised: your written trial cap" if by_you else "raised")
     return wanted, [f"Live capital raised to Rs {wanted:,.0f}."]
 
 
 def evening(live: Live, oms: OMS, today: date) -> list[str]:
-    """After the paper runs: tomorrow's entries and exits, as after-market orders for the open."""
+    """After the paper runs: tomorrow's entries and exits, as after-market orders for the open. On a market evening it
+    also makes the India plan you're told (hand_over): the sources' notes, in plain words, are its lines."""
     if not live.calendar.is_trading_day(today):
         return []
     allowed, managed, held = live_strategies(live), managed_strategies(live), live.store.positions()
+    yours = {**bought_by_hand(live.store), **held}  # what the bot holds, and the buys handed to you
     batches = []
     if managed & set(live.catalog):
         batches.append(paper_orders(live.paper, today, managed, live.catalog))
     for strategy_id in sorted(managed & set(live.sources)):
-        batches.append(live.sources[strategy_id](today, held))
+        batches.append(live.sources[strategy_id](today, yours))
     notes = [note for _, found in batches for note in found]
+    live.plan = list(notes)
     if all(orders is None for orders, _ in batches):
         return notes
     capital, news = capital_for_today(live, today)
     news += notes
     state, risk = live_account(live, oms, today, capital, news), RiskEngine(live.limits, live.kill_switch, account="live")
     entries = sum(1 for row in live.store.orders() if row["session"] == today.isoformat() and row["purpose"] in ENTRY_PURPOSES)
-    for order in (order for orders, _ in batches for order in orders or ()):
+    orders = [order for found, _ in batches for order in found or ()]
+    buying = {(order.strategy_id, order.symbol) for order in orders if order.side == "buy"}
+    kept = {(o.strategy_id, o.symbol) for o in orders if o.side == "sell" and (o.strategy_id, o.symbol) in buying
+            and o.symbol in yours and yours[o.symbol].strategy_id == o.strategy_id}  # sold and bought again: kept
+    for order in orders:
         if order.side == "sell":
-            position = held.get(order.symbol)
-            if position is None or position.strategy_id != order.strategy_id:
-                continue  # nothing live to sell
-            request = broker.exit_order(order.key, order.symbol, position.quantity)
-            news.append(f"{order.symbol}: sell {position.quantity} at the open ({oms.submit(today, order.strategy_id, request)})")
+            news += sell(live, oms, today, order, held, yours, kept)
             continue
-        refused, quantity = entry_refusal(live, order, capital, held, entries, allowed)
+        refused, quantity = entry_refusal(live, order, capital, yours, entries, allowed)
         if not refused:  # the risk engine on the live account: it may make the order smaller, never bigger
             sector = sector_of(order.symbol, live.sectors)
             decision = risk.review(TradeIntent(order.strategy_id, order.symbol, today, order.reference_price,
@@ -417,9 +507,16 @@ def evening(live: Live, oms: OMS, today: date) -> list[str]:
             refused, quantity = ("" if decision.approved else decision.reason), decision.quantity
         if refused:
             news.append(f"{order.symbol}: entry not sent: {refused}")
+            if (order.strategy_id, order.symbol) not in kept:  # a kept one is said once, as a KEEP
+                live.plan.append(not_bought(order, refused, capital))
             continue
         request = broker.entry_order(order.key, order.symbol, quantity)
+        live.explain[request.tag] = entry_lines(order)
         status = oms.submit(today, order.strategy_id, request, order.stop_distance, order.max_hold_days)
+        if status not in (HAND, "REJECTED"):
+            live.placed.append(f"BUY {quantity} {order.symbol.removesuffix('.NS')} at 9:15 am, placed by the bot\n"
+                               + "".join(f"{line}\n" for line in live.explain[request.tag][:-1])
+                               + "Stop-loss: the bot sets it after the buy.")
         entries += 1
         news.append(f"{order.symbol}: buy {quantity} at the open ({status})")
         # the rest of the evening's entries see it as held, whatever Kite answered (the stricter view)
@@ -430,13 +527,42 @@ def evening(live: Live, oms: OMS, today: date) -> list[str]:
     return news
 
 
+def sell(live: Live, oms: OMS, today: date, order: LiveOrder, held: dict[str, Position], yours: dict[str, Position],
+         kept: set[tuple[str, str]]) -> list[str]:
+    """One sale for the next open: what the live account holds, or a buy handed to you (you're told once to sell it,
+    "only if you bought it"). Nothing when its strategy buys the stock again at the same open (`kept`)."""
+    position = yours.get(order.symbol)
+    if position is None or position.strategy_id != order.strategy_id:
+        return []  # nothing live to sell
+    sid = order.symbol.removesuffix(".NS")
+    if (order.strategy_id, order.symbol) in kept:
+        live.plan.append(f"KEEP {sid}: the rules sell it and buy it again at the open, so it stays.")
+        return [f"{order.symbol}: kept, since the rules buy it again at the open"]
+    why = [f"Why: {order.reason}."] if order.reason else []
+    if order.symbol in held:
+        request = broker.exit_order(order.key, order.symbol, position.quantity)
+        live.explain[request.tag] = why
+        status = oms.submit(today, order.strategy_id, request)
+        if status not in (HAND, "REJECTED"):
+            live.placed.append(f"SELL {position.quantity} {sid} at 9:15 am, placed by the bot" + "".join(f"\n{w}" for w in why))
+        return [f"{order.symbol}: sell {position.quantity} at the open ({status})"]
+    request = hand_sale(position)
+    live.explain[request.tag] = [f"Only if you bought it after our {position.entry_date:%d %b} message.", *why]
+    return [f"{order.symbol}: sell {position.quantity} if you bought it ({oms.hand(today, order.strategy_id, request)})"]
+
+
+def prices_now(oms: OMS, held: dict[str, Position]) -> dict[str, float]:
+    """Kite's last prices of the holdings, by trading symbol; none without a login."""
+    return oms.kite.ltp([symbol.removesuffix(".NS") for symbol in held]) if oms.kite is not None else {}
+
+
 def live_account(live: Live, oms: OMS, today: date, capital: float, news: list[str]) -> PortfolioState:
     """The live account as the risk engine sees it: the capital step plus what the live trades made since it began,
     the holdings marked at Kite's last prices. Each evening's equity is recorded: its best since the step began is
     the drawdown limit's peak, and the previous evening's is where the daily-loss limit measures from."""
     since = date.fromisoformat(live.store.capital_steps()[-1]["session"])
     held = live.store.positions()
-    prices = oms.kite.ltp([symbol.removesuffix(".NS") for symbol in held])
+    prices = prices_now(oms, held)
     positions = {}
     for symbol, position in held.items():
         price = prices.get(symbol.removesuffix(".NS"))
@@ -473,6 +599,17 @@ def entry_refusal(live: Live, order: LiveOrder, capital: float, held: dict, entr
     return refused, quantity
 
 
+def not_bought(order: LiveOrder, refused: str, capital: float) -> str:
+    """Why a buy the rules want isn't made, in plain words, for the evening's plan."""
+    if "scale to none" in refused:
+        part = order.paper_quantity * order.reference_price * capital / order.paper_capital
+        refused = (f"1 share costs ₹{order.reference_price:,.0f}, and our rules give it only ₹{part:,.0f} of your "
+                   f"₹{capital:,.0f}")
+    elif refused == "the kill switch is engaged":
+        refused = "trading is paused (the safety switch is on)"
+    return f"{order.symbol.removesuffix('.NS')}: a buy signal, but {refused}."
+
+
 def exits_only(live: Live, strategy_id: str) -> str:
     """Why a strategy whose live trades are carried on may not open new ones."""
     today, known = live.clock().date(), known_strategies(live)
@@ -486,21 +623,29 @@ def morning(live: Live, oms: OMS, today: date) -> list[str]:
     if not live.calendar.is_trading_day(today):
         return []
     news, held = [], live.store.positions()
-    prices = oms.kite.ltp([symbol.removesuffix(".NS") for symbol in held])
+    prices = prices_now(oms, held)
     for symbol, position in held.items():
-        price = prices[symbol.removesuffix(".NS")]
+        price = prices.get(symbol.removesuffix(".NS"))  # none without a login: the stop goes by its entry price
         stop = live.store.order(broker.stop_order(position).tag)
         if stop is None or stop["status"] in ("SENDING", "UNKNOWN", HAND):  # not placed, not found, or not done by hand
-            request = (broker.stop_exit(position) if price <= broker.to_tick(position.stop_price)
+            request = (broker.stop_exit(position) if price is not None and price <= broker.to_tick(position.stop_price)
                        else broker.stop_order(position, last_price=price))
             status = oms.submit(today, position.strategy_id, request)
             if status != HAND or request in oms.handed:  # a repeat of the job doesn't say it again
                 news.append(f"{symbol}: {request.purpose} ({status})")
-        elif stop["status"] == "TRIGGERED" and price < broker.stop_limit(position.stop_price):
+        elif stop["status"] == "TRIGGERED" and price is not None and price < broker.stop_limit(position.stop_price):
             news.append(f"{symbol}: gap exit ({oms.submit(today, position.strategy_id, broker.gap_exit(position))})")
         elif stop["status"] not in ("SENT", "TRIGGERED") and live.store.first_notice(today, f"no stop {symbol}"):
             # rejected, deleted, or it sold only part: told once a day, though the job repeats
             news.append(f"{symbol} has no stop at Kite ({stop['status'].lower()}: {stop['detail']}). Place one by hand.")
+            live.todo.append(hand_step(broker.stop_order(position, last_price=price))
+                             + f"\nWhy: Kite has no stop-loss for it ({stop['status'].lower()}).")
+    if oms.kite is None:  # without a login the open's fills can't be seen: what the bot bought, you protect yourself
+        for row in live.store.orders(("SENT",)):
+            if row["purpose"] == "entry" and live.store.first_notice(date.fromisoformat(row["session"]), f"stop {row['tag']}"):
+                sid, quantity = row["symbol"].removesuffix(".NS"), json.loads(row["request"])["params"]["quantity"]
+                live.todo.append(f"STOP-LOSS on {sid}: once the bot's {quantity} shares are bought, sell them if the price "
+                                 f"falls {row['stop_distance']:.0%} below what was paid\nKite: {sid} › Create GTT › Single › Sell")
     current = {broker.stop_order(position).tag for position in held.values()}
     for row in live.store.orders(("SENT",)):
         if row["purpose"] == "stop" and row["tag"] not in current:  # its holding was sold at the open
@@ -619,7 +764,7 @@ def status_text(live: Live) -> str:
 
 
 class Console:
-    """A dry run's messages, printed (and with --notify sent on, through `then`)."""
+    """A dry run's messages, printed (and with --notify also logged, through `then`)."""
 
     def __init__(self, then=None):
         self.then = then
@@ -627,18 +772,6 @@ class Console:
     def send(self, text: str) -> bool:
         print(html.unescape(re.sub(r"<[^>]+>", "", text)) + "\n")
         return self.then.send(text) if self.then is not None else True
-
-
-def dry_run_waiting(directory: Path | None = None) -> bool:
-    """Whether a dry run's simulated account holds shares or has requests outstanding (its morning job needs prices)."""
-    path = (directory or DRY_RUN_DIR) / "live.db"
-    if not path.is_file():
-        return False
-    store = LiveStore(path)
-    try:
-        return bool(store.positions() or store.orders(("SENDING", "SENT", "TRIGGERED", "UNKNOWN")))
-    finally:
-        store.close()
 
 
 def dry_run(settings: Settings, paper: PaperStore, calendar: MarketCalendar, notifier, as_live: set[str],
@@ -671,7 +804,8 @@ def main(argv: list[str] | None = None) -> None:
                         help="dry run only: treat this strategy as live, e.g. B1F (the registry is not changed)")
     parser.add_argument("--capital", type=float, default=DRY_RUN_CAPITAL,
                         help="dry run only: the simulated account's capital in rupees (default %(default)s)")
-    parser.add_argument("--notify", action="store_true", help="dry run only: also send its messages on Telegram")
+    parser.add_argument("--notify", action="store_true",
+                        help="dry run only: also log its messages (Telegram carries only real buy and sell steps)")
     args = parser.parse_args(argv)
     if not args.dry_run and (args.as_live or args.notify or args.capital != DRY_RUN_CAPITAL):
         parser.error("--as-live, --capital and --notify are for dry runs only")
@@ -698,7 +832,7 @@ def main(argv: list[str] | None = None) -> None:
         live = Live(settings, paper, store, StrategyRegistry.load(), KillSwitch(), calendar, notifier_from_settings(settings),
                     connect=lambda: from_session(settings), steps=load_gate_config().live,
                     sources={TRIAL: lambda today, held: trial_orders(today, held, calendar)}, overrides=load_overrides(),
-                    never_trade=load_never_trade(), address=public_ip)
+                    never_trade=load_never_trade(), address=public_ip, orders=notifier_from_settings(settings, "orders"))
     if args.job == "status":
         print(status_text(live))
     elif args.job == "check":

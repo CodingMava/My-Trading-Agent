@@ -1,3 +1,4 @@
+import json
 import logging
 from dataclasses import replace
 from datetime import date, datetime
@@ -8,11 +9,14 @@ import requests
 from trader.config import load_settings
 from trader.core.models import Position
 from trader.data.kite import KiteAuthError, KiteError, KiteSession, load_session, save_session
+from trader.execution import broker
 from trader.execution.kite_orders import KiteOrders
+from trader.execution.oms import YOUR_SALE, LiveStore
 from trader.execution.store import PaperStore
 from trader.markets.calendar import load_calendars
 from trader.notify import bot as bot_module
-from trader.notify.bot import HELP, CommandBot, Context, kite_check_text, kite_login, login_reminder, reply_to
+from trader.notify.bot import (HELP, CommandBot, Context, kite_check_text, kite_login, morning_message, reply_to,
+                               todays_orders)
 from trader.ops.health import ALERT, INFO, OK, WARN, Health
 from trader.registry import StrategyRecord, StrategyRegistry
 from trader.risk.killswitch import KillSwitch
@@ -163,26 +167,58 @@ def test_login_is_answered_even_when_the_records_cant_be_read(tmp_path):
     assert bot.poll_once() == 1 and inbox.sent == ["login with https://x/?status=success&request_token=t"]
 
 
-def test_a_live_trading_morning_without_a_login_gets_one_reminder(tmp_path):
+def _row(purpose, symbol, status, quantity, detail=""):
+    return {"purpose": purpose, "symbol": symbol, "status": status, "detail": detail,
+            "request": json.dumps({"params": {"quantity": quantity}})}
+
+
+def test_each_market_day_starts_with_one_short_morning_message(tmp_path):
     nse, session_file = load_calendars()["NSE"], tmp_path / "s.json"
-    off = replace(load_settings(env={}), live_enabled=False)  # whatever this PC's config/settings.toml says
-    on = replace(off, live_enabled=True)
-    assert "Kite login needed" in login_reminder(on, nse, MONDAY_MORNING, session_file)
-    assert login_reminder(off, nse, MONDAY_MORNING, session_file, dry_run=lambda: False) is None  # off: none needed
-    assert "live dry run" in login_reminder(off, nse, MONDAY_MORNING, session_file, dry_run=lambda: True)
-    for when in (MONDAY_MORNING.replace(hour=8, minute=0), MONDAY_MORNING.replace(hour=9, minute=30),
-                 MONDAY_MORNING.replace(day=11)):  # too early, too late, a Sunday
-        assert login_reminder(on, nse, when, session_file) is None
-    save_session(KiteSession("key", "AT", "U", MONDAY_MORNING), session_file)
-    assert login_reminder(on, nse, MONDAY_MORNING, session_file) is None  # already logged in
+    on = replace(load_settings(env={}), live_enabled=True)
+    asked = []
+
+    def orders(planned):
+        asked.append(planned)
+        return [_row("entry", "AAA.NS", "SENT", 2), _row("entry", "BBB.NS", "HAND", 3, "no Kite login today"),
+                _row("exit", "CCC.NS", "HAND", 1, YOUR_SALE)]
+    assert morning_message(on, nse, MONDAY_MORNING, session_file, orders) == (
+        "<b>Good morning! India today, Mon 12 Oct</b>\n\n"
+        "<b>Please log in to Kite: send /login</b>\nSo the bot can place today's orders and stop-losses itself.\n\n"
+        "<b>BUY 2 AAA at 9:15 am</b>\nThe bot placed it last night.\n\n"
+        "<b>BUY 3 BBB at 9:15 am</b>\nPlease place it yourself in Kite, if you haven't (the bot couldn't).\n\n"
+        "<b>SELL 1 CCC at 9:15 am</b>\nOnly if you bought it. Please place it yourself in Kite.")
+    assert asked == [nse.previous_trading_day(MONDAY_MORNING.date())]  # the evening that planned today's open
+    save_session(KiteSession("key", "AT", "U", MONDAY_MORNING), session_file)  # logged in: no login line
+    assert morning_message(on, nse, MONDAY_MORNING, session_file, lambda planned: []) == (
+        "<b>Good morning! India today, Mon 12 Oct</b>\n\n<b>Nothing to buy or sell today</b>\n"
+        "Tonight's message says what the rules plan next.")
+    for when in (MONDAY_MORNING.replace(hour=8, minute=0), MONDAY_MORNING.replace(hour=15, minute=45),
+                 MONDAY_MORNING.replace(day=11)):  # too early, after the close, a Sunday
+        assert morning_message(on, nse, when, session_file, lambda planned: []) is None
+    off = replace(on, live_enabled=False)
+    assert morning_message(off, nse, MONDAY_MORNING, session_file, lambda planned: []) is None
     inbox = Inbox()
-    bot = CommandBot("TOKEN", CHAT, inbox, lambda: None, reminder=lambda: "log in")
+    bot = CommandBot("TOKEN", CHAT, inbox, lambda: None, reminder=lambda: "good morning")
     for day in (date(2026, 10, 12), date(2026, 10, 12), date(2026, 10, 13)):
         bot.remind(day)
-    assert inbox.sent == ["log in", "log in"]  # at most once a day
+    assert inbox.sent == ["good morning", "good morning"]  # at most once a day
     quiet = CommandBot("TOKEN", CHAT, inbox, lambda: None, reminder=lambda: None)
     quiet.remind(date(2026, 10, 14))
     assert len(inbox.sent) == 2
+
+
+def test_the_morning_message_reads_last_evenings_buys_and_sells(tmp_path, monkeypatch):
+    at, friday = datetime(2026, 10, 9, 21, 0, tzinfo=ZoneInfo("Asia/Kolkata")), date(2026, 10, 9)
+    store = LiveStore(tmp_path / "live.db")
+    store.record(at, friday, "B1F", broker.entry_order("a", "AAA.NS", 2), "SENT")
+    store.record(at, friday, "B1F", broker.entry_order("b", "BBB.NS", 3), "REJECTED", "no funds")  # nothing to do
+    store.record(at, date(2026, 10, 8), "B1F", broker.entry_order("c", "CCC.NS", 1), "HAND")  # an older evening's
+    store.record(at, friday, "B1F", broker.stop_order(Position("B1F", "DDD.NS", 5, 100.0, 85.0, friday)), "SENT")
+    store.close()
+    monkeypatch.setattr(bot_module, "open_live_store", lambda settings: LiveStore(tmp_path / "live.db"))
+    assert [row["symbol"] for row in todays_orders(None, friday)] == ["AAA.NS"]  # buys and sells only
+    monkeypatch.setattr(bot_module, "open_live_store", lambda settings: None)  # no live job has run yet
+    assert todays_orders(None, friday) == []
 
 
 

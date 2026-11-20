@@ -9,7 +9,8 @@ makes today's Kite session here on the PC from the page Kite returns to after yo
 and the session's access token never pass through Telegram, and the request token you send is single-use.
 /myip compares this PC's internet address with KITE_STATIC_IP in .env, and /myip done writes the new one there
 (that one line only) once it is in Kite's developer console, which only Kite's own site can change.
-While live trading is on, a trading morning without a login gets a reminder at 08:30.
+While live trading is on, each market day starts with one short message (from 08:30, or when the PC wakes before
+the 15:30 close): please log in to Kite if there's no login yet, and what the rules buy and sell at today's 9:15 open.
 """
 from __future__ import annotations
 
@@ -30,13 +31,14 @@ from trader.config import ENV_FILE, ROOT, load_settings, parse_env_file
 from trader.data.kite import (LOGIN_URL, SESSION_FILE, KiteAuthError, KiteError, create_session, load_session,
                               request_token_from, save_session, session_secrets)
 from trader.execution.kite_orders import from_session
-from trader.execution.live import check as live_check, dry_run_waiting, public_ip
+from trader.execution.live import check as live_check, public_ip
+from trader.execution.oms import HAND, YOUR_SALE
 from trader.execution.store import PaperStore
 from trader.gate import load_gate_config
 from trader.logging_setup import configure_logging
 from trader.markets.calendar import load_calendars
 from trader.notify.telegram import notifier_from_settings
-from trader.notify.templates import money, rupees
+from trader.notify.templates import money, rupees, steps_message
 from trader.ops import console
 from trader.ops.health import ACTIVE, ALERT, INFO, WARN, Health, health_checks, open_live_store, open_us_store
 from trader.registry import StrategyRegistry
@@ -47,8 +49,8 @@ IST = ZoneInfo("Asia/Kolkata")
 POLL_SECONDS = 50  # Telegram holds each request open this long while there is nothing new
 RETRY_SECONDS = 30  # wait after a failed poll (no internet, Telegram down)
 MAX_REASON = 200
-REMIND_FROM, REMIND_UNTIL = clock_time(8, 30), clock_time(9, 15)  # the live jobs start at 09:20
-HELP = ("<b>Commands</b>\n\n"
+MORNING_FROM, MORNING_UNTIL = clock_time(8, 30), clock_time(15, 30)  # a market day's first message: from 08:30 to the close
+HELP =("<b>Commands</b>\n\n"
         "/status: health, mode, equity and positions\n"
         "/positions: open positions\n"
         "/trades: the latest closed trades\n"
@@ -239,24 +241,42 @@ def my_ip_text(argument: str, env_file: Path = ENV_FILE, address: Callable[[], s
     return escape(f"Saved {seen} in .env (it had {registered or 'none'}). The next live job sends what is waiting.")
 
 
-def login_reminder(settings, calendar, now: datetime, session_file: Path = SESSION_FILE,
-                   dry_run: Callable[[], bool] = dry_run_waiting) -> str | None:
-    """While live trading is on, or a live dry run holds simulated orders or shares: a trading morning between 08:30
-    and 09:15 without today's Kite login."""
-    if (not calendar.is_trading_day(now.date()) or not REMIND_FROM <= now.time() < REMIND_UNTIL
-            or load_session(session_file, now) is not None):
+def todays_orders(settings, planned: date) -> list[dict]:
+    """The live orders planned the evening of `planned` for the next open: buys and sells the bot placed, or handed to you."""
+    store = open_live_store(settings)
+    if store is None:
+        return []
+    try:
+        return [dict(row) for row in store.orders() if row["session"] == planned.isoformat()
+                and row["purpose"] in ("entry", "exit") and row["status"] in ("SENDING", "SENT", "UNKNOWN", "DONE", HAND)]
+    finally:
+        store.close()
+
+
+def morning_message(settings, calendar, now: datetime, session_file: Path = SESSION_FILE,
+                    orders: Callable[[date], list[dict]] | None = None) -> str | None:
+    """A market day's first message, while live trading is on: please log in to Kite (when there's no login yet), and
+    what the rules buy and sell at today's 9:15 open. None on other days, before 08:30 or after the 15:30 close."""
+    today = now.date()
+    if not settings.live_enabled or not calendar.is_trading_day(today) or not MORNING_FROM <= now.time() < MORNING_UNTIL:
         return None
-    if settings.live_enabled:
-        return ("<b>Kite login needed</b>\n\nLive trading is on, and today's jobs (09:20, 15:15, and the evening one "
-                "after paper trial 1) need a Kite login. Send /login.")
-    if dry_run():
-        return ("<b>Kite login needed</b>\n\nThe live dry run holds simulated orders or shares: its 09:20 job needs "
-                "today's Kite prices. Send /login.")
-    return None
+    login = [] if load_session(session_file, now) is not None else [
+        "Please log in to Kite: send /login\nSo the bot can place today's orders and stop-losses itself."]
+    trades = []
+    for row in (orders or (lambda planned: todays_orders(settings, planned)))(calendar.previous_trading_day(today)):
+        side, sid = "BUY" if row["purpose"] == "entry" else "SELL", row["symbol"].removesuffix(".NS")
+        quantity = json.loads(row["request"])["params"]["quantity"]
+        how = ("The bot placed it last night." if row["status"] != HAND
+               else "Only if you bought it. Please place it yourself in Kite." if row["detail"] == YOUR_SALE
+               else "Please place it yourself in Kite, if you haven't (the bot couldn't).")
+        trades.append(f"{side} {quantity} {sid} at 9:15 am\n{how}")
+    return steps_message(f"Good morning! India today, {today:%a %d %b}", login + (
+        trades or ["Nothing to buy or sell today\nTonight's message says what the rules plan next."]))
 
 
 class CommandBot:
-    """Long-polls Telegram for messages and answers the commands from the configured chat."""
+    """Long-polls Telegram for messages and answers the commands from the configured chat; `reminder` gives the message
+    to send first, at most once a day (the morning one)."""
 
     def __init__(self, token: str, chat_id: str, notifier, context, http=requests, sleep=time.sleep,
                  direct: dict[str, Callable[[str], str]] | None = None,
@@ -314,7 +334,7 @@ class CommandBot:
         return answered
 
     def remind(self, today: date) -> None:
-        """Send the reminder, if there is one, at most once a day."""
+        """Send the day's first message, if there is one, at most once a day."""
         if self.reminder is not None and self.reminded != today and (text := self.reminder()):
             self.notifier.send(text)
             self.reminded = today
@@ -338,11 +358,11 @@ def main() -> None:
         return
     calendar = load_calendars()["NSE"]
     bot = CommandBot(settings.telegram_bot_token.reveal(), settings.telegram_chat_id,
-                     notifier_from_settings(settings), lambda: load_context(settings, KillSwitch()),
+                     notifier_from_settings(settings, "answers"), lambda: load_context(settings, KillSwitch()),
                      direct={"/login": lambda argument: kite_login(settings, argument),
                              "/kitecheck": lambda argument: kite_check_text(settings),
                              "/myip": my_ip_text},
-                     reminder=lambda: login_reminder(settings, calendar, datetime.now(IST)))
+                     reminder=lambda: morning_message(settings, calendar, datetime.now(IST)))
     bot.run()
 
 

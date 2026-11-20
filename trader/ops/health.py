@@ -1,7 +1,7 @@
 """Health checks for unattended operation: did the daily run happen, did it work, and is it safe?
 
     python -m trader.ops.health             # every check; exit code 1 when something needs attention
-    python -m trader.ops.health --notify    # also send one Telegram alert listing the problems
+    python -m trader.ops.health --notify    # also send one Telegram alert, in plain words, listing what needs you
 
 Schedule it a few hours after the daily run (scripts/register_tasks.ps1 does both). It is what pages you
 when the run didn't happen at all, which the run itself can never report.
@@ -220,7 +220,7 @@ def live_checks(settings, store: LiveStore | None, now: datetime, session_file: 
         if handed:
             checks.append(Health("live hand orders", WARN, f"{len(handed)} order(s) waiting for you to do by hand in "
                                  "the Kite app (" + ", ".join(f"{r['symbol']} {PLAIN[r['purpose']]}" for r in handed[:3])
-                                 + "): see the Telegram message 'Please do this by hand in Zerodha'"))
+                                 + "): see the Telegram message 'India: please do this in Kite'"))
         stale = [r for r in store.orders(("SENT",)) if r["purpose"] in ORDER_PURPOSES
                  and datetime.fromisoformat(r["updated_at"]) < now - LIVE_SETTLE]
         if stale:
@@ -625,7 +625,8 @@ def started_late(now: datetime) -> bool:
 
 def main(argv: list[str] | None = None, sleep=_sleep) -> None:
     parser = argparse.ArgumentParser(description="Health checks for unattended operation.")
-    parser.add_argument("--notify", action="store_true", help="send a Telegram alert when something needs attention")
+    parser.add_argument("--notify", action="store_true",
+                        help="send a Telegram alert, in plain words, when something needs you (research checks are only logged)")
     parser.add_argument("--scheduled", action="store_true",
                         help="the 21:00 task: when it starts late, it first gives a catch-up daily run time to finish")
     args = parser.parse_args(argv)
@@ -653,24 +654,44 @@ def main(argv: list[str] | None = None, sleep=_sleep) -> None:
     log.info("%d alert(s), %d warning(s)%s", len(alerts), len(warnings),  # a trace of every run, even a clean one
              "".join(f"; {c.level} {c.name}: {c.detail}" for c in alerts + warnings))
     if alerts and args.notify:
-        notifier = notifier_from_settings(settings)
+        notifier = notifier_from_settings(settings, "alerts")
         for text in alert_messages(alerts):
             notifier.send(text)
     raise SystemExit(1 if alerts else 0)
 
 
-def about_real_money(check: Health) -> bool:
-    """The checks about real orders at Kite: their alerts mustn't read as [PAPER]."""
-    return check.name.startswith("live ") or check.name in ("internet address", "real-money trial")
+# Each alert that needs you, in plain words: (what happened, what it means or what to do).
+PLAIN_ALERTS = {
+    "daily run": ("The daily run is behind", "Today's market data isn't in yet. It retries by itself: keep the PC on and online."),
+    "last run": ("The daily run failed", "It retries by itself. If it keeps failing, tell me."),
+    "reconciliation": ("The paper records don't add up", "Nothing to do now: ask me to check it."),
+    "notifications": ("Some messages didn't reach you", "They are sent again on the next run."),
+    "kill switch": ("Trading is paused", "The safety switch is on: no new buys (sells still happen). Ask me why first."),
+    "live unknown orders": ("An order's result is unclear", "Please check your order book in Kite."),
+    "live stops": ("A stop-loss is missing", "Please set one in Kite: the stock › Create GTT › Single › Sell."),
+    "internet address": ("Your internet address changed", "Zerodha blocks the bot's orders from this PC. Send /myip to fix it."),
+    "real-money trial": ("Your real-money trial setting has a problem", "So the bot can't buy. Ask me to fix config/overrides.toml."),
+    "integrity": ("A records file is damaged", "Please stop and ask me to restore it from the backup."),
+    "calendar": ("The holiday calendar needs next year's dates", "Ask me to add them."),
+    "paper trial 1": ("Tonight's rules run failed", "So tonight's India plan may be missing. It runs again tomorrow."),
+    "trial": ("Tonight's rules run can't be read", "So tonight's India plan may be missing. Ask me to check it."),
+    "US paper trial": ("The US list had a problem", "Tonight's US list may be missing or late. It tries again."),
+    "ustrial": ("The US list can't be read", "Tonight's US list may be missing. Ask me to check it."),
+}
+RESEARCH_ONLY = ("forward", "january looks")  # research checks: logged, nothing for you to do
 
 
 def alert_messages(alerts: list[Health]) -> list[str]:
-    """At most two Telegram messages: the real-money alerts without the [PAPER] label, the rest with it."""
-    live, paper = [c for c in alerts if about_real_money(c)], [c for c in alerts if not about_real_money(c)]
-    return ([templates.risk_alert(title="Health check, real money", paper=False,
-                                  detail="; ".join(f"{c.name}: {c.detail}" for c in live))] if live else []) + \
-           ([templates.risk_alert(title="Health check", detail="; ".join(f"{c.name}: {c.detail}" for c in paper))]
-            if paper else [])
+    """One short message in plain words for the alerts that need you (none when only research checks alert)."""
+    steps = []
+    for check in alerts:
+        if check.name.startswith(RESEARCH_ONLY):
+            continue
+        head, line = PLAIN_ALERTS.get(check.name, (check.name[:1].upper() + check.name[1:], check.detail))
+        if check.name == "live stops" and (stocks := re.search(r"for (.+?): ", check.detail)):
+            line = f"No stop-loss in Kite for {stocks.group(1).replace('.NS', '')}. {line}"
+        steps.append(f"{head}\n{line}")
+    return [templates.steps_message("Needs your attention", steps)] if steps else []
 
 
 if __name__ == "__main__":

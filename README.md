@@ -238,9 +238,10 @@ criteria ([pre-registration](docs/research/forward4-preregistration.md), pinned 
 trade): realistic costs, the random baseline (pools recorded for every closed trade), drawdown, stable years and
 significance at 0.05 / L, each January from 2028. Fail any criterion: real money stays NO TRADE. Pass every one: a
 candidate (B1F) for the existing approval stages, nothing automatic. Most likely obstacle: the 50% win-rate floor
-(the bunch won 48.7% in the backtest), which stays. Between looks, `state/trial1-status.md` and the monthly Telegram
-summary show its figures after costs (win rate, average win and loss, profit factor, drawdown, p against random), and
-every random-pick comparison is sent on Telegram; each January the health check warns until the looks are written.
+(the bunch won 48.7% in the backtest), which stays. Between looks, `state/trial1-status.md` and the monthly summary
+(logged, `logs/trial1.log`) show its figures after costs (win rate, average win and loss, profit factor, drawdown, p
+against random), and every random-pick comparison is logged; each January the health check warns until the looks are
+written.
 
 ## Research round 9: low volatility and volatility-adjusted momentum (2026-10-14)
 
@@ -403,8 +404,9 @@ the kill switch blocks new entries but never stops an open position from exiting
 database transaction in `state/paper.db` (git-ignored), so a crash or a second run can't duplicate
 anything, and a missed day is caught up on the next run.
 
-Telegram gets `[PAPER]` BUY SIGNAL, BUY EXECUTED, SELL SIGNAL, SELL EXECUTED and RISK ALERT messages
-and a daily summary; with no approved strategy the summary says NO TRADE. A SELL SIGNAL comes when an
+The log gets `[PAPER]` BUY SIGNAL, BUY EXECUTED, SELL SIGNAL, SELL EXECUTED and RISK ALERT messages
+and a daily summary (not Telegram: it carries only what you buy or sell); with no approved strategy the
+summary says NO TRADE. A SELL SIGNAL comes when an
 exit rule fires (sell at the next open) and on the evening before a time exit (sell at the next
 close). A message that can't be sent is retried on the next run. A strategy whose paper results drift
 from its research (`[decay]` in `config/gate.toml`) is suspended automatically.
@@ -465,15 +467,34 @@ access token never pass through Telegram). Only your chat (`TELEGRAM_CHAT_ID`) i
 command can release the kill switch, change a limit or place an order; releasing is only possible on
 the PC.
 
-What sends you a Telegram alert:
+What reaches your Telegram (your rules since 20 Nov 2026, all in short plain words; `trader/notify/telegram.py`).
+Every market day, at least three messages:
 
-- **The run fails** (a crash, a broken config, no Kite login): an alert straight away, with secrets masked.
-  Every run is recorded, and a failure leaves no half-processed session behind.
+- **Morning (08:30): "Good morning! India today"**: please log in to Kite (if you haven't), and what the rules
+  buy and sell at 9:15, saying whether the bot placed it or you must; or "Nothing to buy or sell today".
+- **Evening, before the US open: the US list**: what to buy and sell tonight, with why; or "Nothing tonight".
+- **Evening, after the rules run: "India plan for <next market day>"**: what the rules buy and sell at the next
+  open and why, whether the bot placed the orders or you must do them in Kite (no login, or the internet address
+  changed), and why nothing else (all 5 slots full, 1 share costs more than its part of your money, ...). A buy
+  you were told to make by hand is followed by its SELL once the rules sell it ("only if you bought it").
+
+And when it matters:
+
+- **"Needs your attention"** from the 21:00 health check, in plain words: the daily run failed or is behind,
+  the internet address changed (send `/myip`), a stop-loss is missing, trading is paused, a records file is
+  damaged, tonight's rules run or US list failed. Research checks (forward tests) are only logged.
+- **Answers to your own commands** (`/status`, `/login`, ...).
+
+Everything else is only logged (`logs/`, and the dashboard): paper summaries, research and forward tests, the
+live dry run. What the checks look at:
+
+- **The run fails** (a crash, a broken config): logged straight away, with secrets masked. Every run is
+  recorded, and a failure leaves no half-processed session behind.
 - **Market data is missing**: when more than 20% of the instruments have no bar yet for a session, the
   run stops before that session instead of recording a day it couldn't see, and the next run retries it.
 - **The run didn't happen**: the 21:00 health check alerts when the latest session isn't processed, the
-  last run failed, halted or died, the kill switch is on, Telegram messages are stuck, or cash and
-  holdings don't reconcile with the fills.
+  last run failed, halted or died, the kill switch is on, messages are stuck, or cash and holdings don't
+  reconcile with the fills.
 - **The PC is off**, so nothing on it can alert (optional): create a free check at healthchecks.io or a
   similar dead man's switch and put its ping URL in `.env` as `HEARTBEAT_URL`. Every clean run pings it,
   and the service alerts you when the pings stop.
